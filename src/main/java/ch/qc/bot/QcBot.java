@@ -31,6 +31,8 @@ public final class QcBot implements Algorithm {
   /** Hard stop of the search, measured from the entry of accelerateQuark (design 2.8). */
   static final long HARD_NANOS = 80_000_000L;
   static final long FIRST_CALL_HARD_NANOS = 30_000_000L;
+  /** Search behind a book move ({@link Book}). */
+  static final long BOOK_HARD_NANOS = 30_000_000L;
   /** Search is limited to boards whose column index fits the transposition-table move field. */
   static final int MAX_SEARCH_COLS = 255;
   /** Board sizes seen on the server: their tables are built in the constructor, outside any timed call. */
@@ -40,6 +42,7 @@ public final class QcBot implements Algorithm {
 
   private final TurnTracker tracker = new TurnTracker();
   private final MatchClock clock = new MatchClock();
+  private final Book book = Book.embedded();
   /** Score of our latest search, our view; 0 at the start of a game. */
   private int lastScore;
   private final TranspositionTable tt;
@@ -164,11 +167,14 @@ public final class QcBot implements Algorithm {
     if (s.cols <= MAX_SEARCH_COLS) {
       long hard = firstCall ? FIRST_CALL_HARD_NANOS
           : clock.budget(t0, tracker.plyIndex(), HARD_NANOS, lastScore, s.rows * s.cols - s.discs);
-      Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0, hard);
+      // a book move gets a short search only: a proven result overrides it, and it warms the JIT and fills the table
+      int bookColumn = book.column(board, tracker.plyIndex(), me, cdOpp);
+      Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0,
+          bookColumn >= 0 ? Math.min(hard, BOOK_HARD_NANOS) : hard);
       lastResult = r;
       if (r.move() != Tactics.NONE) {
         lastScore = r.score();
-        return r.move();
+        return bookColumn >= 0 && Math.abs(r.score()) <= Searcher.MATE_BOUND ? bookColumn : r.move();
       }
     }
     return new Tactics(geometry).choose(board, me, cdMe, cdOpp, Clock.nanos() + TACTICS_NANOS);
