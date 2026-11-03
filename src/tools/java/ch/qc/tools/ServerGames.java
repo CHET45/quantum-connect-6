@@ -16,25 +16,45 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * Replays tournament-server games (matches.jsonl exports) on {@link Board} with the engine's turn rules and
  * checks each one against the recorded winner. Notation of "moves": a concatenation of tokens, side letter F or
- * S, one hex column digit, and a trailing * for a blast; a turn lost to a timeout or a full column leaves no
- * token (it shows as a break in the F/S alternation); "win_at" is the 0-based index of the winning token.
- * Several exports are merged by game id. Draws are not stored by the server, so every game here is decided.
+ * S, one base-36 column digit (0-9a-l, so up to 36 columns), and a trailing * for a blast; a turn lost to a
+ * timeout or a full column leaves no token (it shows as a break in the F/S alternation); "win_at" is the 0-based
+ * index of the winning token. Several exports are merged by game id. Draws are not stored by the server, so every
+ * game here is decided.
+ *
+ * <p>The server rotates the board size (8x12, 15x22, 15x11; rows x columns). Each game is replayed on the size
+ * recorded in its "board" field (the snapshot's page value, or the exporter's inference), and, if that does not
+ * replay consistently or the field is absent, on the first of 8x12, 15x11, 15x22 that does. Moves alone often fit
+ * several sizes (a short game that never reaches a wall or the ceiling), so the recorded size wins when it
+ * replays; {@link Replay#fits} lists every size that replays. {@code --rows/--cols} force one size for all games.
  *
  * <pre>
- * [--rows 8 --cols 12 --team "No beaches?" --report FILE --openings FILE --plies 8 --skips-free] a.jsonl b.jsonl
+ * [--rows 8 --cols 12] [--only 15x11] [--team "No beaches?" --report FILE --openings FILE --plies 8
+ * --skips-free] a.jsonl b.jsonl
  * </pre>
  */
 public final class ServerGames {
   private static final int COOLDOWN = 10;
   private static final String[] SIDE = {"", "F", "S"};
+  /** Sizes the server has used (rows, cols), in the order tried when a game carries no usable board field. */
+  static final int[][] SIZES = {{8, 12}, {15, 11}, {15, 22}};
+  private static final Map<String, Geometry> GEOS = new LinkedHashMap<>();
+
+  static Geometry geometry(int rows, int cols) {
+    return GEOS.computeIfAbsent(rows + "x" + cols, k -> new Geometry(rows, cols));
+  }
+
+  static String sizeName(Geometry g) {
+    return g.rows + "x" + g.cols;
+  }
 
   /** One server game; side 1 is the first player F, side 2 the second player S. */
   record Game(String id, String[] name, String[] team, String moves, int winner, int winAt, String timeouts,
-      String full, int[] oom, int warn, int warnMax, List<String> errors) {
+      String full, int[] oom, int warn, int warnMax, List<String> errors, int rows, int cols, String boardSource) {
     String key() {
       return name[0] + "|" + name[1] + "|" + moves;
     }
@@ -49,6 +69,10 @@ public final class ServerGames {
   /** Result of replaying one game. */
   static final class Replay {
     String problem;
+    /** Board size this replay ran on, how it was chosen (recorded / guessed / none fits) and every size that fits. */
+    Geometry geo;
+    String how = "";
+    final List<String> fits = new ArrayList<>();
     int plies;
     int turns;
     String reason = "none";
@@ -102,8 +126,9 @@ public final class ServerGames {
   }
 
   public static void main(String[] args) throws Exception {
-    int rows = 8;
-    int cols = 12;
+    int rows = 0;
+    int cols = 0;
+    String only = null;
     int plies = 8;
     String team = "No beaches?";
     String report = null;
@@ -114,6 +139,7 @@ public final class ServerGames {
       switch (args[i]) {
         case "--rows" -> rows = Integer.parseInt(args[++i]);
         case "--cols" -> cols = Integer.parseInt(args[++i]);
+        case "--only" -> only = args[++i];
         case "--plies" -> plies = Integer.parseInt(args[++i]);
         case "--team" -> team = args[++i];
         case "--report" -> report = args[++i];
@@ -143,22 +169,26 @@ public final class ServerGames {
         sameKey++;
       }
     }
-    Geometry geo = new Geometry(rows, cols);
     List<Item> items = new ArrayList<>();
     int bad = 0;
     int altOk = 0;
     for (Game g : byKey.values()) {
       Item it = new Item();
       it.g = g;
-      it.r = replay(geo, g, skipsFree);
-      altOk += replay(geo, g, !skipsFree).problem == null ? 1 : 0;
+      it.r = replayAny(g, skipsFree, rows, cols);
+      if (only != null && !only.equals(it.r.geo == null ? "" : sizeName(it.r.geo))) {
+        continue;
+      }
+      altOk += replayAny(g, !skipsFree, rows, cols).problem == null ? 1 : 0;
       events(it);
       items.add(it);
       if (it.r.problem != null) {
         bad++;
-        System.out.printf(Locale.ROOT, "INCONSISTENT %s %s vs %s: %s%n", g.id, g.name[0], g.name[1], it.r.problem);
+        System.out.printf(Locale.ROOT, "INCONSISTENT %s %s vs %s (%s): %s%n", g.id, g.name[0], g.name[1],
+            it.r.geo == null ? "?" : sizeName(it.r.geo), it.r.problem);
       }
     }
+    printSizes(items);
     System.out.printf(Locale.ROOT, "%d lines in %d files, %d unique ids, %d dropped as same players and moves, "
         + "%d games replayed, %d consistent, %d inconsistent%n", lines, files.size(), byId.size(), sameKey,
         items.size(), items.size() - bad, bad);
@@ -174,7 +204,7 @@ public final class ServerGames {
       System.out.println("report -> " + report);
     }
     if (openings != null) {
-      writeOpenings(Path.of(openings), items, plies, rows, cols);
+      writeOpenings(Path.of(openings), items, plies);
     }
   }
 
@@ -202,9 +232,85 @@ public final class ServerGames {
       errors.add((String) o);
     }
     Number wm = (Number) log.get("warn_max");
+    Map<String, Object> board = (Map<String, Object>) m.get("board");
+    int rows = board == null || board.get("rows") == null ? 0 : ((Number) board.get("rows")).intValue();
+    int cols = board == null || board.get("cols") == null ? 0 : ((Number) board.get("cols")).intValue();
+    String src = board == null || board.get("source") == null ? "page" : (String) board.get("source");
     return new Game((String) m.get("id"), name, team, (String) m.get("moves"),
         "F".equals(m.get("winner")) ? 1 : 2, ((Number) m.get("win_at")).intValue(), (String) log.get("timeouts"),
-        (String) log.get("full"), oom, ((Number) log.get("warn")).intValue(), wm == null ? -1 : wm.intValue(), errors);
+        (String) log.get("full"), oom, ((Number) log.get("warn")).intValue(), wm == null ? -1 : wm.intValue(), errors,
+        rows, cols, src);
+  }
+
+  /**
+   * Replays on the recorded board size, else on the first of {@link #SIZES} that replays consistently; fixedRows
+   * and fixedCols (when non-zero) force one size. The returned replay is the chosen one, or the first attempt (with
+   * its problem) when no size fits; {@link Replay#fits} lists all sizes that fit, {@link Replay#how} says whether
+   * the recorded size was kept.
+   */
+  static Replay replayAny(Game game, boolean skipsFree, int fixedRows, int fixedCols) {
+    List<int[]> order = new ArrayList<>();
+    boolean recorded = false;
+    if (fixedRows > 0 && fixedCols > 0) {
+      order.add(new int[] {fixedRows, fixedCols});
+    } else {
+      if (game.rows > 0 && game.cols > 0) {
+        order.add(new int[] {game.rows, game.cols});
+        recorded = true;
+      }
+      for (int[] sz : SIZES) {
+        if (order.isEmpty() || order.get(0)[0] != sz[0] || order.get(0)[1] != sz[1]) {
+          order.add(sz);
+        }
+      }
+    }
+    Replay first = null;
+    Replay chosen = null;
+    List<String> fits = new ArrayList<>();
+    for (int k = 0; k < order.size(); k++) {
+      Geometry geo = geometry(order.get(k)[0], order.get(k)[1]);
+      Replay r = replay(geo, game, skipsFree);
+      if (first == null) {
+        first = r;
+      }
+      if (r.problem == null) {
+        fits.add(sizeName(geo));
+        if (chosen == null) {
+          chosen = r;
+          chosen.how = recorded && k == 0 ? "recorded" : fixedRows > 0 ? "forced" : "guessed";
+        }
+      }
+    }
+    Replay out = chosen != null ? chosen : first;
+    if (chosen == null) {
+      out.how = "none";
+    }
+    out.fits.addAll(fits);
+    return out;
+  }
+
+  /** Console summary per board size: games, consistent, and how the size was found. */
+  static void printSizes(List<Item> items) {
+    Map<String, int[]> by = new TreeMap<>();
+    for (Item it : items) {
+      String key = it.r.geo == null ? "?" : sizeName(it.r.geo);
+      int[] c = by.computeIfAbsent(key, k -> new int[9]);
+      c[0]++;
+      c[1] += it.r.problem == null ? 1 : 0;
+      c[2] += it.r.problem == null && it.r.how.equals("recorded") ? 1 : 0;
+      c[3] += it.r.problem == null && it.r.how.equals("guessed") ? 1 : 0;
+      c[4] += it.g.rows > 0 && it.g.boardSource.equals("page") ? 1 : 0;
+      c[5] += it.g.rows > 0 && it.g.boardSource.equals("inferred") ? 1 : 0;
+      for (int k = 0; k < SIZES.length; k++) {
+        c[6 + k] += it.r.fits.contains(SIZES[k][0] + "x" + SIZES[k][1]) ? 1 : 0;
+      }
+    }
+    for (Map.Entry<String, int[]> e : by.entrySet()) {
+      int[] c = e.getValue();
+      System.out.printf(Locale.ROOT, "size %s: %d games, %d consistent (%d on the recorded size, %d on a guessed size); "
+          + "board field from the page %d, inferred %d; moves also replay on 8x12 / 15x11 / 15x22: %d / %d / %d%n",
+          e.getKey(), c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]);
+    }
   }
 
   /**
@@ -213,6 +319,7 @@ public final class ServerGames {
    */
   static Replay replay(Geometry g, Game game, boolean skipsFree) {
     Replay r = new Replay();
+    r.geo = g;
     Board b = new Board(g);
     r.board = b;
     int[] counter = new int[3];
@@ -224,15 +331,15 @@ public final class ServerGames {
     int i = 0;
     while (i < s.length()) {
       if (i + 1 >= s.length() || (s.charAt(i) != 'F' && s.charAt(i) != 'S')
-          || Character.digit(s.charAt(i + 1), 16) < 0) {
+          || Character.digit(s.charAt(i + 1), 36) < 0) {
         r.problem = "bad token at char " + i;
         return r;
       }
       int side = s.charAt(i) == 'F' ? 1 : 2;
-      int col = Character.digit(s.charAt(i + 1), 16);
+      int col = Character.digit(s.charAt(i + 1), 36);
       boolean star = i + 2 < s.length() && s.charAt(i + 2) == '*';
       i += star ? 3 : 2;
-      r.lastToken = SIDE[side] + Integer.toHexString(col) + (star ? "*" : "");
+      r.lastToken = SIDE[side] + Integer.toString(col, 36) + (star ? "*" : "");
       if (side != expected) {
         r.skips.add(new Skip(expected, turn, '?'));
         if (!skipsFree) {
@@ -326,13 +433,15 @@ public final class ServerGames {
   // ---------------------------------------------------------------- openings
 
   /** First plies of each unique game, cut at the first skipped turn or blast, which the file format cannot hold. */
-  static void writeOpenings(Path out, List<Item> items, int plies, int rows, int cols) throws IOException {
+  static void writeOpenings(Path out, List<Item> items, int plies) throws IOException {
     Set<String> lines = new LinkedHashSet<>();
+    Set<String> sizes = new TreeSet<>();
     int cut = 0;
     for (Item it : items) {
       if (it.r.problem != null) {
         continue;
       }
+      sizes.add(sizeName(it.r.geo));
       String s = it.g.moves;
       StringBuilder sb = new StringBuilder();
       int expected = 1;
@@ -344,7 +453,7 @@ public final class ServerGames {
           cut++;
           break;
         }
-        sb.append(n == 0 ? "" : ",").append(Character.digit(s.charAt(i + 1), 16));
+        sb.append(n == 0 ? "" : ",").append(Character.digit(s.charAt(i + 1), 36));
         i += star ? 3 : 2;
         expected = 3 - side;
         n++;
@@ -355,8 +464,8 @@ public final class ServerGames {
     }
     Files.createDirectories(out.toAbsolutePath().getParent());
     List<String> all = new ArrayList<>();
-    all.add(String.format(Locale.ROOT, "# %dx%d server-game openings: first %d plies of %d games, %d cut at a skipped "
-        + "turn or blast", rows, cols, plies, items.size(), cut));
+    all.add(String.format(Locale.ROOT, "# %s server-game openings: first %d plies of %d games, %d cut at a skipped "
+        + "turn or blast", String.join("/", sizes), plies, items.size(), cut));
     all.addAll(lines);
     Files.write(out, all, StandardCharsets.UTF_8);
     System.out.printf(Locale.ROOT, "%d distinct openings (%d lines cut short) -> %s%n", lines.size(), cut, out);
@@ -510,10 +619,34 @@ public final class ServerGames {
           skipsFree ? ", skipped ones NOT," : ", skipped ones included,", ok, items.size()));
       for (Item it : items) {
         if (it.r.problem != null) {
-          sb.append(String.format(Locale.ROOT, "- `%s` %s vs %s: %s%n", it.g.id, it.g.name[0], it.g.name[1],
-              it.r.problem));
+          sb.append(String.format(Locale.ROOT, "- `%s` %s vs %s (%s): %s%n", it.g.id, it.g.name[0], it.g.name[1],
+              it.r.geo == null ? "?" : sizeName(it.r.geo), it.r.problem));
         }
       }
+      sb.append("Board size per game: the \"board\" field of the export (page = read from the snapshot, inferred = "
+          + "guessed by the exporter from the time), else the first of 8x12, 15x11, 15x22 that replays. A game that "
+          + "fits a smaller board also fits any larger one that contains it (8x12 and 15x11 sit inside 15x22), so the "
+          + "moves prove a size only when they do not replay on the smaller ones (the last three columns).\n\n");
+      List<String[]> sizeRows = new ArrayList<>();
+      Map<String, int[]> bySize = new TreeMap<>();
+      for (Item it : items) {
+        int[] c = bySize.computeIfAbsent(it.r.geo == null ? "?" : sizeName(it.r.geo), k -> new int[9]);
+        c[0]++;
+        c[1] += it.r.problem == null ? 1 : 0;
+        c[2] += it.r.problem == null && it.r.how.equals("recorded") ? 1 : 0;
+        c[3] += it.r.problem == null && it.r.how.equals("guessed") ? 1 : 0;
+        c[4] += it.g.rows > 0 && it.g.boardSource.equals("page") ? 1 : 0;
+        for (int k = 0; k < SIZES.length; k++) {
+          c[6 + k] += it.r.fits.contains(SIZES[k][0] + "x" + SIZES[k][1]) ? 1 : 0;
+        }
+      }
+      for (Map.Entry<String, int[]> e : bySize.entrySet()) {
+        int[] c = e.getValue();
+        sizeRows.add(new String[] {e.getKey(), "" + c[0], "" + c[1], "" + c[2], "" + c[3], "" + c[4],
+            "" + (c[0] - c[4]), "" + c[6], "" + c[7], "" + c[8]});
+      }
+      table(new String[] {"Size (rows x cols)", "Games", "Consistent", "On recorded size", "On guessed size",
+          "Board from page", "Board inferred", "Replays also on 8x12", "on 15x11", "on 15x22"}, sizeRows);
       int blasts = 0;
       int minCounter = Integer.MAX_VALUE;
       int minGap = Integer.MAX_VALUE;
@@ -542,10 +675,11 @@ public final class ServerGames {
       sb.append(String.format(Locale.ROOT, "- `*` after a token marks a blast in that column: %d blasts in %d games; "
           + "smallest cooldown counter at a blast %s; earliest blast is the own turn #%s (0-based, own turns "
           + "counted from 0); smallest gap between two blasts of one side %s own turns. Replaying with skipped "
-          + "turns %s counting toward the cooldown gives %d of %d consistent, so the data cannot tell the two "
-          + "apart.%n", blasts, starGames,
+          + "turns %s counting toward the cooldown gives %d of %d consistent%s%n", blasts, starGames,
           blasts == 0 ? "-" : minCounter, blasts == 0 ? "-" : firstMin, minGap == Integer.MAX_VALUE ? "-" : minGap,
-          skipsFree ? "" : "NOT", altOk, items.size()));
+          skipsFree ? "" : "NOT", altOk, items.size(), altOk == ok ? ", so the data cannot tell the two apart."
+          : " (against " + ok + " with the opposite rule), so the data favour the "
+          + (altOk > ok ? "opposite" : "above") + " rule."));
       sb.append(String.format(Locale.ROOT, "- A skipped turn (timeout or full column) leaves no token; replay finds "
           + "%d of them as breaks in the F/S alternation. In %d of %d games the breaks equal the logged timeout / "
           + "column-full lines in count and sides (a break is invisible when both sides skip in a row).%n%n",
@@ -969,7 +1103,7 @@ public final class ServerGames {
       sb.append('\n');
     }
     for (int c = 0; c < b.g.cols; c++) {
-      sb.append(Integer.toHexString(c));
+      sb.append(Integer.toString(c, 36));
     }
     return sb.append('\n').toString();
   }
