@@ -3,26 +3,30 @@ package ch.qc.bot.eval;
 import ch.qc.bot.rules.Geometry;
 
 /**
- * Where the learned evaluation comes from (design 3.7): the blob compiled into {@code EvalBlob}, else none and the
- * bot uses the hand tables. The blob is decoded and expanded once per JVM; the result is immutable and shared by
- * all bots. Harness tools load .qcw files themselves (ch.qc.tools.WeightFiles) and pass the evaluator in.
+ * Where the learned evaluation comes from (design 3.7): the blobs compiled into {@code EvalBlob}, one per board
+ * size, else none and the bot uses the hand tables. The blobs are decoded and expanded once per JVM; the results
+ * are immutable and shared by all bots. Harness tools load .qcw files themselves (ch.qc.tools.WeightFiles) and pass the evaluator in.
  */
 public final class Weights {
   private Weights() {}
 
   private static final class Holder {
-    static final LearnedEval EVAL = load();
+    static final LearnedEval[] EVALS = load();
   }
 
   /** Decodes the weights now (call from a constructor, outside any timed call). */
   public static void preload() {
-    Evaluator ignored = Holder.EVAL;
+    LearnedEval[] ignored = Holder.EVALS;
   }
 
   /** The learned evaluation if weights for this board size are available, else null. */
   public static Evaluator forGeometry(Geometry g) {
-    LearnedEval e = Holder.EVAL;
-    return e != null && e.fits(g) ? e : null;
+    for (LearnedEval e : Holder.EVALS) {
+      if (e != null && e.fits(g)) {
+        return e;
+      }
+    }
+    return null;
   }
 
   /** A learned evaluation from an inflated blob, or null if the blob is broken or does not match its spec. */
@@ -34,9 +38,13 @@ public final class Weights {
     return blob.matches(spec) ? new LearnedEval(spec, blob) : null;
   }
 
-  private static LearnedEval load() {
-    // a broken or mismatched blob must never stop the bot: it falls back to the hand tables
-    return EvalBlob.CHUNKS.length == 0 ? null : fromBlob(WeightBlob.parse(decodeBase64(EvalBlob.CHUNKS)));
+  private static LearnedEval[] load() {
+    // a broken or mismatched blob must never stop the bot: that board size falls back to the hand tables
+    LearnedEval[] evals = new LearnedEval[EvalBlob.BLOBS.length];
+    for (int i = 0; i < evals.length; i++) {
+      evals[i] = fromBlob(WeightBlob.parse(decodeBase64(EvalBlob.BLOBS[i])));
+    }
+    return evals;
   }
 
   /** Decodes concatenated standard Base64 chunks; null on a malformed input. */

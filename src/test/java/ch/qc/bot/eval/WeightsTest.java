@@ -27,6 +27,10 @@ class WeightsTest {
 
   /** A blob in the export.py format with random weights, for the loader tests. */
   static byte[] blob(FeatureSpec spec, long hash, long seed) throws Exception {
+    return blob(spec, hash, seed, Features.STAGES);
+  }
+
+  static byte[] blob(FeatureSpec spec, long hash, long seed, int stages) throws Exception {
     SplittableRandom rnd = new SplittableRandom(seed);
     ByteArrayOutputStream raw = new ByteArrayOutputStream();
     try (DataOutputStream out = new DataOutputStream(new DeflaterOutputStream(raw))) {
@@ -35,11 +39,11 @@ class WeightsTest {
         out.writeInt(x);
       }
       out.writeLong(hash);
-      for (int x : new int[] {256, Features.STAGES, Features.CD_CONTEXTS, spec.classes, spec.codes, Features.T1_SIZE,
+      for (int x : new int[] {256, stages, Features.CD_CONTEXTS, spec.classes, spec.codes, Features.T1_SIZE,
           Features.T2_SIZE, Features.T3_SIZE}) {
         out.writeInt(x);
       }
-      int n = Features.STAGES * Features.CD_CONTEXTS * spec.windowParams()
+      int n = stages * Features.CD_CONTEXTS * spec.windowParams()
           + Features.CD_CONTEXTS * (Features.T1_SIZE + Features.T2_SIZE) + Features.T3_SIZE;
       for (int i = 0; i < n; i++) {
         out.writeShort(rnd.nextInt(-300, 300));
@@ -62,6 +66,27 @@ class WeightsTest {
     s.make(5, 2);
     s.make(6, 1);
     assertEquals(v, e.evaluate(s, 2, 1, 1));
+  }
+
+  @Test
+  void oneStageBlobIgnoresTheStage() throws Exception {
+    Geometry g = new Geometry(6, 7);
+    FeatureSpec spec = new FeatureSpec(g);
+    LearnedEval e = Weights.fromBlob(WeightFiles.parse(blob(spec, spec.specHash, 3, 1)));
+    assertTrue(e != null && e.fits(g));
+    SplittableRandom rnd = new SplittableRandom(9);
+    Board b = new Board(g);
+    for (int i = 0; i < 30; i++) {
+      int c = rnd.nextInt(g.cols);
+      if (!b.isFull(c) && !b.make(c, 1 + i % 2)) {
+        assertTrue(Math.abs(e.evaluate(b, 1 + i % 2, 3, 10)) <= Evaluator.MAX_EVAL);
+      }
+    }
+  }
+
+  @Test
+  void embeddedWeightsCoverTheDefaultBoard() {
+    assertTrue(Weights.forGeometry(G) != null, "weights/eval.qcw is not embedded or does not load");
   }
 
   @Test

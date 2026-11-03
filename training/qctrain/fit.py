@@ -9,8 +9,11 @@ target with the outcome target makes them pull against each other.
 Binary cross-entropy on logits, Adam with an exponential learning-rate decay, decoupled weight decay (light on the
 base table, stronger on the stage and cooldown deltas so rare contexts stay near the shared value), every weight
 clamped to [-8, 8] logits, early stopping on a validation set of 5 percent of the games.
+With --no-stage the window tables do not depend on the game stage (one stage in the blob): large boards, where
+per-stage tables would cost the bot too much memory.
 """
 import argparse
+import dataclasses
 import json
 import math
 import os
@@ -49,10 +52,11 @@ def targets(recs, lam, k):
 
 def to_device(recs, spec, y, device):
     cells = data.unpack_cells(recs["cells"], spec.rows * spec.cols)
+    stage = recs["stage"].astype(np.int64) if spec.stages > 1 else np.zeros(len(recs), dtype=np.int64)
     return {
         "cells": torch.as_tensor(cells, device=device),
         "stm": torch.as_tensor(recs["stm"].astype(np.int64) + 1, device=device),
-        "stage": torch.as_tensor(recs["stage"].astype(np.int64), device=device),
+        "stage": torch.as_tensor(stage, device=device),
         "cd": torch.as_tensor(recs["cd_ctx"].astype(np.int64), device=device),
         "t1": torch.as_tensor(recs["t1"].astype(np.int64), device=device),
         "t2": torch.as_tensor(recs["t2"].astype(np.int64), device=device),
@@ -99,11 +103,14 @@ def main():
     ap.add_argument("--patience", type=int, default=3)
     ap.add_argument("--warm", default=None, help="theta.pt of the previous generation")
     ap.add_argument("--base-only", action="store_true", help="keep the stage and cooldown deltas at zero")
+    ap.add_argument("--no-stage", action="store_true", help="one window table for all game stages")
     ap.add_argument("--k", default="auto", help="search-value scale of the target, or auto (fitted to outcomes)")
     args = ap.parse_args()
     torch.manual_seed(1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     spec = spec_mod.load(args.spec)
+    if args.no_stage:
+        spec = dataclasses.replace(spec, stages=1)
     recs, keys, meta = data.read_dirs(args.data)
     if meta["spec_hash"] != spec.spec_hash or (meta["rows"], meta["cols"]) != (spec.rows, spec.cols):
         raise SystemExit("data and spec disagree")
@@ -170,7 +177,7 @@ def main():
     val_loss, qv = evaluate(m, val)
 
     report = {"records": int(len(recs)), "train": int(n), "validation": int(val["y"].shape[0]),
-              "lam": args.lam, "k": k, "base_only": args.base_only, "best_epoch": best[2], "val_bce": val_loss, "constant_bce": const_val,
+              "lam": args.lam, "k": k, "base_only": args.base_only, "stages": spec.stages, "best_epoch": best[2], "val_bce": val_loss, "constant_bce": const_val,
               "history": history, "spec_hash": hex(spec.spec_hash), "data": args.data}
     pv = val["proven"] != 0
     if pv.any():

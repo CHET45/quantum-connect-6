@@ -25,7 +25,8 @@ import java.util.concurrent.Executors;
  * --a SPEC --b SPEC       search options as for qcbot: specs ("" for the defaults, "+razor,-rootVcf", "noVcf"),
  *                         optionally followed by @WEIGHTS (a .qcw file, or @hand), e.g. "@data/models/gen001/eval.qcw"
  * --nodes N               node budget per move (default 20000)
- * --openings FILE         opening pool (default suites/openings-8x12.txt)
+ * --openings FILE         opening pool (default suites/openings-ROWSxCOLS.txt)
+ * --rows R --cols C       board size (default 8x12)
  * --pairs N --sprt E0,E1 --threads N --seed S --out FILE   as in MatchMain
  * </pre>
  */
@@ -43,7 +44,9 @@ public final class FastMatch {
     String a = "";
     String b = "";
     long nodes = 20_000;
-    String openings = "suites/openings-8x12.txt";
+    String openings = null;
+    int rows = 8;
+    int cols = 12;
     int pairs = 200;
     double[] bounds = null;
     int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
@@ -55,6 +58,8 @@ public final class FastMatch {
         case "--b" -> b = args[++i];
         case "--nodes" -> nodes = Long.parseLong(args[++i]);
         case "--openings" -> openings = args[++i];
+        case "--rows" -> rows = Integer.parseInt(args[++i]);
+        case "--cols" -> cols = Integer.parseInt(args[++i]);
         case "--pairs" -> pairs = Integer.parseInt(args[++i]);
         case "--sprt" -> {
           String[] e = args[++i].split(",");
@@ -72,8 +77,11 @@ public final class FastMatch {
     Searcher.Options ob = SearchOptions.parse(sb[0]);
     java.util.function.Function<Geometry, Evaluator> fa = Evaluators.factory(sa[1]);
     java.util.function.Function<Geometry, Evaluator> fb = Evaluators.factory(sb[1]);
+    if (openings == null) {
+      openings = "suites/openings-" + rows + "x" + cols + ".txt";
+    }
     List<int[]> pool = MatchMain.readOpenings(Path.of(openings));
-    Geometry g = new Geometry(8, 12);
+    Geometry g = new Geometry(rows, cols);
     Sprt sprt = bounds == null ? new Sprt(0, 10) : new Sprt(bounds[0], bounds[1]);
     PrintWriter w = out == null ? null : new PrintWriter(Files.newBufferedWriter(Path.of(out), StandardCharsets.UTF_8));
     int[] reasons = new int[4];

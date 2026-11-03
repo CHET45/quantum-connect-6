@@ -4,7 +4,8 @@ package ch.qc.bot.eval;
  * The learned tables as written by training/qctrain/export.py (design 3.7), after inflating the zlib stream of
  * the .qcw file: big-endian, "QCW1", i32 version, rows, cols, k, i64 specHash, i32 scale, stages, cdContexts,
  * classes, codes, t1, t2, t3, then int16 W[stage][cd][class * codes + code], T1[cd][t1], T2[cd][t2], T3[t3].
- * The bot gets these bytes already inflated (the build does it, see EvalBlob), because uploaded bots may not use
+ * A blob with one stage holds stage-independent window tables (large boards, where per-stage tables would cost
+ * too much memory). The bot gets these bytes already inflated (the build does it, see EvalBlob), because uploaded bots may not use
  * java.util.zip or java.nio; parsing is by hand and reports problems by returning null, as bots may not throw.
  */
 public final class WeightBlob {
@@ -58,7 +59,8 @@ public final class WeightBlob {
     int n1 = i32(raw, 48);
     int n2 = i32(raw, 52);
     int n3 = i32(raw, 56);
-    if (scale != 256 || h[2] < 1 || h[2] > 9 || h[0] < 1 || h[1] < 1 || h[4] != Features.STAGES
+    if (scale != 256 || h[2] < 1 || h[2] > 9 || h[0] < 1 || h[1] < 1
+        || (h[4] != Features.STAGES && h[4] != 1)
         || h[5] != Features.CD_CONTEXTS || n1 != Features.T1_SIZE || n2 != Features.T2_SIZE
         || n3 != Features.T3_SIZE || h[6] < 1 || h[7] < 1 || (long) h[6] * h[7] > 1L << 24) {
       return null;

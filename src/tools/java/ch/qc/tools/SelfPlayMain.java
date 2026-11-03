@@ -36,7 +36,7 @@ import java.util.function.Function;
  *
  * <pre>
  * --out data/gen000 --positions 1500000 --nodes 12000 --threads 18 --seed 1 [--weights eval.qcw] --generation 0
- *     [--prev eval.qcw|hand] [--mix 0.6,0.2,0.2]
+ *     [--prev eval.qcw|hand] [--mix 0.6,0.2,0.2] [--rows 8 --cols 12]
  * </pre>
  */
 public final class SelfPlayMain {
@@ -55,6 +55,8 @@ public final class SelfPlayMain {
     String prev = "hand";
     double[] mix = {1, 0, 0};
     int generation = 0;
+    int rows = 8;
+    int cols = 12;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--out" -> out = args[++i];
@@ -65,6 +67,8 @@ public final class SelfPlayMain {
         case "--weights" -> weights = args[++i];
         case "--generation" -> generation = Integer.parseInt(args[++i]);
         case "--prev" -> prev = args[++i];
+        case "--rows" -> rows = Integer.parseInt(args[++i]);
+        case "--cols" -> cols = Integer.parseInt(args[++i]);
         case "--mix" -> {
           String[] m = args[++i].split(",");
           mix = new double[] {Double.parseDouble(m[0]), Double.parseDouble(m[1]), Double.parseDouble(m[2])};
@@ -72,7 +76,7 @@ public final class SelfPlayMain {
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
-    Geometry g = new Geometry(8, 12);
+    Geometry g = new Geometry(rows, cols);
     FeatureSpec spec = new FeatureSpec(g);
     Function<Geometry, Evaluator> evalFactory = Evaluators.factory(weights);
     Function<Geometry, Evaluator> prevFactory = Evaluators.factory(prev);

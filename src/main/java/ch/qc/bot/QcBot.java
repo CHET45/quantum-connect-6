@@ -29,8 +29,8 @@ public final class QcBot implements Algorithm {
   /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
   static final int MAX_MODEL_CELLS = 4096;
   /** Hard stop of the search, measured from the entry of accelerateQuark (design 2.8). */
-  static final long HARD_NANOS = 62_000_000L;
-  static final long FIRST_CALL_HARD_NANOS = 40_000_000L;
+  static final long HARD_NANOS = 45_000_000L;
+  static final long FIRST_CALL_HARD_NANOS = 30_000_000L;
   /** Search is limited to boards whose column index fits the transposition-table move field. */
   static final int MAX_SEARCH_COLS = 255;
   /** Budget of the fallback tactics. */

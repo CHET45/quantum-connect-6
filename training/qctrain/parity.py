@@ -7,6 +7,7 @@ File (little-endian): "QPV1", i32 count, i32 cells, then per record: cells (u8 e
 u8 stm (1/2), u8 cdMover, u8 cdOther, i32 integer sum, u16 t1, u16 t2, u16 t3, f32 model logit.
 """
 import argparse
+import dataclasses
 import os
 import struct
 import zlib
@@ -54,12 +55,16 @@ def main():
     ap.add_argument("--count", type=int, default=100_000)
     args = ap.parse_args()
     spec = spec_mod.load(args.spec)
+    # a blob fitted with --no-stage has one stage (see export.HEADER: version, rows, cols, k, hash, scale, stages)
+    stages = struct.unpack_from(export.HEADER, zlib.decompress(open(os.path.join(args.model, "eval.qcw"), "rb").read()), 4)[6]
+    if stages != spec.stages:
+        spec = dataclasses.replace(spec, stages=stages)
     recs, _, _ = data.read_dirs(args.data)
     rng = np.random.default_rng(5)
     recs = recs[rng.choice(len(recs), size=min(args.count, len(recs)), replace=False)]
     cells = data.unpack_cells(recs["cells"], spec.rows * spec.cols)
     stm = recs["stm"].astype(np.int64) + 1
-    stage = recs["stage"].astype(np.int64)
+    stage = recs["stage"].astype(np.int64) if spec.stages > 1 else np.zeros(len(recs), dtype=np.int64)
     cd = recs["cd_ctx"].astype(np.int64)
     t1, t2, t3 = (recs[k].astype(np.int64) for k in ("t1", "t2", "t3"))
     tables = read_qcw(os.path.join(args.model, "eval.qcw"), spec)
