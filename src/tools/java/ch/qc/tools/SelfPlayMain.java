@@ -30,8 +30,13 @@ import java.util.function.Function;
  * the mover's special is ready. Labels are search values, so these choices do not corrupt them. Positions with a
  * proven result within 3 plies are not recorded; games stop at 400 turns as adjudicated draws.
  *
+ * <p>Opponent pool (design 4.2): with --mix SELF,PREV,HAND the engine plays itself, the previous generation
+ * (--prev, a .qcw file or "hand") or the hand-table anchor in those proportions; against another engine only the
+ * positions where the current engine moves are recorded, so every label comes from the current engine's search.
+ *
  * <pre>
  * --out data/gen000 --positions 1500000 --nodes 12000 --threads 18 --seed 1 [--weights eval.qcw] --generation 0
+ *     [--prev eval.qcw|hand] [--mix 0.6,0.2,0.2]
  * </pre>
  */
 public final class SelfPlayMain {
@@ -47,6 +52,8 @@ public final class SelfPlayMain {
     int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 2);
     long seed = 1;
     String weights = null;
+    String prev = "hand";
+    double[] mix = {1, 0, 0};
     int generation = 0;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
@@ -57,12 +64,20 @@ public final class SelfPlayMain {
         case "--seed" -> seed = Long.parseLong(args[++i]);
         case "--weights" -> weights = args[++i];
         case "--generation" -> generation = Integer.parseInt(args[++i]);
+        case "--prev" -> prev = args[++i];
+        case "--mix" -> {
+          String[] m = args[++i].split(",");
+          mix = new double[] {Double.parseDouble(m[0]), Double.parseDouble(m[1]), Double.parseDouble(m[2])};
+        }
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
     Geometry g = new Geometry(8, 12);
     FeatureSpec spec = new FeatureSpec(g);
     Function<Geometry, Evaluator> evalFactory = Evaluators.factory(weights);
+    Function<Geometry, Evaluator> prevFactory = Evaluators.factory(prev);
+    Function<Geometry, Evaluator> handFactory = Evaluators.factory("hand");
+    double[] cum = {mix[0] / (mix[0] + mix[1] + mix[2]), (mix[0] + mix[1]) / (mix[0] + mix[1] + mix[2])};
     Path dir = Path.of(out);
     Files.createDirectories(dir);
     AtomicLong written = new AtomicLong();
@@ -82,12 +97,19 @@ public final class SelfPlayMain {
         try (DataOutputStream os = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(shard), 1 << 16))) {
           Qcp.writeHeader(os, g.rows, g.cols, g.k, spec.specHash, gen);
           Evaluator eval = evalFactory.apply(g);
+          Evaluator prevEval = prevFactory.apply(g);
+          Evaluator handEval = handFactory.apply(g);
           Tactics tactics = new Tactics(g);
           long nextReport = 50_000;
           while (written.get() < target) {
             int id = games.incrementAndGet();
             List<Qcp.Rec> recs = new ArrayList<>();
-            String reason = playGame(g, eval, tactics, n, rnd, recs);
+            double u = rnd.nextDouble();
+            Evaluator opponent = u < cum[0] ? eval : u < cum[1] ? prevEval : handEval;
+            int mine = rnd.nextBoolean() ? 1 : 2;
+            Evaluator[] byColour = {null, mine == 1 ? eval : opponent, mine == 2 ? eval : opponent};
+            boolean[] record = {false, mine == 1 || opponent == eval, mine == 2 || opponent == eval};
+            String reason = playGame(g, byColour, record, tactics, n, rnd, recs);
             for (Qcp.Rec r : recs) {
               r.write(os, id);
             }
@@ -121,21 +143,26 @@ public final class SelfPlayMain {
     double min = (System.nanoTime() - t0) / 6e10;
     String manifest = String.format(java.util.Locale.ROOT,
         "{\"generation\":%d,\"positions\":%d,\"games\":%d,\"nodes\":%d,\"threads\":%d,\"seed\":%d,"
-            + "\"weights\":%s,\"specHash\":\"%s\",\"minutes\":%.1f,\"six\":%d,\"blast\":%d,\"full\":%d,\"capped\":%d}",
+            + "\"weights\":%s,\"prev\":\"%s\",\"mix\":[%s,%s,%s],\"specHash\":\"%s\",\"minutes\":%.1f,"
+            + "\"six\":%d,\"blast\":%d,\"full\":%d,\"capped\":%d}",
         generation, written.get(), games.get(), nodes, threads, seed,
-        weights == null ? "null" : "\"" + weights.replace('\\', '/') + "\"", Long.toHexString(spec.specHash), min,
+        weights == null ? "null" : "\"" + weights.replace('\\', '/') + "\"", prev.replace('\\', '/'), mix[0], mix[1],
+        mix[2], Long.toHexString(spec.specHash), min,
         reasons[0].get(), reasons[1].get(), reasons[2].get(), reasons[3].get());
     Files.writeString(dir.resolve("manifest.json"), manifest, StandardCharsets.UTF_8);
     System.out.println(manifest);
   }
 
-  /** Plays one game from a random start and collects its records; returns how it ended (six, blast, full, cap). */
-  static String playGame(Geometry g, Evaluator eval, Tactics tactics, long nodes, SplittableRandom rnd,
-      List<Qcp.Rec> recs) {
-    Searcher[] engines = {null, newEngine(g, eval), newEngine(g, eval)};
+  /**
+   * Plays one game from a random start with the given evaluation per colour and collects the records of the colours
+   * marked in record; returns how it ended (six, blast, full, cap).
+   */
+  static String playGame(Geometry g, Evaluator[] byColour, boolean[] record, Tactics tactics, long nodes,
+      SplittableRandom rnd, List<Qcp.Rec> recs) {
+    Searcher[] engines = {null, newEngine(g, byColour[1]), newEngine(g, byColour[2])};
     Start s = null;
     while (s == null) {
-      s = randomStart(g, engines[1], rnd);
+      s = randomStart(g, engines[record[1] ? 1 : 2], rnd);
     }
     Board b = s.board;
     int[] counter = s.counter;
@@ -168,7 +195,7 @@ public final class SelfPlayMain {
       }
       int score = r.score();
       boolean proven = Math.abs(score) > Searcher.MATE_BOUND;
-      if (!(proven && Searcher.MATE - Math.abs(score) <= 3)) {
+      if (record[me] && !(proven && Searcher.MATE - Math.abs(score) <= 3)) {
         recs.add(new Qcp.Rec(b, me, counter[me], counter[opp], turn, Math.max(-32000, Math.min(32000, score)),
             r.depth(), proven ? Integer.signum(score) : 0, flagsNext));
       }
