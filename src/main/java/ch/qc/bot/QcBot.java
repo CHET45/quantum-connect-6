@@ -4,20 +4,25 @@ import ch.cern.quantumconnect.core.Algorithm;
 import ch.cern.quantumconnect.core.QuantumField;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
+import ch.qc.bot.search.Tactics;
 
 /**
- * Quantum Connect bot. M0 baseline: plays the most central free column and never requests a special move,
- * but already runs the full per-call pipeline (snapshot, turn tracking, board load, guarded two-call protocol).
+ * Quantum Connect bot. M1: root tactics ({@link Tactics}: immediate wins by drop or blast, no move that hands the
+ * opponent an immediate or forced win, forced wins of our own, blasts only to win or as the last defence) on top of
+ * the per-call pipeline (snapshot, turn tracking, board load, guarded two-call protocol).
  */
 public final class QcBot implements Algorithm {
   /** A special is never raised if the first call took longer than this (it may have timed out, R10, R15). */
   static final long SAFE_FINISH_NANOS = 85_000_000L;
   /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
   static final int MAX_MODEL_CELLS = 4096;
+  /** Budget of the three-ply tactical check, measured from the entry of accelerateQuark. */
+  static final long TACTICS_NANOS = 25_000_000L;
 
   private final TurnTracker tracker = new TurnTracker();
   private Geometry geometry;
   private Board board;
+  private Tactics tactics;
   private int calls;
   private volatile Decision decision;
 
@@ -31,11 +36,13 @@ public final class QcBot implements Algorithm {
     try {
       Snapshot s = Snapshot.read(field);
       tracker.beginTurn(s);
-      int col = choose(s);
+      int move = choose(s, t0 + TACTICS_NANOS);
+      int col = move == Tactics.NONE ? -1 : Tactics.column(move);
+      boolean special = move != Tactics.NONE && Tactics.isSpecial(move);
       if (col < 0 || col >= s.cols || field.isColumnFull(col)) {
         col = safeColumn(field);
+        special = false;
       }
-      boolean special = false;
       decision = new Decision(callId, s.fingerprint, col, special, System.nanoTime() - t0 <= SAFE_FINISH_NANOS);
       return col;
     } catch (Throwable e) {
@@ -78,27 +85,19 @@ public final class QcBot implements Algorithm {
     return tracker;
   }
 
-  private int choose(Snapshot s) {
+  private int choose(Snapshot s, long deadline) {
     if (s.rows * s.cols > MAX_MODEL_CELLS) {
-      return -1;
+      return Tactics.NONE;
     }
     if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
       geometry = new Geometry(s.rows, s.cols);
       board = new Board(geometry);
+      tactics = new Tactics(geometry);
     }
     board.load(s.cells);
-    return centreFirst(board);
-  }
-
-  private static int centreFirst(Board b) {
-    int cols = b.g.cols;
-    for (int i = 0; i < cols; i++) {
-      int c = centreOrder(cols, i);
-      if (!b.isFull(c)) {
-        return c;
-      }
-    }
-    return -1;
+    // on an empty board the colour is unknown, but then no tactic applies to either colour
+    int me = tracker.myColour() != 0 ? tracker.myColour() : tracker.iAmFirst() ? Board.FIRST : Board.SECOND;
+    return tactics.choose(board, me, tracker.myCooldownCounter(), tracker.opponentCooldownCounter(), deadline);
   }
 
   /** Never returns a full column while one is free; works on the field alone. */

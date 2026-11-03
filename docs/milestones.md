@@ -37,3 +37,34 @@ Corrections to the design found while building M0:
   (`getMoveHistory` copies the list, not the `Move` records).
 - The starter ships without `gradlew.bat` and without a toolchain repository; `settings.gradle` now applies the
   foojay resolver so JDK 25 is provisioned automatically.
+
+## M1 Tactical root (2026-11-03)
+
+What exists: `search/Tactics` at the root of `QcBot`. Order: immediate win by a drop, immediate win by a blast
+(valley prefilter); otherwise every normal move is classified by a three-ply check (loses at once / lets the
+opponent force a win / neutral / forces our win), cooldown readiness of both sides tracked through the plies;
+inside a class a window-potential score, then the most central column. A blast is used only to win at once or
+when every normal move loses at once. The three-ply check stops 25 ms after the call starts and is skipped on
+boards wider than 16 columns.
+
+Deviation from design section 6: the design's M1 is strictly one-ply. With one ply the bot lost 3 of 10,000 games
+to `RandomBot` (unstoppable double threats) and scored only 75.7 % against M0 (486 of 1,000 games drawn by a full
+board), so both definition-of-done targets failed. The three-ply check and the window-potential tie-break fixed
+both; they are a stopgap until the M2 search replaces them.
+
+| Check | Command | Result |
+|---|---|---|
+| Suites T1, T3, T5 (graded by brute force with the naive engine copy) | `test -Pqc.suite.positions=30000` | 30,000 positions, all correct: T1 win in 1 11,194/11,194, forced block 10,091/10,091, under an opponent threat cell 2,520/2,520; T3 blast win 712/712, blast negative set 8,873/8,873; T5 blast danger 372/372 |
+| Suite T6 (cooldown edge cases) | `TurnTrackerTest` | unchanged from M0, exact |
+| All M0 tests | `test` | pass (the robustness test now also replays the bot's cooldown counter and asserts every special request has it at 10 or more) |
+
+Matches (`match`, 8x12, 4 random opening plies, colour-swapped pairs, official protocol, final build):
+
+| Opponent | Games | Score | W / D / L | Decided by blast |
+|---|---|---|---|---|
+| `ch.qc.starter.RandomBot` | 10,000 | 100 % | 10,000 / 0 / 0 | 24 |
+| `ch.qc.starter.SpecialMoveBot` | 10,000 | 100 % | 10,000 / 0 / 0 | 33 |
+| `ch.qc.tools.bots.M0Bot` (frozen M0) | 1,000 | 100 % | 1,000 / 0 / 0 | 0 |
+
+QcBot: 0 timeouts, 0 invalid columns, 0 invalid specials. `accelerateQuark` latency against `RandomBot`:
+p50 0.04 ms, p99 2.77 ms, p99.99 28.8 ms, max 31.2 ms (before the 25 ms cut-off the maximum was 63 ms).

@@ -69,17 +69,25 @@ class QcBotRobustnessTest {
       Algorithm other = new SpecialMoveBot();
       QuantumField field = FieldFactory.create(size[0], size[1], bot, other);
       boolean botToMove = true;
+      int botCounter = 0; // the engine's cooldown counter for the bot, replayed independently (R11)
       for (int ply = 0; ply < 3 * size[0] * size[1] && FieldFactory.status(field) == ExperimentStatus.INCOMPLETE; ply++) {
         int col;
+        boolean special;
         if (botToMove) {
           col = bot.accelerateQuark(field);
           assertTrue(col >= 0 && col < size[1] && !field.isColumnFull(col), "bad column " + col);
-          assertTrue(!bot.useSpecialMove(field), "M0 must not request specials");
+          special = bot.useSpecialMove(field);
+          if (special) {
+            assertTrue(botCounter >= 10, "special requested with cooldown counter " + botCounter);
+            botCounter = 0;
+          }
+          botCounter++;
           checked++;
         } else {
           col = rnd.nextInt(size[1]);
+          special = rnd.nextInt(4) == 0;
         }
-        FieldFactory.play(field, col, !botToMove && rnd.nextInt(4) == 0);
+        FieldFactory.play(field, col, special);
         botToMove = !botToMove;
       }
     }

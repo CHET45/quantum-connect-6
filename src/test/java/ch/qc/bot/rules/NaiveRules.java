@@ -5,20 +5,20 @@ package ch.qc.bot.rules;
  * the oracle of the differential test. Mirrors produceCollision, produceSpecialCollision, destroySurroundingDiscs,
  * applyGravity and hasWinner as read from the bytecode.
  */
-final class NaiveRules {
-  final int rows;
-  final int cols;
+public final class NaiveRules {
+  public final int rows;
+  public final int cols;
   final int k;
   final int[][] f;
 
-  NaiveRules(int rows, int cols, int k) {
+  public NaiveRules(int rows, int cols, int k) {
     this.rows = rows;
     this.cols = cols;
     this.k = k;
     f = new int[rows][cols];
   }
 
-  NaiveRules copy() {
+  public NaiveRules copy() {
     NaiveRules n = new NaiveRules(rows, cols, k);
     for (int r = 0; r < rows; r++) {
       n.f[r] = f[r].clone();
@@ -26,7 +26,7 @@ final class NaiveRules {
     return n;
   }
 
-  boolean drop(int col, int colour) {
+  public boolean drop(int col, int colour) {
     for (int r = rows - 1; r >= 0; r--) {
       if (f[r][col] == 0) {
         f[r][col] = colour;
@@ -36,7 +36,7 @@ final class NaiveRules {
     return false;
   }
 
-  boolean special(int col, int colour) {
+  public boolean special(int col, int colour) {
     for (int r = rows - 1; r >= 0; r--) {
       if (f[r][col] == 0) {
         f[r][col] = colour;
@@ -73,7 +73,7 @@ final class NaiveRules {
     }
   }
 
-  boolean hasWinner() {
+  public boolean hasWinner() {
     int[][] dirs = {{1, 0}, {0, 1}, {1, 1}, {1, -1}};
     for (int r = 0; r < rows; r++) {
       for (int c = 0; c < cols; c++) {
@@ -99,7 +99,7 @@ final class NaiveRules {
     return false;
   }
 
-  boolean hasLine(int colour) {
+  public boolean hasLine(int colour) {
     NaiveRules only = copy();
     for (int r = 0; r < rows; r++) {
       for (int c = 0; c < cols; c++) {
@@ -109,6 +109,21 @@ final class NaiveRules {
       }
     }
     return only.hasWinner();
+  }
+
+  /** Builds the engine-oriented grid from cells in Geometry index order. */
+  public static NaiveRules fromCells(int rows, int cols, int k, byte[] cells) {
+    NaiveRules n = new NaiveRules(rows, cols, k);
+    for (int r = 0; r < rows; r++) {
+      for (int c = 0; c < cols; c++) {
+        n.f[r][c] = cells[c * rows + (rows - 1 - r)];
+      }
+    }
+    return n;
+  }
+
+  public boolean isFull(int col) {
+    return f[0][col] != 0;
   }
 
   /** Cells in Geometry index order. */
