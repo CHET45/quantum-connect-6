@@ -31,7 +31,7 @@ cp -r build/classes/java/main build/classes/java/tools "$RUN/"
 trap 'rm -rf "$RUN"' EXIT
 CP="$RUN/main;$RUN/tools;libs/core-2.0-SNAPSHOT.jar"
 "$JB/java.exe" -Xmx3g -cp "$CP" ch.qc.tools.BookBuilder --weights "$WEIGHTS" --minutes "$MINUTES" --threads "$THREADS" \
-  --out "$OUT" "$@" 2>&1 | grep -v "Picked up" &
+  --out "$OUT" "$@" 2>&1 | grep --line-buffered -v "Picked up" &
 if [ "$THREADS" -gt 2 ]; then
   sleep 2
   for P in $(ps -W | grep -i java.exe | awk '{print $4}'); do

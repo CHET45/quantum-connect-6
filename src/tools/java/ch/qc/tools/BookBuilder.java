@@ -69,8 +69,10 @@ public final class BookBuilder {
   private static final int OPP_RANKS = 3;
   private static final int OPP_MARGIN = 128;
   private static final int SCORE_UNIT = 26;
-  private static final double COST_CHOSEN = 0.25;
-  private static final double COST_SERVER = 0.25;
+  private static final double COST_CHOSEN = 0.1;
+  /** A reply strong bots played: often, or once or twice. */
+  private static final double COST_SERVER = 0.1;
+  private static final double COST_SERVER_RARE = 0.25;
   private static final double COST_OPP_BEST = 0.5;
   private static final double COST_OPP = 1.0;
   private static final double COST_OUR_ALT = 1.5;
@@ -84,6 +86,9 @@ public final class BookBuilder {
     final byte[] cells;
     final boolean symmetric;
     boolean analysed;
+    /** Long searches for k candidates; otherwise only for the best (a position only the opponent moves from). */
+    boolean full;
+    boolean wantFull;
     int[] cols = new int[0];
     int[] scores = new int[0];
     boolean[] deep = new boolean[0];
@@ -476,8 +481,13 @@ public final class BookBuilder {
     if (line == null) {
       return false;
     }
+    if (n.analysed) {
+      return false;
+    }
     String[] p = line.split(" ");
-    n.blastBest = p[2].charAt(0) == '1';
+    int flags = Integer.parseInt(p[2]);
+    n.blastBest = (flags & 1) != 0;
+    n.full = (flags & 2) == 0;
     n.blastScore = Integer.parseInt(p[3]);
     n.provenWin = Integer.parseInt(p[4]);
     n.depth = Integer.parseInt(p[5]);
@@ -499,7 +509,7 @@ public final class BookBuilder {
 
   private static String serialise(Node n) {
     StringBuilder sb = new StringBuilder();
-    sb.append(Long.toHexString(n.key)).append(' ').append(n.ply).append(' ').append(n.blastBest ? 1 : 0).append(' ')
+    sb.append(Long.toHexString(n.key)).append(' ').append(n.ply).append(' ').append((n.blastBest ? 1 : 0) | (n.full ? 0 : 2)).append(' ')
         .append(n.blastScore).append(' ').append(n.provenWin).append(' ').append(n.depth);
     for (int i = 0; i < n.cols.length; i++) {
       sb.append(' ').append(n.cols[i]).append(':').append(n.scores[i]).append(':').append(n.deep[i] ? 1 : 0);
@@ -546,25 +556,40 @@ public final class BookBuilder {
     int stm = n.ply % 2 == 0 ? 1 : 2;
     int cdStm = counterStm(n.ply);
     int cdOther = counterOther(n.ply);
-    int[] cols = new int[g.cols];
-    int m = 0;
-    for (int c = 0; c < g.cols; c++) {
-      if (!b.isFull(c) && !(n.symmetric && c > g.cols - 1 - c)) {
-        cols[m++] = c;
+    int[] cols;
+    int[] scores;
+    boolean[] deep;
+    int m;
+    Searcher.Result root = null;
+    if (n.analysed) {
+      // upgrade of a position so far searched only for the opponent's best move
+      cols = n.cols;
+      scores = n.scores;
+      deep = n.deep;
+      m = cols.length;
+    } else {
+      cols = new int[g.cols];
+      m = 0;
+      for (int c = 0; c < g.cols; c++) {
+        if (!b.isFull(c) && !(n.symmetric && c > g.cols - 1 - c)) {
+          cols[m++] = c;
+        }
+      }
+      cols = Arrays.copyOf(cols, m);
+      scores = new int[m];
+      deep = new boolean[m];
+      // the root search finds a win by threats, a blast and the opponent's threats; it also fills the table
+      long rootNodes = cdStm >= 10 ? run.deepNodes : run.scanNodes * 4;
+      root = w.searcher.run(b, stm, cdStm, cdOther, n.ply, Clock.nanos(), NO_TIME_LIMIT, rootNodes);
+      n.depth = root.depth();
+      if (root.move() != Tactics.NONE && root.score() > MATE_BOUND && !Tactics.isSpecial(root.move())) {
+        n.provenWin = Tactics.column(root.move());
+      }
+      for (int i = 0; i < m; i++) {
+        scores[i] = childScore(w, g, b, cols[i], stm, cdStm, cdOther, n.ply, run.scanNodes);
       }
     }
-    int[] scores = new int[m];
-    boolean[] deep = new boolean[m];
-    // the root search finds a win by threats, a blast and the opponent's threats; it also fills the table
-    long rootNodes = cdStm >= 10 ? run.deepNodes : run.scanNodes * 4;
-    Searcher.Result root = w.searcher.run(b, stm, cdStm, cdOther, n.ply, Clock.nanos(), NO_TIME_LIMIT, rootNodes);
-    n.depth = root.depth();
-    if (root.move() != Tactics.NONE && root.score() > MATE_BOUND && !Tactics.isSpecial(root.move())) {
-      n.provenWin = Tactics.column(root.move());
-    }
-    for (int i = 0; i < m; i++) {
-      scores[i] = childScore(w, g, b, cols[i], stm, cdStm, cdOther, n.ply, run.scanNodes);
-    }
+    int k = n.wantFull ? run.k : 1;
     Integer[] order = new Integer[m];
     for (int i = 0; i < m; i++) {
       order[i] = i;
@@ -572,8 +597,11 @@ public final class BookBuilder {
     final int[] s0 = scores;
     Arrays.sort(order, Comparator.comparingInt((Integer i) -> -s0[i]));
     // long search of the best few; a move that climbs to the top afterwards gets one too
-    for (int i = 0; i < Math.min(run.k, m); i++) {
+    for (int i = 0; i < Math.min(k, m); i++) {
       int x = order[i];
+      if (deep[x]) {
+        continue;
+      }
       if (Math.abs(scores[x]) <= MATE_BOUND) {
         scores[x] = childScore(w, g, b, cols[x], stm, cdStm, cdOther, n.ply, run.deepNodes);
       }
@@ -581,7 +609,7 @@ public final class BookBuilder {
     }
     // a move strong bots really played gets a long search too unless it scores far below the best
     Seen seen = run.seen.get(n.key);
-    if (seen != null) {
+    if (seen != null && n.wantFull) {
       int top = -Searcher.MATE;
       for (int i = 0; i < m; i++) {
         top = Math.max(top, scores[i]);
@@ -614,13 +642,15 @@ public final class BookBuilder {
     for (int i = 0; i < m; i++) {
       bestDrop = Math.max(bestDrop, scores[i]);
     }
-    if (root.move() != Tactics.NONE && Tactics.isSpecial(root.move()) && root.score() >= bestDrop - SCORE_UNIT) {
+    if (root != null && root.move() != Tactics.NONE && Tactics.isSpecial(root.move())
+        && root.score() >= bestDrop - SCORE_UNIT) {
       n.blastBest = true;
       n.blastScore = root.score();
     }
-    n.cols = Arrays.copyOf(cols, m);
+    n.cols = cols;
     n.scores = scores;
     n.deep = deep;
+    n.full = n.wantFull;
     finish(run, n);
   }
 
@@ -711,6 +741,7 @@ public final class BookBuilder {
   private static List<Node> frontier(SizeRun run) {
     Map<Long, Double> costs = new HashMap<>();
     if (!run.root.analysed) {
+      run.root.wantFull = true;
       return List.of(run.root);
     }
     for (int tree = 0; tree < 2; tree++) {
@@ -725,7 +756,9 @@ public final class BookBuilder {
   }
 
   private static void walk(SizeRun run, Node n, int tree, double cost, Map<Long, Double> visited, Map<Long, Double> frontier) {
-    if (!n.analysed) {
+    boolean ours = n.ply % 2 == tree;
+    if (!n.analysed || (ours && !n.full)) {
+      n.wantFull |= ours;
       frontier.merge(n.key, cost, Math::min);
       return;
     }
@@ -737,7 +770,6 @@ public final class BookBuilder {
     if (n.ply >= run.maxPly || n.blastBest || n.provenWin >= 0 || Math.abs(n.value) > MATE_BOUND) {
       return;
     }
-    boolean ours = n.ply % 2 == tree;
     int m = n.cols.length;
     Integer[] order = new Integer[m];
     int[] v = new int[m];
@@ -753,7 +785,8 @@ public final class BookBuilder {
         continue;
       }
       Node child = run.nodes.get(n.childKey[i]);
-      if (child == null || child.ply > run.maxPly) {
+      // the last ply matters only if we move there
+      if (child == null || child.ply > run.maxPly || (child.ply == run.maxPly && child.ply % 2 != tree)) {
         continue;
       }
       double d = (n.value - v[i]) / (double) SCORE_UNIT;
@@ -767,7 +800,7 @@ public final class BookBuilder {
           continue;
         }
       } else if (seen != null && seen.plays(n.cols[i]) > 0) {
-        step = COST_SERVER;
+        step = seen.plays(n.cols[i]) >= 3 ? COST_SERVER : COST_SERVER_RARE;
       } else if (r == 0) {
         step = COST_OPP_BEST;
       } else if (r < OPP_RANKS && n.value - v[i] <= OPP_MARGIN) {
@@ -782,7 +815,7 @@ public final class BookBuilder {
   private static List<Node> entries(SizeRun run) {
     List<Node> list = new ArrayList<>();
     for (Node n : run.nodes.values()) {
-      if (n.analysed && n.choice >= 0 && !n.blastBest && n.ply <= run.maxPly && n.value >= -MATE_BOUND) {
+      if (n.analysed && n.full && n.choice >= 0 && !n.blastBest && n.ply <= run.maxPly && n.value >= -MATE_BOUND) {
         list.add(n);
       }
     }
