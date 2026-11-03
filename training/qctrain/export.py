@@ -12,13 +12,13 @@ SCALE = 256
 HEADER = ">iiiiqiiiiiiii"
 
 
-def fold(model):
+def fold(model, scale=SCALE):
     """Integer tables (numpy int16) from the model's components: W [S, C, P], T1 [C, t1], T2 [C, t2], T3 [t3]."""
     v = {k: t.detach().double().cpu().numpy() for k, t in model.component_views().items()}
     w = v["base"][None, None, :] + v["stage"][:, None, :] + v["cd"][None, :, :]
 
     def q(x):
-        r = np.rint(x * SCALE)
+        r = np.rint(x * scale)
         if np.abs(r).max() > 32767:
             raise ValueError("weight outside int16 after scaling")
         return r.astype(np.int16)
@@ -30,8 +30,8 @@ def signed64(x):
     return x - (1 << 64) if x >= 1 << 63 else x
 
 
-def write(path, spec, tables):
-    head = b"QCW1" + struct.pack(HEADER, 1, spec.rows, spec.cols, spec.k, signed64(spec.spec_hash), SCALE,
+def write(path, spec, tables, scale=SCALE):
+    head = b"QCW1" + struct.pack(HEADER, 1, spec.rows, spec.cols, spec.k, signed64(spec.spec_hash), scale,
                                  spec.stages, spec.cd_contexts, spec.classes, spec.codes, spec.t1, spec.t2, spec.t3)
     body = b"".join(tables[k].astype(">i2").tobytes() for k in ("W", "T1", "T2", "T3"))
     with open(path, "wb") as f:

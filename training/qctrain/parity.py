@@ -56,7 +56,8 @@ def main():
     args = ap.parse_args()
     spec = spec_mod.load(args.spec)
     # a blob fitted with --no-stage has one stage (see export.HEADER: version, rows, cols, k, hash, scale, stages)
-    stages = struct.unpack_from(export.HEADER, zlib.decompress(open(os.path.join(args.model, "eval.qcw"), "rb").read()), 4)[6]
+    header = struct.unpack_from(export.HEADER, zlib.decompress(open(os.path.join(args.model, "eval.qcw"), "rb").read()), 4)
+    scale, stages = header[5], header[6]
     if stages != spec.stages:
         spec = dataclasses.replace(spec, stages=stages)
     recs, _, _ = data.read_dirs(args.data)
@@ -74,7 +75,7 @@ def main():
     with torch.no_grad():
         q = m(torch.as_tensor(cells), torch.as_tensor(stm), torch.as_tensor(stage), torch.as_tensor(cd),
               torch.as_tensor(t1), torch.as_tensor(t2), torch.as_tensor(t3)).numpy()
-    err = np.abs(ints / 256.0 - q).max()
+    err = np.abs(ints / scale - q).max()
     out = os.path.join(args.model, f"parity-{spec.rows}x{spec.cols}.qpv")
     with open(out, "wb") as f:
         f.write(b"QPV1" + struct.pack("<ii", len(recs), spec.rows * spec.cols))

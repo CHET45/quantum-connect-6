@@ -65,6 +65,7 @@ def main():
     ap.add_argument("--patience", type=int, default=3)
     ap.add_argument("--warm", default=None, help="theta.pt of an earlier generic model")
     ap.add_argument("--no-stage", action="store_true", help="one window table for all game stages")
+    ap.add_argument("--scale", type=int, default=1024, help="units per logit in the blob, 256 or 1024")
     args = ap.parse_args()
     torch.manual_seed(1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -148,9 +149,9 @@ def main():
         report["sets"].append(entry)
     os.makedirs(args.out, exist_ok=True)
     torch.save(theta.detach().cpu(), os.path.join(args.out, "theta.pt"))
-    tables = export.fold(sets[0]["model"])
+    tables = export.fold(sets[0]["model"], args.scale)
     blob_spec = dataclasses.replace(sets[0]["spec"], rows=0, cols=0, spec_hash=sets[0]["hash"])
-    export.write(os.path.join(args.out, "eval.qcw"), blob_spec, tables)
+    export.write(os.path.join(args.out, "eval.qcw"), blob_spec, tables, args.scale)
     with open(os.path.join(args.out, "fit-report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
     print(json.dumps({k: v for k, v in report.items() if k != "history"}), flush=True)

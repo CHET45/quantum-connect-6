@@ -25,10 +25,9 @@ public final class Searcher {
   private static final int MAX_DEPTH = 64;
   private static final int COOLDOWN = 10;
   private static final int MAX_TURNS = 1000;
-  /** Clock polling interval in nodes; nodes on boards above 400 cells cost much more (blast copies, eval). */
-  private static final int POLL_MASK = 255;
-  private static final int POLL_MASK_LARGE = 15;
   private static final int EBF = 3;
+  /** blastWinMinDepth that keeps the winning-blast scan at every node. */
+  private static final int ALL_DEPTHS = -1000;
 
   /** Search outcome; vcfNodes and vcfProofs count the threat-search work of this call. */
   public static final class Result {
@@ -93,10 +92,15 @@ public final class Searcher {
    * Contempt (1/256 logit) scores a draw as that much worse than equal for the searching side and as that much
    * better for its opponent, so the bot plays on from an unclear position rather than take a draw, but still takes
    * a draw over a position clearly lost. A Searcher with contempt must search for one colour only (its TT keeps
-   * draw scores from that colour's view).
+   * draw scores from that colour's view). ebf: no new iteration starts past 1/ebf of the hard stop, 0 uses the whole
+   * budget (fixed-node runs keep the node rule). blastWinMinDepth: the winning-blast scan, costly at leaves on large
+   * boards, runs only with at least this much depth left. blastMargin (1/256 logit): a non-winning root blast must
+   * beat the other moves by this much. lmrFrom: quiet drops from this index in the move order on, with no threat to
+   * answer and at least 3 plies left, are searched one ply shallower (two from twice that index with at least 5 plies
+   * left) and again in full if they beat alpha; 0 turns this off.
    */
   public static final class Options {
-    public static final Options DEFAULT = new Options(true, true, false, true, false);
+    public static final Options DEFAULT = new Options(true, true, false, true, false, 0, 0, 1, 0, 0);
     public static final Options NONE = new Options(false, false, false, true, false);
 
     public final boolean rootVcf;
@@ -105,6 +109,10 @@ public final class Searcher {
     public final boolean exactLeaves;
     public final boolean razor;
     public final int contempt;
+    public final int ebf;
+    public final int blastWinMinDepth;
+    public final int blastMargin;
+    public final int lmrFrom;
 
     public Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor) {
       this(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, 0);
@@ -112,12 +120,50 @@ public final class Searcher {
 
     public Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor,
         int contempt) {
+      this(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, EBF, ALL_DEPTHS, 0, 0);
+    }
+
+    private Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor,
+        int contempt, int ebf, int blastWinMinDepth, int blastMargin, int lmrFrom) {
       this.rootVcf = rootVcf;
       this.opponentVcf = opponentVcf;
       this.leafVcf = leafVcf;
       this.exactLeaves = exactLeaves;
       this.razor = razor;
       this.contempt = contempt;
+      this.ebf = ebf;
+      this.blastWinMinDepth = blastWinMinDepth;
+      this.blastMargin = blastMargin;
+      this.lmrFrom = lmrFrom;
+    }
+
+    public Options withSwitches(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves,
+        boolean razor) {
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, blastWinMinDepth,
+          blastMargin, lmrFrom);
+    }
+
+    public Options withContempt(int v) {
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, v, ebf, blastWinMinDepth, blastMargin,
+          lmrFrom);
+    }
+
+    public Options withEbf(int v) {
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, v, blastWinMinDepth, blastMargin,
+          lmrFrom);
+    }
+
+    public Options withBlastWinMinDepth(int v) {
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, v, blastMargin, lmrFrom);
+    }
+
+    public Options withBlastMargin(int v) {
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, blastWinMinDepth, v, lmrFrom);
+    }
+
+    public Options withLmrFrom(int v) {
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, blastWinMinDepth, blastMargin,
+          v);
     }
   }
 
@@ -240,7 +286,8 @@ public final class Searcher {
     this.tt = tt;
     this.options = options;
     this.leafVcf = options.leafVcf && g.cells <= LEAF_VCF_MAX_CELLS;
-    this.pollMask = g.cells > LEAF_VCF_MAX_CELLS ? POLL_MASK_LARGE : POLL_MASK;
+    // a node costs about the window count (full sums, blast copies), so the polling interval follows it
+    this.pollMask = g.windows <= 200 ? 63 : g.windows <= 500 ? 31 : 15;
     this.vcfTable = vcfTable;
     SplittableRandom rnd = new SplittableRandom(0x7C0FFEE5EA4C4L);
     zStm = rnd.nextLong();
@@ -357,9 +404,13 @@ public final class Searcher {
       int alpha = -INF;
       for (int i = 0; i < n && !x.stop; i++) {
         int m = moves[i];
-        int score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha, i == 0);
+        int margin = Tactics.isSpecial(m) ? options.blastMargin : 0;
+        int score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, i == 0);
         if (x.stop) {
           break;
+        }
+        if (Math.abs(score) <= MATE_BOUND) {
+          score -= margin;
         }
         scores[i] = score;
         if (score > iterScore) {
@@ -383,7 +434,8 @@ public final class Searcher {
       completed = depth;
       sortByScore(moves, scores, n);
       long elapsed = Clock.nanos() - startNanos;
-      if (Math.abs(bestScore) > MATE_BOUND || n == 1 || elapsed * EBF > hardNanos || x.nodes * EBF > maxNodes) {
+      if (Math.abs(bestScore) > MATE_BOUND || n == 1 || (options.ebf > 0 && elapsed * options.ebf > hardNanos)
+          || x.nodes * EBF > maxNodes) {
         break;
       }
     }
@@ -509,7 +561,7 @@ public final class Searcher {
       }
     }
     boolean ready = cdStm >= COOLDOWN;
-    if (ready && blastWins(x, b, ply)) {
+    if (ready && depth >= options.blastWinMinDepth && blastWins(x, b, ply)) {
       return MATE - ply - 1;
     }
     if (oppThreats >= 2 && !ready) {
@@ -626,9 +678,20 @@ public final class Searcher {
       int s;
       if (!Tactics.isSpecial(m)) {
         boolean win = b.make(c, stm);
-        s = win ? MATE - ply - 1
-            : b.topRowFull() ? draw(ply)
-            : pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, i == 0);
+        int lmr = options.lmrFrom;
+        int red = lmr == 0 || i < lmr || depth < 3 || oppThreats > 0 ? 0 : i >= 2 * lmr && depth >= 5 ? 2 : 1;
+        if (win) {
+          s = MATE - ply - 1;
+        } else if (b.topRowFull()) {
+          s = draw(ply);
+        } else if (red > 0) {
+          s = -search(x, b, opp, cdOpp, nextCdOpp, depth - 1 - red, -alpha - 1, -alpha, ply + 1, false);
+          if (!x.stop && s > alpha) {
+            s = pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, false);
+          }
+        } else {
+          s = pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, i == 0);
+        }
         b.unmake(c);
       } else {
         Board child = x.pool(ply);

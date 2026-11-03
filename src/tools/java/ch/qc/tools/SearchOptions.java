@@ -3,7 +3,8 @@ package ch.qc.tools;
 import ch.qc.bot.search.Searcher.Options;
 
 /**
- * Parses harness search-option specs such as "+razor,-leafVcf" or "contempt=64" (applied to {@link Options#DEFAULT}).
+ * Parses harness search-option specs such as "+razor,-leafVcf" or "ebf=0,wd=1,margin=64" (applied to
+ * {@link Options#DEFAULT}; contempt, ebf, wd = blastWinMinDepth, margin = blastMargin, lmr = lmrFrom).
  */
 public final class SearchOptions {
   private SearchOptions() {}
@@ -15,20 +16,27 @@ public final class SearchOptions {
       if (part.isEmpty()) {
         continue;
       }
-      if (part.startsWith("contempt=")) {
-        int c = Integer.parseInt(part.substring(9));
-        o = new Options(o.rootVcf, o.opponentVcf, o.leafVcf, o.exactLeaves, o.razor, c);
+      int eq = part.indexOf('=');
+      if (eq > 0) {
+        int v = Integer.parseInt(part.substring(eq + 1));
+        o = switch (part.substring(0, eq)) {
+          case "contempt" -> o.withContempt(v);
+          case "ebf" -> o.withEbf(v);
+          case "wd" -> o.withBlastWinMinDepth(v);
+          case "margin" -> o.withBlastMargin(v);
+          case "lmr" -> o.withLmrFrom(v);
+          default -> throw new IllegalArgumentException("unknown search option " + part);
+        };
         continue;
       }
       boolean on = !part.startsWith("-");
       String name = part.replaceFirst("^[+-]", "");
-      int ct = o.contempt;
       o = switch (name) {
-        case "rootVcf" -> new Options(on, o.opponentVcf, o.leafVcf, o.exactLeaves, o.razor, ct);
-        case "opponentVcf" -> new Options(o.rootVcf, on, o.leafVcf, o.exactLeaves, o.razor, ct);
-        case "leafVcf" -> new Options(o.rootVcf, o.opponentVcf, on, o.exactLeaves, o.razor, ct);
-        case "exactLeaves" -> new Options(o.rootVcf, o.opponentVcf, o.leafVcf, on, o.razor, ct);
-        case "razor" -> new Options(o.rootVcf, o.opponentVcf, o.leafVcf, o.exactLeaves, on, ct);
+        case "rootVcf" -> o.withSwitches(on, o.opponentVcf, o.leafVcf, o.exactLeaves, o.razor);
+        case "opponentVcf" -> o.withSwitches(o.rootVcf, on, o.leafVcf, o.exactLeaves, o.razor);
+        case "leafVcf" -> o.withSwitches(o.rootVcf, o.opponentVcf, on, o.exactLeaves, o.razor);
+        case "exactLeaves" -> o.withSwitches(o.rootVcf, o.opponentVcf, o.leafVcf, on, o.razor);
+        case "razor" -> o.withSwitches(o.rootVcf, o.opponentVcf, o.leafVcf, o.exactLeaves, on);
         case "noVcf" -> Options.NONE;
         default -> throw new IllegalArgumentException("unknown search option " + name);
       };

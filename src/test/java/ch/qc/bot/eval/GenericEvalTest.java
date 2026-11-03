@@ -20,6 +20,10 @@ class GenericEvalTest {
   private static final int[][] SIZES = {{8, 12}, {15, 11}, {15, 22}, {6, 7}};
 
   static byte[] genericBlob(int stages, long seed) throws Exception {
+    return genericBlob(stages, seed, 256);
+  }
+
+  static byte[] genericBlob(int stages, long seed, int scale) throws Exception {
     SplittableRandom rnd = new SplittableRandom(seed);
     int codes = 729;
     ByteArrayOutputStream raw = new ByteArrayOutputStream();
@@ -29,7 +33,7 @@ class GenericEvalTest {
         out.writeInt(x);
       }
       out.writeLong(GenericSpec.hash(6));
-      for (int x : new int[] {256, stages, Features.CD_CONTEXTS, GenericSpec.CLASSES, codes, Features.T1_SIZE,
+      for (int x : new int[] {scale, stages, Features.CD_CONTEXTS, GenericSpec.CLASSES, codes, Features.T1_SIZE,
           Features.T2_SIZE, Features.T3_SIZE}) {
         out.writeInt(x);
       }
@@ -89,6 +93,18 @@ class GenericEvalTest {
         sum += blob.t3[Features.t3(packed)];
         assertEquals(sum, e.rawSum(b, stm, cdStm, cdOpp), size[0] + "x" + size[1]);
       }
+    }
+  }
+
+  @Test
+  void fineScaleIsReportedInTheUsualUnits() throws Exception {
+    Geometry g = new Geometry(15, 11);
+    GenericEval coarse = GenericTables.fromBlob(WeightFiles.parse(genericBlob(1, 7, 256))).forGeometry(g);
+    GenericEval fine = GenericTables.fromBlob(WeightFiles.parse(genericBlob(1, 7, 1024))).forGeometry(g);
+    SplittableRandom rnd = new SplittableRandom(8);
+    for (int n = 0; n < 50; n++) {
+      Board b = randomBoard(g, rnd, rnd.nextInt(g.cells));
+      assertEquals(coarse.rawSum(b, 1, 3, 5) >> 2, fine.rawSum(b, 1, 3, 5));
     }
   }
 

@@ -29,10 +29,12 @@ public final class QcBot implements Algorithm {
   /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
   static final int MAX_MODEL_CELLS = 4096;
   /** Hard stop of the search, measured from the entry of accelerateQuark (design 2.8). */
-  static final long HARD_NANOS = 45_000_000L;
+  static final long HARD_NANOS = 80_000_000L;
   static final long FIRST_CALL_HARD_NANOS = 30_000_000L;
   /** Search is limited to boards whose column index fits the transposition-table move field. */
   static final int MAX_SEARCH_COLS = 255;
+  /** Board sizes seen on the server: their tables are built in the constructor, outside any timed call. */
+  private static final int[][] PREPARED_SIZES = {{8, 12}, {15, 11}, {15, 22}};
   /** Budget of the fallback tactics. */
   static final long TACTICS_NANOS = 10_000_000L;
 
@@ -43,6 +45,8 @@ public final class QcBot implements Algorithm {
   private final TranspositionTable tt;
   private final Searcher.Options options;
   private final Vcf.Table vcfTable;
+  private final Geometry[] preparedGeometry = new Geometry[PREPARED_SIZES.length];
+  private final Searcher[] preparedSearcher = new Searcher[PREPARED_SIZES.length];
   private Geometry geometry;
   private Searcher searcher;
   private int calls;
@@ -59,6 +63,27 @@ public final class QcBot implements Algorithm {
     tt = TranspositionTable.forBot();
     Weights.preload();
     vcfTable = new Vcf.Table(16);
+    for (int i = 0; i < PREPARED_SIZES.length; i++) {
+      preparedGeometry[i] = new Geometry(PREPARED_SIZES[i][0], PREPARED_SIZES[i][1]);
+      preparedSearcher[i] = newSearcher(preparedGeometry[i]);
+    }
+  }
+
+  private Searcher newSearcher(Geometry g) {
+    Evaluator learned = Weights.forGeometry(g);
+    return new Searcher(g, learned != null ? learned : new HandEval(g), tt, options, vcfTable);
+  }
+
+  private void useBoardSize(int rows, int cols) {
+    for (int i = 0; i < PREPARED_SIZES.length; i++) {
+      if (preparedGeometry[i].sameSize(rows, cols)) {
+        geometry = preparedGeometry[i];
+        searcher = preparedSearcher[i];
+        return;
+      }
+    }
+    geometry = new Geometry(rows, cols);
+    searcher = newSearcher(geometry);
   }
 
   @Override
@@ -125,9 +150,7 @@ public final class QcBot implements Algorithm {
       return Tactics.NONE;
     }
     if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
-      geometry = new Geometry(s.rows, s.cols);
-      Evaluator learned = Weights.forGeometry(geometry);
-      searcher = new Searcher(geometry, learned != null ? learned : new HandEval(geometry), tt, options, vcfTable);
+      useBoardSize(s.rows, s.cols);
     }
     // a fresh board per call: a search that outlived its call may still be walking the previous one
     Board board = new Board(geometry);
@@ -139,7 +162,8 @@ public final class QcBot implements Algorithm {
     int cdMe = tracker.myCooldownCounter();
     int cdOpp = tracker.opponentCooldownCounter();
     if (s.cols <= MAX_SEARCH_COLS) {
-      long hard = firstCall ? FIRST_CALL_HARD_NANOS : clock.budget(t0, tracker.plyIndex(), HARD_NANOS, lastScore);
+      long hard = firstCall ? FIRST_CALL_HARD_NANOS
+          : clock.budget(t0, tracker.plyIndex(), HARD_NANOS, lastScore, s.rows * s.cols - s.discs);
       Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0, hard);
       lastResult = r;
       if (r.move() != Tactics.NONE) {

@@ -10,6 +10,7 @@ public final class GenericTables {
   private final int k;
   private final short[][] w;
   private final boolean staged;
+  private final int shift;
   private final short[] t1;
   private final short[] t2;
   private final short[] t3;
@@ -19,6 +20,7 @@ public final class GenericTables {
     k = blob.k;
     w = GenericEval.contexts(blob);
     staged = blob.stages == Features.STAGES;
+    shift = blob.scale == 1024 ? 2 : 0;
     t1 = blob.t1;
     t2 = blob.t2;
     t3 = blob.t3;
@@ -36,7 +38,7 @@ public final class GenericTables {
     }
     GenericEval e = last;
     if (e == null || !e.fits(g)) {
-      e = new GenericEval(g, w, staged, t1, t2, t3);
+      e = new GenericEval(g, w, staged, shift, t1, t2, t3);
       last = e;
     }
     return e;

@@ -44,6 +44,9 @@ def read_dirs(dirs):
     meta0 = None
     for d in dirs:
         for i, path in enumerate(sorted(glob.glob(os.path.join(d, "shard-*.qcp")))):
+            # a shard still being written may not have its header on disk yet
+            if os.path.getsize(path) < HEADER:
+                continue
             recs, meta = read_shard(path)
             if meta0 is None:
                 meta0 = meta

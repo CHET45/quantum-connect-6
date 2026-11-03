@@ -3,8 +3,9 @@ package ch.qc.bot;
 /**
  * Time per move under the server's shared match clock: a game still running after 30 s of wall-clock time (both
  * bots together) is a draw. From the time used per ply so far the clock estimates how many plies are left; when
- * few are, the hard stop shrinks so a won or level game ends before the draw, the faster the better our last
- * search score. A worse position keeps the full stop, since a draw on time is then good for us.
+ * they will not cover what the board can still need, the hard stop shrinks so a won or level game ends before the
+ * draw, the faster the better our last search score. A worse position keeps the full stop, since a draw on time is
+ * then good for us.
  */
 final class MatchClock {
   static final long MATCH_NANOS = 30_000_000_000L;
@@ -15,6 +16,8 @@ final class MatchClock {
   /** Above this many estimated plies left the full stop is used; at RUSH_PLIES and below the minimum. */
   static final int CALM_PLIES = 150;
   static final int RUSH_PLIES = 30;
+  /** Plies a game can last beyond its empty cells: blasts empty cells again. */
+  static final int BLAST_PLIES = 30;
   static final long WINNING_MIN_NANOS = 15_000_000L;
   static final long LEVEL_MIN_NANOS = 30_000_000L;
   /** Search scores (1/256 logit, our view) at or above WINNING are a winning position, at or below WORSE worse. */
@@ -33,11 +36,11 @@ final class MatchClock {
   }
 
   /** Hard stop for this move: base, or less when the match clock runs out and we are not worse. */
-  long budget(long t0, int ply, long base, int lastScore) {
-    return budgetFor(t0 - start, ply - startPly, base, lastScore);
+  long budget(long t0, int ply, long base, int lastScore, int emptyCells) {
+    return budgetFor(t0 - start, ply - startPly, base, lastScore, emptyCells);
   }
 
-  static long budgetFor(long elapsed, int plies, long base, int lastScore) {
+  static long budgetFor(long elapsed, int plies, long base, int lastScore, int emptyCells) {
     if (plies < MIN_SAMPLE_PLIES || elapsed <= 0 || lastScore <= WORSE) {
       return base;
     }
@@ -47,12 +50,13 @@ final class MatchClock {
       return min;
     }
     long pliesLeft = left / (elapsed / plies + 1);
-    if (pliesLeft >= CALM_PLIES) {
+    long need = Math.min(CALM_PLIES, emptyCells + BLAST_PLIES);
+    if (pliesLeft >= need) {
       return base;
     }
     if (pliesLeft <= RUSH_PLIES) {
       return min;
     }
-    return min + (base - min) * (pliesLeft - RUSH_PLIES) / (CALM_PLIES - RUSH_PLIES);
+    return min + (base - min) * (pliesLeft - RUSH_PLIES) / (need - RUSH_PLIES);
   }
 }
