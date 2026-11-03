@@ -42,3 +42,7 @@ bin/
 ### Mac OS ###
 .DS_Store
 .idea
+
+### Quantum Connect bot ###
+data/
+results/

@@ -1,3 +1,29 @@
+# QcBot
+
+A Quantum Connect bot built from the design in [`docs/pattern-bot-design.md`](docs/pattern-bot-design.md)
+(milestones M0-M7). The uploadable class is `ch.qc.bot.QcBot`; everything below `src/tools` and `src/test` is
+harness code and is not packaged into the jar.
+
+| Path | What it is |
+| ---- | ---------- |
+| `src/main/java/ch/qc/bot/QcBot.java` | The bot: per-call snapshot, turn tracking, guarded two-call protocol |
+| `src/main/java/ch/qc/bot/TurnTracker.java` | Own turn index and both special-move cooldown counters |
+| `src/main/java/ch/qc/bot/rules/` | `Geometry` (windows), `Tables` (window codes), `Board` (moves, blasts, threat cells, hash) |
+| `src/test/java/` | Conformance against the official engine, differential test against a naive rule copy, tracker and robustness tests |
+| `src/tools/java/ch/qc/tools/` | `MatchMain` (colour-swapped match runner), `PackagingProbe`, `BotProbe` (latency and legality checks) |
+
+Commands (the Gradle wrapper downloads JDK 25 if needed):
+
+```
+./gradlew test                                   # all tests at their default size
+./gradlew test -Pqc.diff.positions=10000000 -Pqc.robust.calls=100000 -Pqc.conf.games=5000
+./gradlew match -Pargs="--b ch.qc.starter.SpecialMoveBot --pairs 200"
+./gradlew build probe                            # jar, then load it through an isolated class loader
+./gradlew run                                    # emulator window: QcBot vs SpecialMoveBot
+```
+
+---
+
 # Quantum Connect starter project
 
 This is a ready-to-use project to write, test and package your own Quantum Connect bot. It already

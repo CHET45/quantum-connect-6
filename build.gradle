@@ -10,9 +10,30 @@ repositories {
     mavenCentral()
 }
 
+// Harness and tooling (match runner, packaging probe); never part of the uploaded jar
+sourceSets {
+    tools {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    toolsImplementation.extendsFrom implementation
+    toolsRuntimeOnly.extendsFrom runtimeOnly
+}
+
+// tests reuse the harness wrappers from the tools source set
+sourceSets.test.compileClasspath += sourceSets.tools.output
+sourceSets.test.runtimeClasspath += sourceSets.tools.output
+
 dependencies {
     implementation "ch.qos.logback:logback-classic:1.5.18"
     implementation fileTree(dir: 'libs')
+
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
 java {
@@ -26,6 +47,19 @@ application {
     mainClass = 'EmulatorRunner'
 }
 
+// Project properties named qc.* (for example -Pqc.diff.positions=10000000) become system properties of the test JVM
+def qcProperties = providers.gradlePropertiesPrefixedBy('qc.')
+
+test {
+    useJUnitPlatform()
+    maxHeapSize = '2g'
+    systemProperties qcProperties.get()
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat = 'full'
+        showStandardStreams = true
+    }
+}
 
 jar {
     from sourceSets.main.output
@@ -37,9 +71,29 @@ jar {
     // Your changes here, change your bot class
     manifest {
         attributes(
-                'Bot-Class': 'ch.qc.starter.RandomBot',
+                'Bot-Class': 'ch.qc.bot.QcBot',
                 'Main-Class': 'EmulatorRunner'
         )
     }
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// ./gradlew match -Pargs="--a ch.qc.bot.QcBot --b ch.qc.starter.RandomBot --pairs 100"
+tasks.register('match', JavaExec) {
+    group = 'verification'
+    description = 'Plays a fixed number of colour-swapped game pairs through the official engine'
+    classpath = sourceSets.tools.runtimeClasspath
+    mainClass = 'ch.qc.tools.MatchMain'
+    maxHeapSize = '2g'
+    args((project.findProperty('args') ?: '').toString().split(' ').findAll { !it.isBlank() })
+}
+
+// Loads the built jar through a URLClassLoader in a fresh JVM, like an upload harness would
+tasks.register('probe', JavaExec) {
+    group = 'verification'
+    description = 'Checks that the uploadable jar loads and plays in isolation'
+    dependsOn jar
+    classpath = sourceSets.tools.runtimeClasspath
+    mainClass = 'ch.qc.tools.PackagingProbe'
+    args(jar.archiveFile.get().asFile.absolutePath)
 }

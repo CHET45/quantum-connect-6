@@ -1,0 +1,12 @@
+<configuration>
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%-5level %logger{20} - %msg%n</pattern>
+    </encoder>
+  </appender>
+  <!-- the engine logs an ERROR line for every forfeited turn; the conformance scripts forfeit on purpose -->
+  <logger name="ch.cern.quantumconnect" level="OFF"/>
+  <root level="WARN">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</configuration>
