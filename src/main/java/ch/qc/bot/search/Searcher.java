@@ -201,6 +201,10 @@ public final class Searcher {
    * limits the heap). A call that is still running (abandoned by the engine) keeps its own.
    */
   private volatile Ctx idle;
+  /** See {@link #setStallLimit}; 0 is off. */
+  private long stallLimit;
+  /** Longest time between two clock polls of the last finished search. */
+  private volatile long lastMaxGap;
 
   /** Mutable state of one search call. */
   private static final class Ctx {
@@ -212,6 +216,11 @@ public final class Searcher {
     long nodes;
     /** Set by the first poll past a limit; from then on every search call returns at once. */
     boolean stop;
+    /** Time of the last clock poll, the longest gap between polls, and the start of the call. */
+    long lastPoll;
+    long maxGap;
+    long start;
+    long stallLimit;
     final int[][] moves = new int[MAX_PLY][];
     final int[][] order = new int[MAX_PLY][];
     final int[][] killers = new int[MAX_PLY][2];
@@ -318,6 +327,20 @@ public final class Searcher {
   }
 
   /**
+   * The clock polls double as a stall sensor: a long gap between two polls means this thread lost its CPU (compiler
+   * threads, throttling) or runs very slow code. With a limit set, a gap g moves the deadline of the running search to
+   * at most limit - g after its start, because the next such gap could come just before the stop.
+   */
+  public void setStallLimit(long nanos) {
+    stallLimit = nanos;
+  }
+
+  /** Longest time between two clock polls of the last finished search. */
+  public long lastMaxGapNanos() {
+    return lastMaxGap;
+  }
+
+  /**
    * Searches the position for colour me and returns the best move found before the hard deadline.
    *
    * @param cdMe engine cooldown counter of me before this turn
@@ -344,6 +367,10 @@ public final class Searcher {
     } else {
       x.reset(myToken, startNanos + hardNanos, maxNodes, turnIndex);
     }
+    x.start = startNanos;
+    x.lastPoll = startNanos;
+    x.maxGap = 0;
+    x.stallLimit = stallLimit;
     int opp = 3 - me;
     cdMe = Math.min(cdMe, COOLDOWN);
     cdOpp = Math.min(cdOpp, COOLDOWN);
@@ -395,6 +422,7 @@ public final class Searcher {
           Math.min(hardDeadline, Clock.nanos() + OPP_VCF_NANOS));
     }
 
+    x.lastPoll = Clock.nanos();
     int best = moves[0];
     int bestScore = -INF;
     int completed = 0;
@@ -448,6 +476,7 @@ public final class Searcher {
     long vp = x.vcf.proofs + (two ? x.leafVcf.proofs : 0);
     long br = x.vcf.blastRefutations + (two ? x.leafVcf.blastRefutations : 0);
     Result r = new Result(move, score, depth, x.nodes, Clock.nanos() - startNanos, vn, vp, br);
+    lastMaxGap = x.maxGap;
     idle = x;
     return r;
   }
@@ -754,7 +783,16 @@ public final class Searcher {
 
   /** Checks the limits; returns true (and sets the stop flag) once the search must end. */
   private boolean poll(Ctx x) {
-    if (x.nodes > x.maxNodes || Clock.nanos() > x.deadline || token != x.token) {
+    long now = Clock.nanos();
+    long gap = now - x.lastPoll;
+    x.lastPoll = now;
+    if (gap > x.maxGap) {
+      x.maxGap = gap;
+      if (x.stallLimit > 0) {
+        x.deadline = Math.min(x.deadline, x.start + x.stallLimit - gap);
+      }
+    }
+    if (x.nodes > x.maxNodes || now > x.deadline || token != x.token) {
       x.stop = true;
     }
     return x.stop;

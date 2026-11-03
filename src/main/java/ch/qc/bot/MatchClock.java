@@ -18,6 +18,8 @@ final class MatchClock {
   static final int RUSH_PLIES = 30;
   /** Plies a game can last beyond its empty cells: blasts empty cells again. */
   static final int BLAST_PLIES = 30;
+  /** Plies of slack the clock must keep beyond the need before the second call may spend any of it. */
+  static final int PONDER_MARGIN_PLIES = 20;
   static final long WINNING_MIN_NANOS = 15_000_000L;
   static final long LEVEL_MIN_NANOS = 30_000_000L;
   /** Search scores (1/256 logit, our view) at or above WINNING are a winning position, at or below WORSE worse. */
@@ -38,6 +40,22 @@ final class MatchClock {
   /** Hard stop for this move: base, or less when the match clock runs out and we are not worse. */
   long budget(long t0, int ply, long base, int lastScore, int emptyCells) {
     return budgetFor(t0 - start, ply - startPly, base, lastScore, emptyCells);
+  }
+
+  /** May the second call search now? It spends the shared 30 s, so only while they clearly cover what the board needs. */
+  boolean ponderAllowed(long t0, int ply, int lastScore, int emptyCells) {
+    return ponderAllowedFor(t0 - start, ply - startPly, lastScore, emptyCells);
+  }
+
+  static boolean ponderAllowedFor(long elapsed, int plies, int lastScore, int emptyCells) {
+    if (plies < MIN_SAMPLE_PLIES || elapsed <= 0 || lastScore <= WORSE) {
+      return true;
+    }
+    long left = MATCH_NANOS - RESERVE_NANOS - elapsed;
+    if (left <= 0) {
+      return false;
+    }
+    return left / (elapsed / plies + 1) >= Math.min(CALM_PLIES, emptyCells + BLAST_PLIES) + PONDER_MARGIN_PLIES;
   }
 
   static long budgetFor(long elapsed, int plies, long base, int lastScore, int emptyCells) {
