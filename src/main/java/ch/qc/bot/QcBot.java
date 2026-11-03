@@ -14,8 +14,9 @@ import ch.qc.bot.search.Vcf;
 
 /**
  * Quantum Connect bot. M5: alpha-beta search ({@link Searcher}) with the learned pattern tables ({@link Weights};
- * the hand evaluation when no weights fit the board) and the gravity threat search ({@link Vcf}) at the root, under a 45 ms hard stop (30 ms on the first
- * call of an instance), on top of the per-call pipeline (snapshot, turn tracking, board load, guarded two-call
+ * the hand evaluation when no weights fit the board) and the gravity threat search ({@link Vcf}) at the root, under
+ * the hard stop {@link #HARD_NANOS} ({@link #FIRST_CALL_HARD_NANOS} on the first call of an instance; less near
+ * the end of the shared match clock, {@link MatchClock}), on top of the per-call pipeline (snapshot, turn tracking, board load, guarded two-call
  * protocol). The M1 root tactics are the fallback if the search cannot run.
  *
  * <p>Upload rules: only basic Java (no java.lang.System, java.io, java.nio, reflection, threads or runtime access),
@@ -36,6 +37,9 @@ public final class QcBot implements Algorithm {
   static final long TACTICS_NANOS = 10_000_000L;
 
   private final TurnTracker tracker = new TurnTracker();
+  private final MatchClock clock = new MatchClock();
+  /** Score of our latest search, our view; 0 at the start of a game. */
+  private int lastScore;
   private final TranspositionTable tt;
   private final Searcher.Options options;
   private final Vcf.Table vcfTable;
@@ -64,6 +68,10 @@ public final class QcBot implements Algorithm {
     decision = null;
     Snapshot s = Snapshot.read(field);
     tracker.beginTurn(s);
+    clock.beginTurn(t0, tracker.turn(), tracker.plyIndex());
+    if (tracker.turn() == 1) {
+      lastScore = 0;
+    }
     int move = choose(s, t0, callId == 1);
     int col = move == Tactics.NONE ? -1 : Tactics.column(move);
     boolean special = move != Tactics.NONE && Tactics.isSpecial(move);
@@ -131,10 +139,11 @@ public final class QcBot implements Algorithm {
     int cdMe = tracker.myCooldownCounter();
     int cdOpp = tracker.opponentCooldownCounter();
     if (s.cols <= MAX_SEARCH_COLS) {
-      Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0,
-          firstCall ? FIRST_CALL_HARD_NANOS : HARD_NANOS);
+      long hard = firstCall ? FIRST_CALL_HARD_NANOS : clock.budget(t0, tracker.plyIndex(), HARD_NANOS, lastScore);
+      Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0, hard);
       lastResult = r;
       if (r.move() != Tactics.NONE) {
+        lastScore = r.score();
         return r.move();
       }
     }

@@ -90,6 +90,10 @@ public final class Searcher {
    * Switches of the threat-search integration (design 2.5): own VCF at the root, the opponent's VCF check at the
    * root, VCF at the leaves (only while the defender's special is not ready), exact or tentative leaves [H1],
    * razoring into the VCF [H9]. Leaf VCF is off by default: unrestricted it cost 160 Elo through lost depth.
+   * Contempt (1/256 logit) scores a draw as that much worse than equal for the searching side and as that much
+   * better for its opponent, so the bot plays on from an unclear position rather than take a draw, but still takes
+   * a draw over a position clearly lost. A Searcher with contempt must search for one colour only (its TT keeps
+   * draw scores from that colour's view).
    */
   public static final class Options {
     public static final Options DEFAULT = new Options(true, true, false, true, false);
@@ -100,13 +104,20 @@ public final class Searcher {
     public final boolean leafVcf;
     public final boolean exactLeaves;
     public final boolean razor;
+    public final int contempt;
 
     public Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor) {
+      this(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, 0);
+    }
+
+    public Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor,
+        int contempt) {
       this.rootVcf = rootVcf;
       this.opponentVcf = opponentVcf;
       this.leafVcf = leafVcf;
       this.exactLeaves = exactLeaves;
       this.razor = razor;
+      this.contempt = contempt;
     }
   }
 
@@ -441,7 +452,7 @@ public final class Searcher {
     if (!Tactics.isSpecial(m)) {
       boolean win = root.make(c, me);
       int s = win ? MATE - 1
-          : root.topRowFull() ? 0
+          : root.topRowFull() ? draw(0)
           : pvsChild(x, root, opp, cdOpp, Math.min(cdMe + 1, COOLDOWN), depth - 1, alpha, INF, 0, first);
       root.unmake(c);
       return s;
@@ -479,7 +490,7 @@ public final class Searcher {
       return 0;
     }
     if (x.turnBase + ply >= MAX_TURNS) {
-      return 0;
+      return draw(ply);
     }
     int opp = 3 - stm;
     int oppThreats = 0;
@@ -505,7 +516,7 @@ public final class Searcher {
       return -(MATE - ply - 2);
     }
     if (b.topRowFull()) {
-      return 0;
+      return draw(ply);
     }
     alpha = Math.max(alpha, -(MATE - ply - 2));
     beta = Math.min(beta, MATE - ply - 1);
@@ -568,7 +579,7 @@ public final class Searcher {
       }
     }
     if (n == 0) {
-      return oppThreats >= 2 ? -(MATE - ply - 2) : 0;
+      return oppThreats >= 2 ? -(MATE - ply - 2) : draw(ply);
     }
     int[] kill = x.killers[ply];
     int[] hist = x.history[stm];
@@ -616,7 +627,7 @@ public final class Searcher {
       if (!Tactics.isSpecial(m)) {
         boolean win = b.make(c, stm);
         s = win ? MATE - ply - 1
-            : b.topRowFull() ? 0
+            : b.topRowFull() ? draw(ply)
             : pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, i == 0);
         b.unmake(c);
       } else {
@@ -649,6 +660,11 @@ public final class Searcher {
         : TranspositionTable.EXACT;
     tt.store(key, depth, toTT(best, ply), bound, bestMove);
     return best;
+  }
+
+  /** Draw score for the side to move at a node of this ply (the searching colour moves at even plies). */
+  private int draw(int ply) {
+    return (ply & 1) == 0 ? -options.contempt : options.contempt;
   }
 
   /** Short VCF for the side to move at a leaf: a win score if it finds one, else 0. */
