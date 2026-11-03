@@ -2,31 +2,42 @@ package ch.qc.bot;
 
 import ch.cern.quantumconnect.core.Algorithm;
 import ch.cern.quantumconnect.core.QuantumField;
+import ch.qc.bot.eval.HandEval;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
+import ch.qc.bot.search.Searcher;
 import ch.qc.bot.search.Tactics;
+import ch.qc.bot.search.TranspositionTable;
 
 /**
- * Quantum Connect bot. M1: root tactics ({@link Tactics}: immediate wins by drop or blast, no move that hands the
- * opponent an immediate or forced win, forced wins of our own, blasts only to win or as the last defence) on top of
- * the per-call pipeline (snapshot, turn tracking, board load, guarded two-call protocol).
+ * Quantum Connect bot. M2: alpha-beta search ({@link Searcher}) with the hand evaluation, under a 62 ms hard stop
+ * (40 ms on the first call of an instance), on top of the per-call pipeline (snapshot, turn tracking, board load,
+ * guarded two-call protocol). The M1 root tactics are the fallback if the search cannot run.
  */
 public final class QcBot implements Algorithm {
   /** A special is never raised if the first call took longer than this (it may have timed out, R10, R15). */
   static final long SAFE_FINISH_NANOS = 85_000_000L;
   /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
   static final int MAX_MODEL_CELLS = 4096;
-  /** Budget of the three-ply tactical check, measured from the entry of accelerateQuark. */
-  static final long TACTICS_NANOS = 25_000_000L;
+  /** Hard stop of the search, measured from the entry of accelerateQuark (design 2.8). */
+  static final long HARD_NANOS = 62_000_000L;
+  static final long FIRST_CALL_HARD_NANOS = 40_000_000L;
+  /** Search is limited to boards whose column index fits the transposition-table move field. */
+  static final int MAX_SEARCH_COLS = 255;
+  /** Budget of the fallback tactics. */
+  static final long TACTICS_NANOS = 10_000_000L;
 
   private final TurnTracker tracker = new TurnTracker();
+  private final TranspositionTable tt;
   private Geometry geometry;
-  private Board board;
-  private Tactics tactics;
+  private Searcher searcher;
   private int calls;
   private volatile Decision decision;
+  private volatile Searcher.Result lastResult;
 
-  public QcBot() {}
+  public QcBot() {
+    tt = TranspositionTable.forHeap();
+  }
 
   @Override
   public int accelerateQuark(QuantumField field) {
@@ -36,7 +47,7 @@ public final class QcBot implements Algorithm {
     try {
       Snapshot s = Snapshot.read(field);
       tracker.beginTurn(s);
-      int move = choose(s, t0 + TACTICS_NANOS);
+      int move = choose(s, t0, callId == 1);
       int col = move == Tactics.NONE ? -1 : Tactics.column(move);
       boolean special = move != Tactics.NONE && Tactics.isSpecial(move);
       if (col < 0 || col >= s.cols || field.isColumnFull(col)) {
@@ -85,19 +96,40 @@ public final class QcBot implements Algorithm {
     return tracker;
   }
 
-  private int choose(Snapshot s, long deadline) {
+  /** Search statistics of the latest call (harness only). */
+  public Searcher.Result lastResult() {
+    return lastResult;
+  }
+
+  private int choose(Snapshot s, long t0, boolean firstCall) {
+    lastResult = null;
     if (s.rows * s.cols > MAX_MODEL_CELLS) {
       return Tactics.NONE;
     }
     if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
       geometry = new Geometry(s.rows, s.cols);
-      board = new Board(geometry);
-      tactics = new Tactics(geometry);
+      searcher = new Searcher(geometry, new HandEval(geometry), tt);
     }
+    // a fresh board per call: a search that outlived its call may still be walking the previous one
+    Board board = new Board(geometry);
     board.load(s.cells);
-    // on an empty board the colour is unknown, but then no tactic applies to either colour
+    // on an empty board the colour is unknown, but then nothing depends on it
     int me = tracker.myColour() != 0 ? tracker.myColour() : tracker.iAmFirst() ? Board.FIRST : Board.SECOND;
-    return tactics.choose(board, me, tracker.myCooldownCounter(), tracker.opponentCooldownCounter(), deadline);
+    int cdMe = tracker.myCooldownCounter();
+    int cdOpp = tracker.opponentCooldownCounter();
+    if (s.cols <= MAX_SEARCH_COLS) {
+      try {
+        Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0,
+            firstCall ? FIRST_CALL_HARD_NANOS : HARD_NANOS);
+        lastResult = r;
+        if (r.move() != Tactics.NONE) {
+          return r.move();
+        }
+      } catch (RuntimeException e) {
+        board.load(s.cells);
+      }
+    }
+    return new Tactics(geometry).choose(board, me, cdMe, cdOpp, System.nanoTime() + TACTICS_NANOS);
   }
 
   /** Never returns a full column while one is free; works on the field alone. */

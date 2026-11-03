@@ -3,6 +3,8 @@ package ch.qc.tools;
 import ch.cern.quantumconnect.core.Algorithm;
 import ch.cern.quantumconnect.core.QuantumField;
 import ch.qc.bot.QcBot;
+import ch.qc.bot.search.Searcher;
+import java.lang.management.ManagementFactory;
 
 /**
  * Wraps a bot to measure call latency and check every answer: the column is in range and not full, and a
@@ -13,6 +15,17 @@ public final class BotProbe implements Algorithm {
   private final Algorithm inner;
   public final LatencyHistogram accelerate = new LatencyHistogram();
   public final LatencyHistogram special = new LatencyHistogram();
+  /** Bytes allocated per accelerateQuark call, recorded as bytes * 1000 so that quantileMillis() reads in KB. */
+  public final LatencyHistogram allocation = new LatencyHistogram();
+  /** depthCounts[d]: completed search depth of QcBot calls. */
+  public final long[] depthCounts = new long[65];
+  private long searchNodes;
+  private long searchNanos;
+  /** Search time reported by the bot and call time minus search time, per call. */
+  public final LatencyHistogram searchTime = new LatencyHistogram();
+  public final LatencyHistogram outsideSearch = new LatencyHistogram();
+  private static final com.sun.management.ThreadMXBean THREADS =
+      (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
 
   private int calls;
   private int invalidColumns;
@@ -38,8 +51,20 @@ public final class BotProbe implements Algorithm {
       calls++;
     }
     int col;
+    long a0 = THREADS.getCurrentThreadAllocatedBytes();
     try {
       col = inner.accelerateQuark(field);
+      allocation.record((THREADS.getCurrentThreadAllocatedBytes() - a0) * 1000);
+      if (inner instanceof QcBot q && q.lastResult() != null) {
+        Searcher.Result r = q.lastResult();
+        synchronized (this) {
+          depthCounts[Math.min(64, r.depth())]++;
+          searchNodes += r.nodes();
+          searchNanos += r.nanos();
+        }
+        searchTime.record(r.nanos());
+        outsideSearch.record(System.nanoTime() - t0 - r.nanos());
+      }
     } catch (RuntimeException | Error e) {
       synchronized (this) {
         exceptions++;
@@ -91,6 +116,14 @@ public final class BotProbe implements Algorithm {
   /** Own discs the engine should have placed if no call timed out (each answered valid column is one disc). */
   public synchronized int expectedPlacements() {
     return calls - invalidColumns - exceptions + scripted;
+  }
+
+  public synchronized long searchNodes() {
+    return searchNodes;
+  }
+
+  public synchronized long searchNanos() {
+    return searchNanos;
   }
 
   public synchronized int calls() {

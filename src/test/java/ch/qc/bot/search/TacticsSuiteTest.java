@@ -3,6 +3,7 @@ package ch.qc.bot.search;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import ch.qc.bot.eval.HandEval;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
 import ch.qc.bot.rules.NaiveRules;
@@ -14,13 +15,19 @@ import java.util.TreeMap;
 import org.junit.jupiter.api.Test;
 
 /**
- * Tactical suites T1, T3 and T5 of design 5.4, graded by the naive engine copy (independent of Board): random
+ * Tactical suites T1, T3, T4 and T5 of design 5.4, graded by the naive engine copy (independent of Board): random
  * positions with random special readiness for both sides, every move and every opponent reply tried by brute force.
- * Required: play a winning move when one exists; else a normal move after which the opponent cannot win at once;
- * else such a blast; never a blast otherwise. Size with -Pqc.suite.positions=N.
+ * Required of the root tactics: play a winning move when one exists; else a normal move after which the opponent
+ * cannot win at once; else such a blast; never a blast otherwise. The search may also choose a safe blast when
+ * safe normal moves exist (it sees further). Size with -Pqc.suite.positions=N.
  */
 class TacticsSuiteTest {
   private static final int POSITIONS = Integer.getInteger("qc.suite.positions", 6000);
+  private static final long SEARCH_NANOS = 5_000_000L;
+
+  interface Chooser {
+    int choose(Geometry g, Board b, int me, boolean mySp, boolean oppSp, int ply);
+  }
 
   /** Brute-force grading of one position for the side to move. */
   record Grade(List<Integer> wins, List<Integer> safeNormal, List<Integer> safeBlast, boolean oppThreat,
@@ -108,30 +115,45 @@ class TacticsSuiteTest {
   }
 
   @Test
-  void suitesT1T3T5() {
-    SplittableRandom rnd = new SplittableRandom(511);
+  void rootTactics() {
+    runSuite((g, b, me, mySp, oppSp, ply) -> new Tactics(g).choose(b, me, mySp ? 10 : 0, oppSp ? 10 : 0, Long.MAX_VALUE),
+        true, POSITIONS, 511, "root tactics", 50);
+  }
+
+  @Test
+  void search() {
+    TranspositionTable tt = new TranspositionTable(16);
+    runSuite((g, b, me, mySp, oppSp, ply) -> {
+      Board copy = new Board(g);
+      copy.copyFrom(b);
+      return new Searcher(g, new HandEval(g), tt).run(copy, me, mySp ? 10 : 0, oppSp ? 10 : 0, ply,
+          System.nanoTime(), SEARCH_NANOS).move();
+    }, false, POSITIONS, 512, "search 5 ms", 20);
+  }
+
+  private void runSuite(Chooser chooser, boolean strict, int positions, long seed, String name, int minPerTag) {
+    SplittableRandom rnd = new SplittableRandom(seed);
     Map<String, int[]> tally = new TreeMap<>(); // tag -> {positions, correct}
     List<String> failures = new ArrayList<>();
     int kept = 0;
     int negatives = 0;
-    while (kept < POSITIONS) {
+    while (kept < positions) {
       int[][] sizes = {{8, 12}, {8, 12}, {8, 12}, {6, 7}, {10, 14}, {7, 9}};
       int[] size = sizes[rnd.nextInt(sizes.length)];
       Geometry g = new Geometry(size[0], size[1]);
       Board b = new Board(g);
       Board scratch = new Board(g);
-      Tactics t = new Tactics(g);
       int tower = rnd.nextInt(g.cols);
-      for (int ply = 0; ply < 3 * g.cells && kept < POSITIONS; ply++) {
+      for (int ply = 0; ply < 3 * g.cells && kept < positions; ply++) {
         int me = 1 + (ply & 1);
         boolean mySp = rnd.nextBoolean();
         boolean oppSp = rnd.nextBoolean();
         if (interesting(b, scratch, g, me, mySp, oppSp) || rnd.nextInt(30) == 0) {
           NaiveRules n = NaiveRules.fromCells(g.rows, g.cols, 6, b.cells());
           Grade gr = grade(n, me, mySp, oppSp);
-          int move = t.choose(b, me, mySp ? 10 : 0, oppSp ? 10 : 0, Long.MAX_VALUE);
+          int move = chooser.choose(g, b, me, mySp, oppSp, ply);
           kept++;
-          check(gr, move, tally, failures, g, b, me, mySp, oppSp);
+          check(gr, move, strict, tally, failures, g, b, me, mySp, oppSp);
           if (gr.wins.isEmpty() && mySp) {
             negatives++;
           }
@@ -151,26 +173,26 @@ class TacticsSuiteTest {
         }
       }
     }
-    StringBuilder sb = new StringBuilder("tactics suites (" + kept + " positions, " + negatives + " blast-negative):");
+    StringBuilder sb = new StringBuilder(name + " suites (" + kept + " positions, " + negatives + " blast-negative):");
     tally.forEach((k, v) -> sb.append(String.format(" %s %d/%d;", k, v[1], v[0])));
     System.out.println(sb);
     assertEquals(List.of(), failures.subList(0, Math.min(5, failures.size())), failures.size() + " failures");
     for (String tag : List.of("T1 win in 1", "T1 forced block", "T1 under threat cell", "T3 blast win",
         "T3 negative", "T5 blast danger")) {
-      assertTrue(tally.containsKey(tag) && tally.get(tag)[0] >= 50, "too few positions for " + tag);
+      assertTrue(tally.containsKey(tag) && tally.get(tag)[0] >= minPerTag, "too few positions for " + tag);
     }
   }
 
-  private static void check(Grade gr, int move, Map<String, int[]> tally, List<String> failures, Geometry g, Board b,
-      int me, boolean mySp, boolean oppSp) {
+  private static void check(Grade gr, int move, boolean strict, Map<String, int[]> tally, List<String> failures,
+      Geometry g, Board b, int me, boolean mySp, boolean oppSp) {
     boolean ok;
     String rule;
     if (!gr.wins.isEmpty()) {
       ok = gr.wins.contains(move);
       rule = "must win";
     } else if (!gr.safeNormal.isEmpty()) {
-      ok = gr.safeNormal.contains(move);
-      rule = "must play a safe normal move";
+      ok = gr.safeNormal.contains(move) || (!strict && gr.safeBlast.contains(move));
+      rule = strict ? "must play a safe normal move" : "must play a safe move";
     } else if (!gr.safeBlast.isEmpty()) {
       ok = gr.safeBlast.contains(move);
       rule = "must play a safe blast";
@@ -196,6 +218,9 @@ class TacticsSuiteTest {
     }
     if (gr.wins.isEmpty() && gr.blastDanger) {
       tags.add("T5 blast danger");
+    }
+    if (gr.wins.isEmpty() && gr.safeNormal.isEmpty() && !gr.safeBlast.isEmpty()) {
+      tags.add("T4 only a blast saves");
     }
     if (tags.isEmpty()) {
       tags.add("quiet");

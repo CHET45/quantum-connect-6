@@ -16,12 +16,16 @@ import java.util.SplittableRandom;
 import org.junit.jupiter.api.Test;
 
 /**
- * M0 acceptance (design 5.6 and 6): QcBot through the official protocol over the board-size list, against
- * opponents that use specials and forfeit: no timeout, no invalid column, no invalid special, latency
- * p99.99 below 10 ms. Size with -Pqc.robust.calls=100000.
+ * Robustness (design 5.6): QcBot through the official protocol over the board-size list, against opponents that
+ * use specials and forfeit: no timeout, no invalid column, no invalid special, and no call near the 100 ms engine
+ * limit. Since M2 every call searches up to its 62 ms hard stop, so the games run on a few threads only; the
+ * latency targets of design 5.5 are measured by a dedicated match run. Size with -Pqc.robust.calls=N and
+ * -Pqc.robust.random=N.
  */
 class QcBotRobustnessTest {
-  private static final int CALLS = Integer.getInteger("qc.robust.calls", 20_000);
+  private static final int CALLS = Integer.getInteger("qc.robust.calls", 3_000);
+  private static final int RANDOM_CALLS = Integer.getInteger("qc.robust.random", 1_500);
+  private static final int THREADS = 4;
   private static final String SIZES = "1x1,1x12,12x1,2x2,3x3,5x5,6x6,6x7,7x6,8x12,12x8,9x9,10x14,25x25,40x40";
 
   @Test
@@ -30,7 +34,7 @@ class QcBotRobustnessTest {
         "ch.qc.starter.SpecialMoveBot", "ch.cern.quantumconnect.bots.RandomBot", "ch.cern.quantumconnect.bots.LinearBot",
         "ch.qc.starter.RandomBot"};
     int[][] sizes = sizes();
-    int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+    int threads = THREADS;
     int calls = 0;
     int round = 0;
     MatchMain.Match total = null;
@@ -55,7 +59,7 @@ class QcBotRobustnessTest {
     }
     System.out.println("robustness: " + calls + " QcBot calls; accelerate " + total.latencyA.summary()
         + "; special " + total.specialLatencyA.summary());
-    assertTrue(total.latencyA.quantileMillis(0.9999) < 10, "p99.99 latency " + total.latencyA.summary());
+    assertTrue(total.latencyA.maxMillis() < 95, "latency " + total.latencyA.summary());
   }
 
   @Test
@@ -63,7 +67,7 @@ class QcBotRobustnessTest {
     SplittableRandom rnd = new SplittableRandom(99);
     int[][] sizes = sizes();
     int checked = 0;
-    while (checked < 200_000) {
+    while (checked < RANDOM_CALLS) {
       int[] size = sizes[rnd.nextInt(sizes.length)];
       QcBot bot = new QcBot();
       Algorithm other = new SpecialMoveBot();

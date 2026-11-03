@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * game pairs from shared random openings, timeouts and illegal answers per bot, latency percentiles.
  *
  * <pre>
- * --a CLASS --b CLASS     bots with a public no-argument constructor
+ * --a SPEC --b SPEC       bots: a class with a public no-argument constructor, or jar:PATH (frozen build)
  * --pairs N               game pairs (default 50)
  * --sizes 8x12,6x7        board sizes, cycled per pair (default 8x12)
  * --opening N             random normal plies before the bots take over, at most 10 (default 4)
@@ -101,6 +101,12 @@ public final class MatchMain {
     public final LatencyHistogram latencyB = new LatencyHistogram();
     public final LatencyHistogram specialLatencyA = new LatencyHistogram();
     private final AtomicInteger callsA = new AtomicInteger();
+    public final LatencyHistogram allocationA = new LatencyHistogram();
+    public final LatencyHistogram searchTimeA = new LatencyHistogram();
+    public final LatencyHistogram outsideSearchA = new LatencyHistogram();
+    private final long[] depthA = new long[65];
+    private long nodesA;
+    private long nanosA;
 
     public Match(String classA, String classB, int[][] sizes, int openingPlies, long seed) {
       this.classA = classA;
@@ -170,6 +176,16 @@ public final class MatchMain {
       latencyB.merge(pb.accelerate);
       specialLatencyA.merge(pa.special);
       callsA.addAndGet(pa.calls());
+      allocationA.merge(pa.allocation);
+      searchTimeA.merge(pa.searchTime);
+      outsideSearchA.merge(pa.outsideSearch);
+      synchronized (depthA) {
+        for (int d = 0; d < depthA.length; d++) {
+          depthA[d] += pa.depthCounts[d];
+        }
+        nodesA += pa.searchNodes();
+        nanosA += pa.searchNanos();
+      }
       return new Result(pair, game, rows, cols, aFirst, scoreA2, reason, plies(exp),
           Math.max(0, pa.expectedPlacements() - placedA), Math.max(0, pb.expectedPlacements() - placedB),
           pa.invalidColumns(), pb.invalidColumns(), pa.invalidSpecials(), pb.invalidSpecials());
@@ -206,8 +222,36 @@ public final class MatchMain {
       }
     }
 
-    static Algorithm instantiate(String cls) throws ReflectiveOperationException {
-      return (Algorithm) Class.forName(cls).getDeclaredConstructor().newInstance();
+    static Algorithm instantiate(String spec) throws Exception {
+      return BotLoader.create(spec);
+    }
+
+    /** Median completed search depth of A, or -1 if A reported none. */
+    public int medianDepthA() {
+      synchronized (depthA) {
+        long total = 0;
+        for (long n : depthA) {
+          total += n;
+        }
+        long seen = 0;
+        for (int d = 0; d < depthA.length; d++) {
+          seen += depthA[d];
+          if (total > 0 && 2 * seen >= total) {
+            return d;
+          }
+        }
+        return -1;
+      }
+    }
+
+    public String searchSummary() {
+      synchronized (depthA) {
+        double nps = nanosA == 0 ? 0 : nodesA * 1e9 / nanosA;
+        return String.format("median depth %d, %.0f knodes/s, allocation per call p99 %.0f KB max %.0f KB%n"
+                + "    search time %s; outside the search %s",
+            medianDepthA(), nps / 1000, allocationA.quantileMillis(0.99), allocationA.maxMillis(),
+            searchTimeA.summary(), outsideSearchA.summary());
+      }
     }
 
     public String report(List<Result> results) {
@@ -251,9 +295,10 @@ public final class MatchMain {
           "%s vs %s: %d games, A +%d =%d -%d, score %.1f%% (Elo %+.0f)%n"
               + "  decided by six %d, by blast %d; draws full %d, at cap %d%n"
               + "  A: timeouts %d, invalid columns %d, invalid specials %d; accelerate %s; special %s%n"
+              + "  A search: %s%n"
               + "  B: timeouts %d, invalid columns %d, invalid specials %d; accelerate %s",
           classA, classB, games, wins, draws, losses, 100 * pct, elo, reasons[0], reasons[1], reasons[2], reasons[3],
-          tA, iA, sA, latencyA.summary(), specialLatencyA.summary(), tB, iB, sB, latencyB.summary());
+          tA, iA, sA, latencyA.summary(), specialLatencyA.summary(), searchSummary(), tB, iB, sB, latencyB.summary());
     }
   }
 

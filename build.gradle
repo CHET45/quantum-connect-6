@@ -85,6 +85,8 @@ tasks.register('match', JavaExec) {
     classpath = sourceSets.tools.runtimeClasspath
     mainClass = 'ch.qc.tools.MatchMain'
     maxHeapSize = '2g'
+    // -Pjvm="-Xlog:gc -XX:+UseParallelGC" passes options to the match JVM
+    jvmArgs((project.findProperty('jvm') ?: '').toString().split(' ').findAll { !it.isBlank() })
     args((project.findProperty('args') ?: '').toString().split(' ').findAll { !it.isBlank() })
 }
 

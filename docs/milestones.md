@@ -68,3 +68,48 @@ Matches (`match`, 8x12, 4 random opening plies, colour-swapped pairs, official p
 
 QcBot: 0 timeouts, 0 invalid columns, 0 invalid specials. `accelerateQuark` latency against `RandomBot`:
 p50 0.04 ms, p99 2.77 ms, p99.99 28.8 ms, max 31.2 ms (before the 25 ms cut-off the maximum was 63 ms).
+
+## M2 Alpha-beta search with hand evaluation (2026-11-03)
+
+What exists: `search/Searcher` (fail-soft negamax PVS, iterative deepening, two-entry lockless transposition table
+keyed by cells, side to move, both cooldown counters and the distance to the 1,000-turn cap; ordering TT move,
+two killers, history, window potential, centre, blasts last and a penalty for playing under an opponent threat
+cell; mate-distance scores; a forced reply to a single playable threat costs no depth; blasts generated at depth
+3 or more or when defending), `search/TranspositionTable` (2^18-2^21 entries from the heap size), `eval/HandEval`
+(design 3.9 window values plus the threat family: d=1 threats, stacked threats, waiting-game parity, cooldown
+bias). Time: hard stop 62 ms from the call entry (40 ms on an instance's first call), clock and interrupt polled
+every 256 nodes, no new iteration after a third of the budget, per-call context and a token so a late search
+aborts, a fresh root board per call. `QcBot` falls back to the M1 tactics if the search cannot run. Null move,
+LMR, aspiration and futility are off, as the design specifies for M2.
+
+Ladder: `MatchMain` and the tests accept `jar:PATH` bots, loaded child-first for `ch.qc.*`, so frozen builds from
+the git tags play the current code in one JVM (`ladder/m1.jar` built from tag `m1`).
+
+| Check | Command | Result |
+|---|---|---|
+| T1, T3, T4, T5 for the search at 5 ms per position | `test` (`TacticsSuiteTest.search`) | 6,000 positions, all correct: win in 1 2,312, forced block 2,085, under threat cell 470, blast win 63, blast negative 1,745, only a blast saves 96, blast danger 22 |
+| T1, T3, T4, T5 for the root tactics (fallback) | `TacticsSuiteTest.rootTactics` | 6,000 positions, all correct |
+| T2 forced wins in 3 and 5 plies, proven by an exhaustive solver | `MateSuiteTest` | 302/302 found (248 in 3, 54 in 5) within 80 ms; slowest 2.6 ms |
+| T6, conformance, differential, robustness | `test` | pass |
+
+Matches (`match`, 8x12, 4 random opening plies, colour-swapped pairs, official protocol):
+
+| Opponent | Threads | Games | Score | W / D / L | Blast-decided |
+|---|---|---|---|---|---|
+| frozen M1 (`jar:ladder/m1.jar`) | 6 | 1,200 | 88.3 % (Elo +352) | 948 / 224 / 28 | 101 |
+| frozen M1, latency run | 2 | 300 | 89.2 % | 241 / 53 / 6 | 25 |
+| `ch.qc.starter.SpecialMoveBot` | 6 | 600 | 100 % | 600 / 0 / 0 | 20 |
+
+Search and latency (2-thread run, 15,529 calls, measured inside the bot call): median completed depth 7 plies,
+1.08 M nodes/s; `accelerateQuark` p50 35.2 ms, p99 63.0 ms, p99.99 64.3 ms, max 66.4 ms (design 5.5 targets 70 /
+75 / 80 / 90 ms are met); `useSpecialMove` max 0.06 ms. Allocation per call p99 91 KB; the maximum, 209 KB, is the
+first call of a game, which builds the geometry, evaluation and search tables (target 200 KB). 0 timeouts,
+0 invalid columns, 0 invalid specials in all runs.
+
+Notes:
+
+- With 6 parallel games an early run showed calls up to 88 ms while the search itself ran past its deadline; one
+  game at a time stayed at 65 ms and the GC log showed pauses under 2 ms, so the tail came from CPU contention on
+  this machine, not from the bot. Clock polling was tightened from 1,024 to 256 nodes. Latency targets are
+  therefore measured on at most 2 threads.
+- Thread-creation overhead outside the bot call (engine side) is not measured yet; that is the M4 latency probe.
