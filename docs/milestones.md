@@ -205,3 +205,62 @@ Which GC and heap the tournament JVM uses is unknown (design 8.2).
 
 Not done: SPSA tuning of the scalar parameters. The scalars it would tune (hand-evaluation weights, margins) are
 replaced or retuned by the learned tables of M5, so it is deferred until after M5.
+
+## M5 Learned tables v1 (2026-11-03)
+
+What exists:
+
+- Java: `eval/FeatureSpec` (134 windows tied under the left-right mirror into 71 classes, `featMap[window][code]`
+  to a parameter index, dumped as `training/spec/feature-spec-8x12.json` by `./gradlew featurespec`),
+  `eval/Features` (stage, cooldown context, threat-family indices t1/t2/t3), `eval/LearnedEval` (window tables
+  expanded per window and context, one short read per window), `eval/WeightBlob` (`.qcw`), `eval/Weights`
+  (loading order `-Dqc.weights=FILE`, then the compiled-in `EvalBlob`, then the hand tables; decoded once per JVM
+  and shared), the Gradle task `embedWeights` that turns `weights/eval.qcw` into the Base64 class `EvalBlob`.
+- Tools: `SelfPlayMain` (`./gradlew selfplay`), `Qcp` records (design 4.2 layout with the game id in the spare
+  field), `EvalCheck` (Spearman with the search value and win/loss AUC on held-out games), weights in `FastMatch`
+  specs (`--a @path/eval.qcw`).
+- Python (`training/qctrain`, torch from the miniconda base env): `spec.py`, `data.py`, `model.py` (one parameter
+  vector: base + stage deltas + cooldown deltas per window class, plus T1/T2/T3), `fit.py`, `export.py`,
+  `parity.py`.
+
+Generation 0 data: `./gradlew selfplay` equivalent, hand tables, 20k nodes per move, 17 threads: 4,002,074
+positions from 32,048 games in 141 minutes (1.7 M positions per hour); games ended by a six 58 %, by a blast 7 %,
+by a full board 35 %.
+
+| Check | Result |
+|---|---|
+| FeatureSpec | 71 classes on 8x12; a random parameter vector scores every position and its mirror image identically (8x12, 6x7, 9x9) |
+| Java-Python parity (`WeightsTest -Pqc.parity=data/models/gen1a`) | 100,000 records: integer sums and t1/t2/t3 identical; max quantisation error 0.065 logit (16.6 units, bound 70) |
+| Broken weights | truncated, corrupted and wrong-spec blobs are rejected; the loader falls back to the hand tables |
+| Release path (`build probe`) | jar 1.73 MB; in a fresh JVM through an isolated URLClassLoader the bot reports the learned tables; first constructor 34 ms (decode and expansion, once per JVM) |
+| All tests | pass with the embedded weights |
+
+Training findings (all on the same gen-0 data):
+
+- The design's generation-1 mixture lambda = 0.5 failed: with about 10k games per million positions the tables
+  memorised the game outcomes (win/loss AUC on training games 0.77-0.82, above the search value's 0.70) and played
+  worse than the hand tables at fixed nodes (46.6 % and, with a calibrated target scale, 38.9 %).
+- The hand-table search values are about four times too confident for 1/256 logit (K = 939-1024 fits the
+  outcomes best), but rescaling the target made play worse; the search value at its own scale is the better target.
+- lambda = 0.9, K = 256 (mostly distilling the 20k-node search value) works. Final fit `gen1a`: full model (base,
+  stage and cooldown deltas), Adam lr 1e-3 decaying to 1e-5, decoupled weight decay 1e-2 (base) and 1e-1 (deltas),
+  best epoch 15 of 40, validation BCE 0.5779; held-out Spearman with the search value 0.879 (hand tables 0.794).
+  `gen1b` (lambda = 1.0): 0.883, but scored -14.5 Elo [-34, +5] against gen1a.
+
+Matches:
+
+| Test | Result |
+|---|---|
+| gen1a vs hand, fixed 20k nodes, 600 games | 64.1 %, +101 Elo [+80, +122], SPRT [0, 10] H1 |
+| gen1b vs hand, fixed 20k nodes, 600 games | 63.1 %, +93 Elo [+71, +116] |
+| **Gate: `ladder/m5.jar` vs `ladder/m4.jar`, real time, SPRT [0, 10]** | **H1 after 102 pairs: 63.0 %, +92 Elo [+58, +129]** |
+| Current QcBot (gen1a embedded) vs `ladder/m4.jar`, real time, 600 games | 63.2 %, +94 Elo [+72, +116]; draws 39 %, decided by a blast 6 % |
+
+Search with the learned tables (8 threads): median depth 7, 633k nodes/s (the hand tables gave about 800k at the
+same load), `accelerateQuark` p99 63.6 ms, p99.99 65.2 ms, max 70.0 ms, allocation p99 42 KB; 0 timeouts, 0 invalid
+columns, 0 invalid specials. In that run the M4 opponent had one 102 ms call (a timeout) in 33,060 calls with 8
+concurrent games; tail latency under load stays a risk to watch.
+
+Deviations from design section 4 in this generation: lambda 0.9 instead of 0.5; no PV-successor records (every
+ply is recorded, so both colours appear anyway); no deduplication; decoupled weight decay instead of the per-entry
+count back-off; zero start instead of the hand tables converted to logits; 4 M positions instead of 15 M.

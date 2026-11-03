@@ -2,7 +2,10 @@
 
 python -m qctrain.fit --spec spec/feature-spec-8x12.json --data ../data/gen000 --out ../data/models/gen001 --lam 0.5
 
-Target y = lam * sigmoid(value / 256) + (1 - lam) * y_z with y_z in {0.95, 0.5, 0.05}; proven results 0.99 / 0.01.
+Target y = lam * sigmoid(value / K) + (1 - lam) * y_z with y_z in {0.95, 0.5, 0.05}; proven results 0.99 / 0.01.
+K is fitted to the game outcomes (Texel's scale tuning) unless given: the hand-table search reports values about
+four times too confident for 1/256 logit (K = 1024 fits its outcomes best), and mixing an over-confident search
+target with the outcome target makes them pull against each other.
 Binary cross-entropy on logits, Adam with an exponential learning-rate decay, decoupled weight decay (light on the
 base table, stronger on the stage and cooldown deltas so rare contexts stay near the shared value), every weight
 clamped to [-8, 8] logits, early stopping on a validation set of 5 percent of the games.
@@ -20,9 +23,23 @@ import torch
 from . import data, export, model as model_mod, spec as spec_mod
 
 
-def targets(recs, lam):
+def fit_scale(recs):
+    """Scale K for which sigmoid(value / K) best predicts the game outcomes (unproven positions only)."""
+    m = recs["proven"] == 0
+    v = recs["value"][m].astype(np.float64)
+    y = (recs["z"][m].astype(np.float64) + 1) / 2
+    best = None
+    for k in np.geomspace(64, 4096, 49):
+        p = np.clip(1.0 / (1.0 + np.exp(-v / k)), 1e-6, 1 - 1e-6)
+        loss = -(y * np.log(p) + (1 - y) * np.log(1 - p)).mean()
+        if best is None or loss < best[1]:
+            best = (float(k), float(loss))
+    return best
+
+
+def targets(recs, lam, k):
     v = recs["value"].astype(np.float64)
-    y_search = 1.0 / (1.0 + np.exp(-v / 256.0))
+    y_search = 1.0 / (1.0 + np.exp(-v / k))
     z = recs["z"]
     y_z = np.where(z > 0, 0.95, np.where(z < 0, 0.05, 0.5))
     y = lam * y_search + (1 - lam) * y_z
@@ -81,6 +98,8 @@ def main():
     ap.add_argument("--wd-delta", type=float, default=1e-3)
     ap.add_argument("--patience", type=int, default=3)
     ap.add_argument("--warm", default=None, help="theta.pt of the previous generation")
+    ap.add_argument("--base-only", action="store_true", help="keep the stage and cooldown deltas at zero")
+    ap.add_argument("--k", default="auto", help="search-value scale of the target, or auto (fitted to outcomes)")
     args = ap.parse_args()
     torch.manual_seed(1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -93,7 +112,12 @@ def main():
     hashed = np.array([zlib.crc32(int(k).to_bytes(8, "little")) for k in games], dtype=np.int64)
     val_games = games[hashed % 20 == 0]
     is_val = np.isin(keys, val_games)
-    y = targets(recs, args.lam)
+    if args.k == "auto":
+        k, k_loss = fit_scale(recs[~is_val])
+        print(f"target scale K = {k:.0f} (outcome BCE {k_loss:.4f})", flush=True)
+    else:
+        k = float(args.k)
+    y = targets(recs, args.lam, k)
     train = to_device(recs[~is_val], spec, y[~is_val], device)
     val = to_device(recs[is_val], spec, y[is_val], device)
     n = train["y"].shape[0]
@@ -127,7 +151,10 @@ def main():
             with torch.no_grad():
                 lr = opt.param_groups[0]["lr"]
                 m.theta[base_slice] *= 1 - lr * args.wd_base
-                m.theta[delta_slice] *= 1 - lr * args.wd_delta
+                if args.base_only:
+                    m.theta[delta_slice] = 0.0
+                else:
+                    m.theta[delta_slice] *= 1 - lr * args.wd_delta
                 m.theta.clamp_(-8.0, 8.0)
             sched.step()
             total += loss.item() * sel.shape[0]
@@ -143,7 +170,7 @@ def main():
     val_loss, qv = evaluate(m, val)
 
     report = {"records": int(len(recs)), "train": int(n), "validation": int(val["y"].shape[0]),
-              "lam": args.lam, "best_epoch": best[2], "val_bce": val_loss, "constant_bce": const_val,
+              "lam": args.lam, "k": k, "base_only": args.base_only, "best_epoch": best[2], "val_bce": val_loss, "constant_bce": const_val,
               "history": history, "spec_hash": hex(spec.spec_hash), "data": args.data}
     pv = val["proven"] != 0
     if pv.any():

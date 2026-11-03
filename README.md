@@ -27,6 +27,17 @@ Commands (the Gradle wrapper downloads JDK 25 if needed):
 ./gradlew regression                             # tests + non-regression SPRT against the newest ladder jar
 ```
 
+Training the evaluation (design section 4; Python needs torch and numpy, see `training/requirements.txt`):
+
+```
+./gradlew featurespec                                                       # spec JSON for Python
+./gradlew selfplay -Pargs="--out data/gen000 --positions 4000000 --nodes 20000"
+cd training && python -m qctrain.fit --data ../data/gen000 --out ../data/models/gen1 --lam 0.9 --k 256 --epochs 40 --lr 1e-3 --lr-end 1e-5 --wd-base 1e-2 --wd-delta 1e-1
+python -m qctrain.parity --model ../data/models/gen1 --data ../data/gen000  # then: ./gradlew test -Pqc.parity=data/models/gen1
+./gradlew fastmatch -Pargs="--a @data/models/gen1/eval.qcw --b @hand --sprt 0,10"
+cp data/models/gen1/eval.qcw weights/eval.qcw && ./gradlew build probe     # embeds the weights into the jar
+```
+
 Bot specs for `--a/--b`: a class name, `qcbot:+opt,-opt` (current QcBot with search switches, see
 `Searcher.Options`), or `jar:PATH` (a frozen build; `ladder/mN.jar` are built from the git tags). Results and the
 history of each milestone are in [`docs/milestones.md`](docs/milestones.md).
