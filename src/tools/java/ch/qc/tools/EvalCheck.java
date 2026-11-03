@@ -2,7 +2,6 @@ package ch.qc.tools;
 
 import ch.qc.bot.eval.Evaluator;
 import ch.qc.bot.eval.HandEval;
-import ch.qc.bot.eval.Weights;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
 import java.nio.ByteBuffer;
@@ -45,7 +44,7 @@ public final class EvalCheck {
     evals.add(new HandEval(g));
     names.add("hand");
     for (String w : weights) {
-      evals.add(Weights.fromFile(Path.of(w), g));
+      evals.add(WeightFiles.load(Path.of(w), g));
       names.add(w);
     }
     List<double[]> cols = new ArrayList<>(); // per record: value, z, eval_0, eval_1, ...

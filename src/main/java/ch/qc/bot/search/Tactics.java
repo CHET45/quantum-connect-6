@@ -67,7 +67,7 @@ public final class Tactics {
    *
    * @param myCounter the engine's cooldown counter for me before this turn (special honoured iff at least 10)
    * @param oppCounter the opponent's counter before its next turn
-   * @param deadlineNanos System.nanoTime() after which the three-ply check stops; unchecked moves count as neutral
+   * @param deadlineNanos time of ch.qc.bot.Clock after which the three-ply check stops; unchecked moves count as neutral
    */
   public int choose(Board b, int me, int myCounter, int oppCounter, long deadlineNanos) {
     deadline = deadlineNanos;
@@ -108,7 +108,7 @@ public final class Tactics {
       int cls;
       if (winsNow(child, opp, oppSp)) {
         cls = LOSES_NOW;
-      } else if (!deep || System.nanoTime() > deadline) {
+      } else if (!deep || ch.qc.bot.Clock.nanos() > deadline) {
         cls = NEUTRAL;
       } else if (forcesWin(child, me, mySpNext, oppCounter)) {
         cls = WINS_IN_TWO;
@@ -183,7 +183,7 @@ public final class Tactics {
       if (a.isFull(r)) {
         continue;
       }
-      if (System.nanoTime() > deadline) {
+      if (ch.qc.bot.Clock.nanos() > deadline) {
         return false;
       }
       grand.copyFrom(a);

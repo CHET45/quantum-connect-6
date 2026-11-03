@@ -13,7 +13,9 @@ import ch.qc.bot.rules.Geometry;
  * <p>Tentative mode (hypothesis H1) skips the defender's blast replies, which makes it much cheaper but turns a
  * "win" into a strong hint; its results use separate table keys so they never pass for proofs.
  *
- * <p>One instance per search call (the board pool is per call); the result table is shared and lockless.
+ * <p>One instance per search context (the board pool is not shared); the result table is shared and lockless.
+ * The clock is read every 64 nodes: each reading allocates (see {@link ch.qc.bot.Clock}), and the server counts
+ * the heap a bot fills.
  */
 public final class Vcf {
   private static final int COOLDOWN = 10;
@@ -21,6 +23,7 @@ public final class Vcf {
   private static final int MAX_VPLY = 64;
   private static final int WIN = 1;
   private static final int FAIL = 2;
+  private static final int CLOCK_MASK = 63;
 
   /** Shared result table of (key ^ data, data); data = result | depth << 2 | (move + 1) << 8. */
   public static final class Table {
@@ -88,12 +91,19 @@ public final class Vcf {
     return Tactics.NONE;
   }
 
+  /** Clears the statistics, so a reused instance reports one call's work. */
+  public void resetStats() {
+    nodes = 0;
+    proofs = 0;
+    blastRefutations = 0;
+  }
+
   public boolean lastAborted() {
     return aborted;
   }
 
   private boolean attacker(Board b, int a, int cdA, int cdD, int d, int vply) {
-    if (aborted || ++nodes > nodeLimit || System.nanoTime() > deadline) {
+    if (aborted || ++nodes > nodeLimit || ((nodes & CLOCK_MASK) == 0 && ch.qc.bot.Clock.nanos() > deadline)) {
       aborted = true;
       return false;
     }
@@ -168,47 +178,50 @@ public final class Vcf {
         continue;
       }
       b.make(c, a);
-      try {
-        if (b.topRowFull()) {
-          continue;
+      boolean won = forcingDropWins(b, a, def, nextCdA, cdD, defReady, d, vply);
+      b.unmake(c);
+      if (won) {
+        if (vply == 0) {
+          winMove = c;
         }
-        int threats = 0;
-        int threatCol = -1;
-        boolean defWins = false;
-        for (int x = 0; x < g.cols; x++) {
-          if (b.isFull(x)) {
-            continue;
-          }
-          int cell = g.index(x, b.height(x));
-          if (b.threats(a, cell) > 0) {
-            threats++;
-            threatCol = x;
-          }
-          if (b.threats(def, cell) > 0) {
-            defWins = true;
-          }
-        }
-        if (threats == 0 || defWins || (defReady && blastWins(b, vply + 1))) {
-          continue;
-        }
-        if (defender(b, a, nextCdA, cdD, d - 1, vply + 1, threats, threatCol)) {
-          if (vply == 0) {
-            winMove = c;
-          }
-          store(key, idx, WIN, d, c);
-          return true;
-        }
-        if (aborted) {
-          return false;
-        }
-      } finally {
-        b.unmake(c);
+        store(key, idx, WIN, d, c);
+        return true;
+      }
+      if (aborted) {
+        return false;
       }
     }
     if (!aborted) {
       store(key, idx, FAIL, d, Tactics.NONE);
     }
     return false;
+  }
+
+  /** After the attacker's drop (made on b): true if it is a forcing drop that every defence loses to. */
+  private boolean forcingDropWins(Board b, int a, int def, int nextCdA, int cdD, boolean defReady, int d, int vply) {
+    if (b.topRowFull()) {
+      return false;
+    }
+    int threats = 0;
+    int threatCol = -1;
+    boolean defWins = false;
+    for (int x = 0; x < g.cols; x++) {
+      if (b.isFull(x)) {
+        continue;
+      }
+      int cell = g.index(x, b.height(x));
+      if (b.threats(a, cell) > 0) {
+        threats++;
+        threatCol = x;
+      }
+      if (b.threats(def, cell) > 0) {
+        defWins = true;
+      }
+    }
+    if (threats == 0 || defWins || (defReady && blastWins(b, vply + 1))) {
+      return false;
+    }
+    return defender(b, a, nextCdA, cdD, d - 1, vply + 1, threats, threatCol);
   }
 
   /** Defender to move after a forcing drop: true if every reply still loses to a continued attack. */

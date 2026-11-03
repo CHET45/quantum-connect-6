@@ -11,7 +11,7 @@ import java.util.jar.JarFile;
 
 /**
  * Creates bots from a spec: a class name on the classpath, {@code qcbot:+razor,-leafVcf} for the current QcBot with
- * search switches changed ({@link ch.qc.bot.search.Searcher.Options#parse}), or {@code jar:PATH} for a frozen build (its Bot-Class
+ * search switches changed ({@link SearchOptions#parse}), or {@code jar:PATH} for a frozen build (its Bot-Class
  * is loaded child-first for {@code ch.qc.*}, so two versions of QcBot can play each other while both share this
  * JVM's engine classes).
  */
@@ -22,7 +22,7 @@ public final class BotLoader {
 
   public static Algorithm create(String spec) throws ReflectiveOperationException, IOException {
     if (spec.startsWith("qcbot:")) {
-      return new ch.qc.bot.QcBot(ch.qc.bot.search.Searcher.Options.parse(spec.substring(6)));
+      return new ch.qc.bot.QcBot(SearchOptions.parse(spec.substring(6)));
     }
     Class<?> cls = spec.startsWith("jar:") ? jarClass(spec.substring(4)) : Class.forName(spec);
     return (Algorithm) cls.getDeclaredConstructor().newInstance();

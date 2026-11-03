@@ -44,29 +44,41 @@ public final class Board {
     rebuild();
   }
 
+  /** Copies a board of the same geometry. */
   public void copyFrom(Board o) {
-    if (o.g != g) {
-      throw new IllegalArgumentException("geometry mismatch");
+    copy(o.cell, cell);
+    for (int c = 0; c < height.length; c++) {
+      height[c] = o.height[c];
     }
-    System.arraycopy(o.cell, 0, cell, 0, cell.length);
-    System.arraycopy(o.height, 0, height, 0, height.length);
-    System.arraycopy(o.wc, 0, wc, 0, wc.length);
-    System.arraycopy(o.thr[1], 0, thr[1], 0, cell.length);
-    System.arraycopy(o.thr[2], 0, thr[2], 0, cell.length);
+    for (int w = 0; w < wc.length; w++) {
+      wc[w] = o.wc[w];
+    }
+    copy(o.thr[1], thr[1]);
+    copy(o.thr[2], thr[2]);
     live3[1] = o.live3[1];
     live3[2] = o.live3[2];
     hash = o.hash;
     discs = o.discs;
   }
 
-  /** Loads cells in this class's index order; every column must be compact (no disc above a hole). */
-  public void load(byte[] cells) {
-    System.arraycopy(cells, 0, cell, 0, cell.length);
-    rebuild();
+  private static void copy(byte[] from, byte[] to) {
+    for (int i = 0; i < to.length; i++) {
+      to[i] = from[i];
+    }
   }
 
-  /** Recomputes all derived state from the cells. */
-  public void rebuild() {
+  /**
+   * Loads cells in this class's index order. Returns false if a column is not compact (a disc above a hole); the
+   * board is then not usable.
+   */
+  public boolean load(byte[] cells) {
+    copy(cells, cell);
+    return rebuild();
+  }
+
+  /** Recomputes all derived state from the cells; false if a column has a disc above a hole. */
+  public boolean rebuild() {
+    boolean compact = true;
     hash = 0;
     discs = 0;
     for (int c = 0; c < g.cols; c++) {
@@ -77,7 +89,8 @@ public final class Board {
           continue;
         }
         if (y != h) {
-          throw new IllegalStateException("column " + c + " has a hole below row " + y);
+          compact = false;
+          h = y;
         }
         h++;
         discs++;
@@ -93,6 +106,7 @@ public final class Board {
       wc[w] = (short) code;
       account(w, code, 1);
     }
+    return compact;
   }
 
   private int codeFromCells(int w) {

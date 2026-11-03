@@ -36,7 +36,7 @@ public final class FastMatch {
   public static FastGame.Engine engine(Geometry g, Searcher.Options options, Evaluator eval, long nodes) {
     Searcher s = new Searcher(g, eval, new TranspositionTable(18), options, new Vcf.Table(16));
     return (Board b, int me, int cdMe, int cdOpp, int turn) ->
-        s.run(b, me, cdMe, cdOpp, turn, System.nanoTime(), Long.MAX_VALUE / 4, nodes).move();
+        s.run(b, me, cdMe, cdOpp, turn, ch.qc.bot.Clock.nanos(), Long.MAX_VALUE / 4, nodes).move();
   }
 
   public static void main(String[] args) throws Exception {
@@ -68,8 +68,8 @@ public final class FastMatch {
     }
     String[] sa = (a + "@hand").split("@", 3);
     String[] sb = (b + "@hand").split("@", 3);
-    Searcher.Options oa = Searcher.Options.parse(sa[0]);
-    Searcher.Options ob = Searcher.Options.parse(sb[0]);
+    Searcher.Options oa = SearchOptions.parse(sa[0]);
+    Searcher.Options ob = SearchOptions.parse(sb[0]);
     java.util.function.Function<Geometry, Evaluator> fa = Evaluators.factory(sa[1]);
     java.util.function.Function<Geometry, Evaluator> fb = Evaluators.factory(sb[1]);
     List<int[]> pool = MatchMain.readOpenings(Path.of(openings));

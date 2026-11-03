@@ -19,10 +19,8 @@ public final class LearnedEval implements Evaluator {
   private final short[] t2;
   private final short[] t3;
 
+  /** The blob must match the spec ({@link WeightBlob#matches}); callers check that first. */
   public LearnedEval(FeatureSpec spec, WeightBlob blob) {
-    if (!blob.matches(spec)) {
-      throw new IllegalArgumentException("weights were trained for another feature spec");
-    }
     this.g = spec.g;
     Tables t = g.tables;
     this.swap12 = t.swap12;

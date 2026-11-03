@@ -3,7 +3,6 @@ package ch.qc.tools;
 import ch.qc.bot.eval.Evaluator;
 import ch.qc.bot.eval.HandEval;
 import ch.qc.bot.eval.LearnedEval;
-import ch.qc.bot.eval.Weights;
 import ch.qc.bot.rules.Geometry;
 import java.nio.file.Path;
 import java.util.function.Function;
@@ -20,7 +19,7 @@ final class Evaluators {
     java.util.Map<String, LearnedEval> cache = new java.util.concurrent.ConcurrentHashMap<>();
     return g -> cache.computeIfAbsent(g.rows + "x" + g.cols, key -> {
       try {
-        return Weights.fromFile(Path.of(weights), g);
+        return WeightFiles.load(Path.of(weights), g);
       } catch (java.io.IOException e) {
         throw new java.io.UncheckedIOException(e);
       }

@@ -110,7 +110,7 @@ public final class OpeningGen {
     int cdStm = plies / 2;
     int cdOpp = (plies + 1) / 2;
     Searcher s = new Searcher(g, new HandEval(g), new TranspositionTable(16));
-    Searcher.Result r = s.run(b, stm, cdStm, cdOpp, plies, System.nanoTime(), nanos);
+    Searcher.Result r = s.run(b, stm, cdStm, cdOpp, plies, ch.qc.bot.Clock.nanos(), nanos);
     if (r.move() == Tactics.NONE || Math.abs(r.score()) >= BALANCED) {
       return null;
     }

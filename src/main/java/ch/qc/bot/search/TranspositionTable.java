@@ -25,21 +25,13 @@ public final class TranspositionTable {
   }
 
   /**
-   * Size chosen from the heap: at most an eighth of it, between 2^17 and 2^19 entries (2 to 8 MB). A 62 ms search
-   * visits about 60k nodes, so 2^19 entries is ample; larger tables (32 MB were tried) made every new bot instance
-   * leave so much garbage that a ParallelGC full collection paused a call for 108 ms.
+   * The bot's table: 2^18 entries (4 MB), the size the fixed-node harness uses. A 45 ms search visits about 40k
+   * nodes, so this is ample; larger tables (32 MB were tried) made every new bot instance leave so much garbage
+   * that a ParallelGC full collection paused a call for 108 ms. Uploaded bots may not query the heap size
+   * (java.lang.Runtime), so the size is fixed.
    */
-  public static TranspositionTable forHeap() {
-    long budget = Runtime.getRuntime().maxMemory() / 8 / 16;
-    int log2 = 17;
-    while (log2 < 19 && (1L << (log2 + 1)) <= budget) {
-      log2++;
-    }
-    try {
-      return new TranspositionTable(log2);
-    } catch (OutOfMemoryError e) {
-      return new TranspositionTable(16);
-    }
+  public static TranspositionTable forBot() {
+    return new TranspositionTable(18);
   }
 
   public void newSearch() {

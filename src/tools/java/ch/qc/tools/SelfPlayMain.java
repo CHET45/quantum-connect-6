@@ -186,7 +186,7 @@ public final class SelfPlayMain {
       int me = toMove;
       int opp = 3 - me;
       view.copyFrom(b);
-      Searcher.Result r = engines[me].run(view, me, counter[me], counter[opp], turn, System.nanoTime(),
+      Searcher.Result r = engines[me].run(view, me, counter[me], counter[opp], turn, ch.qc.bot.Clock.nanos(),
           Long.MAX_VALUE / 4, nodes);
       int move = r.move();
       if (move == Tactics.NONE) {
@@ -271,7 +271,7 @@ public final class SelfPlayMain {
     if (mid) {
       Board view = new Board(g);
       view.copyFrom(b);
-      int v = judge.run(view, toMove, counter[toMove], counter[3 - toMove], plies, System.nanoTime(),
+      int v = judge.run(view, toMove, counter[toMove], counter[3 - toMove], plies, ch.qc.bot.Clock.nanos(),
           Long.MAX_VALUE / 4, 3_000).score();
       if (Math.abs(v) >= 600) {
         return null;

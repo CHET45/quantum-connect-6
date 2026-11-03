@@ -122,7 +122,7 @@ class MateSuiteTest {
             Board copy = new Board(g);
             copy.copyFrom(b);
             long t0 = System.nanoTime();
-            int move = new Searcher(g, new HandEval(g), tt).run(copy, me, cdMe, cdOpp, ply, t0, BUDGET).move();
+            int move = new Searcher(g, new HandEval(g), tt).run(copy, me, cdMe, cdOpp, ply, ch.qc.bot.Clock.nanos(), BUDGET).move();
             maxNanos = Math.max(maxNanos, System.nanoTime() - t0);
             if (keepsWin(b, me, cdMe, cdOpp, move, plies)) {
               found[plies]++;
