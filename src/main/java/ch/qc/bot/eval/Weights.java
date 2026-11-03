@@ -3,48 +3,70 @@ package ch.qc.bot.eval;
 import ch.qc.bot.rules.Geometry;
 
 /**
- * Where the learned evaluation comes from (design 3.7): the blobs compiled into {@code EvalBlob}, one per board
- * size, else none and the bot uses the hand tables. The blobs are decoded and expanded once per JVM; the results
- * are immutable and shared by all bots. Harness tools load .qcw files themselves (ch.qc.tools.WeightFiles) and pass the evaluator in.
+ * Where the learned evaluation comes from (design 3.7): the blobs compiled into {@code EvalBlob}. A board uses the
+ * blob trained for its size if there is one, else the size-independent blob ({@link GenericSpec}) if there is one,
+ * else the hand tables. The blobs are decoded and expanded once per JVM; the results are immutable and shared by
+ * all bots. Harness tools load .qcw files themselves (ch.qc.tools.WeightFiles) and pass the evaluator in.
  */
 public final class Weights {
   private Weights() {}
 
   private static final class Holder {
-    static final LearnedEval[] EVALS = load();
+    static final WeightBlob[] BLOBS = parseAll();
+    static final LearnedEval[] EVALS = sized(BLOBS);
+    static final GenericTables GENERIC = generic(BLOBS);
   }
 
   /** Decodes the weights now (call from a constructor, outside any timed call). */
   public static void preload() {
-    LearnedEval[] ignored = Holder.EVALS;
+    GenericTables ignored = Holder.GENERIC;
   }
 
-  /** The learned evaluation if weights for this board size are available, else null. */
+  /** The learned evaluation for this board size if weights are available, else null. */
   public static Evaluator forGeometry(Geometry g) {
     for (LearnedEval e : Holder.EVALS) {
       if (e != null && e.fits(g)) {
         return e;
       }
     }
-    return null;
+    GenericTables t = Holder.GENERIC;
+    return t == null ? null : t.forGeometry(g);
   }
 
   /** A learned evaluation from an inflated blob, or null if the blob is broken or does not match its spec. */
   public static LearnedEval fromBlob(WeightBlob blob) {
-    if (blob == null) {
+    if (blob == null || blob.generic()) {
       return null;
     }
     FeatureSpec spec = new FeatureSpec(new Geometry(blob.rows, blob.cols, blob.k));
     return blob.matches(spec) ? new LearnedEval(spec, blob) : null;
   }
 
-  private static LearnedEval[] load() {
-    // a broken or mismatched blob must never stop the bot: that board size falls back to the hand tables
-    LearnedEval[] evals = new LearnedEval[EvalBlob.BLOBS.length];
-    for (int i = 0; i < evals.length; i++) {
-      evals[i] = fromBlob(WeightBlob.parse(decodeBase64(EvalBlob.BLOBS[i])));
+  // a broken or mismatched blob must never stop the bot: it is skipped and the board falls back further
+  private static WeightBlob[] parseAll() {
+    WeightBlob[] blobs = new WeightBlob[EvalBlob.BLOBS.length];
+    for (int i = 0; i < blobs.length; i++) {
+      blobs[i] = WeightBlob.parse(decodeBase64(EvalBlob.BLOBS[i]));
+    }
+    return blobs;
+  }
+
+  private static LearnedEval[] sized(WeightBlob[] blobs) {
+    LearnedEval[] evals = new LearnedEval[blobs.length];
+    for (int i = 0; i < blobs.length; i++) {
+      evals[i] = fromBlob(blobs[i]);
     }
     return evals;
+  }
+
+  private static GenericTables generic(WeightBlob[] blobs) {
+    for (WeightBlob b : blobs) {
+      GenericTables t = GenericTables.fromBlob(b);
+      if (t != null) {
+        return t;
+      }
+    }
+    return null;
   }
 
   /** Decodes concatenated standard Base64 chunks; null on a malformed input. */

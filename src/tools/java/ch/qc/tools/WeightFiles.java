@@ -1,5 +1,7 @@
 package ch.qc.tools;
 
+import ch.qc.bot.eval.Evaluator;
+import ch.qc.bot.eval.GenericTables;
 import ch.qc.bot.eval.LearnedEval;
 import ch.qc.bot.eval.WeightBlob;
 import ch.qc.bot.eval.Weights;
@@ -46,9 +48,19 @@ public final class WeightFiles {
     return blob;
   }
 
-  /** A learned evaluation from a .qcw file; throws if it does not fit the geometry or its feature spec. */
-  public static LearnedEval load(Path file, Geometry g) throws IOException {
+  /**
+   * A learned evaluation from a .qcw file: a generic blob serves any geometry, a sized one only its own; throws if
+   * it does not fit the geometry or its feature spec.
+   */
+  public static Evaluator load(Path file, Geometry g) throws IOException {
     WeightBlob blob = parse(Files.readAllBytes(file));
+    if (blob.generic()) {
+      Evaluator e = GenericTables.fromBlob(blob).forGeometry(g);
+      if (e == null) {
+        throw new IllegalArgumentException(file + " is for windows of " + blob.k + " cells");
+      }
+      return e;
+    }
     if (blob.rows != g.rows || blob.cols != g.cols) {
       throw new IllegalArgumentException(file + " is for " + blob.rows + "x" + blob.cols);
     }

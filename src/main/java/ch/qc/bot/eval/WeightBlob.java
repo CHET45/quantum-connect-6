@@ -4,7 +4,8 @@ package ch.qc.bot.eval;
  * The learned tables as written by training/qctrain/export.py (design 3.7), after inflating the zlib stream of
  * the .qcw file: big-endian, "QCW1", i32 version, rows, cols, k, i64 specHash, i32 scale, stages, cdContexts,
  * classes, codes, t1, t2, t3, then int16 W[stage][cd][class * codes + code], T1[cd][t1], T2[cd][t2], T3[t3].
- * A blob with one stage holds stage-independent window tables (large boards, where per-stage tables would cost
+ * A blob with rows = cols = 0 holds the size-independent tables of {@link GenericSpec} (its spec hash is
+ * {@link GenericSpec#hash}). A blob with one stage holds stage-independent window tables (large boards, where per-stage tables would cost
  * too much memory). The bot gets these bytes already inflated (the build does it, see EvalBlob), because uploaded bots may not use
  * java.util.zip or java.nio; parsing is by hand and reports problems by returning null, as bots may not throw.
  */
@@ -59,7 +60,9 @@ public final class WeightBlob {
     int n1 = i32(raw, 48);
     int n2 = i32(raw, 52);
     int n3 = i32(raw, 56);
-    if (scale != 256 || h[2] < 1 || h[2] > 9 || h[0] < 1 || h[1] < 1
+    boolean generic = h[0] == 0 && h[1] == 0;
+    if (scale != 256 || h[2] < 1 || h[2] > 9 || (!generic && (h[0] < 1 || h[1] < 1))
+        || (generic && (h[6] != GenericSpec.CLASSES || specHash != GenericSpec.hash(h[2])))
         || (h[4] != Features.STAGES && h[4] != 1)
         || h[5] != Features.CD_CONTEXTS || n1 != Features.T1_SIZE || n2 != Features.T2_SIZE
         || n3 != Features.T3_SIZE || h[6] < 1 || h[7] < 1 || (long) h[6] * h[7] > 1L << 24) {
@@ -90,6 +93,11 @@ public final class WeightBlob {
     }
     pos[0] = at;
     return s;
+  }
+
+  /** True for tables of the size-independent family ({@link GenericSpec}): rows and cols are 0. */
+  public boolean generic() {
+    return rows == 0 && cols == 0;
   }
 
   /** True if the blob was trained for this feature spec. */

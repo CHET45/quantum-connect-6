@@ -137,7 +137,7 @@ class WeightsTest {
     String dir = System.getProperty("qc.parity");
     assumeTrue(dir != null, "set -Pqc.parity=DIR to run the parity test");
     Path model = Path.of(dir);
-    LearnedEval e = WeightFiles.load(model.resolve("eval.qcw"), G);
+    LearnedEval e = (LearnedEval) WeightFiles.load(model.resolve("eval.qcw"), G);
     ByteBuffer bb = ByteBuffer.wrap(Files.readAllBytes(model.resolve("parity-8x12.qpv")))
         .order(ByteOrder.LITTLE_ENDIAN);
     assertEquals('Q', bb.get());
