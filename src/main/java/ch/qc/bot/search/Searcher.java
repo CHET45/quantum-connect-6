@@ -363,14 +363,10 @@ public final class Searcher {
       return result(x, Tactics.NONE, 0, 0, startNanos);
     }
     if (cdMe >= COOLDOWN) {
-      Board probe = x.pool(0);
       for (int c = 0; c < g.cols; c++) {
         if (!root.isFull(c)) {
-          if (root.blastMayWin(c)) {
-            probe.copyFrom(root);
-            if (probe.blast(c)) {
-              return result(x, c | Tactics.SPECIAL, MATE - 1, 1, startNanos);
-            }
+          if (root.blastWins(c)) {
+            return result(x, c | Tactics.SPECIAL, MATE - 1, 1, startNanos);
           }
           moves[n++] = c | Tactics.SPECIAL;
         }
@@ -561,7 +557,7 @@ public final class Searcher {
       }
     }
     boolean ready = cdStm >= COOLDOWN;
-    if (ready && depth >= options.blastWinMinDepth && blastWins(x, b, ply)) {
+    if (ready && depth >= options.blastWinMinDepth && blastWins(b)) {
       return MATE - ply - 1;
     }
     if (oppThreats >= 2 && !ready) {
@@ -739,14 +735,10 @@ public final class Searcher {
     return options.exactLeaves ? MATE - ply - (2 * LEAF_VCF_MOVES + 1) : TENTATIVE_WIN;
   }
 
-  private boolean blastWins(Ctx x, Board b, int ply) {
+  private boolean blastWins(Board b) {
     for (int c = 0; c < g.cols; c++) {
-      if (b.blastMayWin(c)) {
-        Board p = x.pool(ply);
-        p.copyFrom(b);
-        if (p.blast(c)) {
-          return true;
-        }
+      if (b.blastWins(c)) {
+        return true;
       }
     }
     return false;

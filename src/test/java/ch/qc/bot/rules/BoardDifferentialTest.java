@@ -45,7 +45,9 @@ class BoardDifferentialTest {
           }
           child.copyFrom(b);
           blastsChecked++;
-          if (child.blast(c)) {
+          boolean blastWon = child.blast(c);
+          assertEquals(blastWon, b.blastWins(c), ctx + " blast win test in column " + c);
+          if (blastWon) {
             blastWins++;
             assertTrue(b.blastMayWin(c), ctx + " prefilter rejected a winning blast in column " + c);
           }

@@ -26,6 +26,8 @@ public final class Board {
 
   private final int[] stamp;
   private int stampGen;
+  /** fall[c]: discs a blast being tested takes out of column c (from the band up); 0 outside {@link #blastWins}. */
+  private final int[] fall;
 
   public Board(Geometry g) {
     this.g = g;
@@ -37,6 +39,7 @@ public final class Board {
     wc = new short[g.windows];
     thr = new byte[3][g.cells];
     stamp = new int[g.windows];
+    fall = new int[g.cols];
   }
 
   public void clear() {
@@ -255,6 +258,64 @@ public final class Board {
       return false;
     }
     return (col > 0 && height[col - 1] >= h + 3) || (col + 1 < g.cols && height[col + 1] >= h + 3);
+  }
+
+  /**
+   * What {@link #blast} would return in col, without changing or copying anything; the position must hold no line.
+   * A new line must contain a disc that falls, and only neighbours at least three discs taller than col have one, so
+   * the test walks the four lines through each falling disc on the board as it would be after the blast.
+   */
+  public boolean blastWins(int col) {
+    if (!blastMayWin(col)) {
+      return false;
+    }
+    int h = height[col];
+    int lo = Math.max(h - 1, 0);
+    int from = Math.max(col - 1, 0);
+    int to = Math.min(col + 1, g.cols - 1);
+    for (int n = from; n <= to; n++) {
+      fall[n] = Math.max(0, Math.min(h + 1, height[n] - 1) - lo + 1);
+    }
+    boolean win = (col > 0 && fallingLine(col - 1, lo)) || (col + 1 < g.cols && fallingLine(col + 1, lo));
+    for (int n = from; n <= to; n++) {
+      fall[n] = 0;
+    }
+    return win;
+  }
+
+  /** True if a disc falling in column n completes a line, with fall[] set up for the tested blast. */
+  private boolean fallingLine(int n, int lo) {
+    int base = n * rows;
+    int drop = fall[n];
+    int end = height[n] - drop;
+    for (int y = lo; y < end; y++) {
+      int v = cell[base + y + drop];
+      if (run(n, y, 1, 0, v, lo) + run(n, y, -1, 0, v, lo) >= k - 1
+          || run(n, y, 0, 1, v, lo) + run(n, y, 0, -1, v, lo) >= k - 1
+          || run(n, y, 1, 1, v, lo) + run(n, y, -1, -1, v, lo) >= k - 1
+          || run(n, y, 1, -1, v, lo) + run(n, y, -1, 1, v, lo) >= k - 1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Discs of colour v next to (x, y) in direction (dx, dy) on the board after the tested blast, at most k - 1. */
+  private int run(int x, int y, int dx, int dy, int v, int lo) {
+    int n = 0;
+    while (n < k - 1) {
+      x += dx;
+      y += dy;
+      if (x < 0 || x >= g.cols || y < 0 || y >= rows) {
+        break;
+      }
+      int real = y >= lo ? y + fall[x] : y;
+      if (real >= rows || cell[x * rows + real] != v) {
+        break;
+      }
+      n++;
+    }
+    return n;
   }
 
   /** Full scan for a K-line of the given colour (1 or 2), or of either colour when colour is 0. */
