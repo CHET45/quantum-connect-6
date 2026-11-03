@@ -49,7 +49,7 @@ public final class LatencyHistogram {
   }
 
   public String summary() {
-    return String.format("n=%d p50=%.2fms p99=%.2fms p99.99=%.2fms max=%.2fms",
+    return String.format(java.util.Locale.ROOT, "n=%d p50=%.2fms p99=%.2fms p99.99=%.2fms max=%.2fms",
         count(), quantileMillis(0.5), quantileMillis(0.99), quantileMillis(0.9999), maxMillis());
   }
 }

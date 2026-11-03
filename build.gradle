@@ -90,6 +90,64 @@ tasks.register('match', JavaExec) {
     args((project.findProperty('args') ?: '').toString().split(' ').findAll { !it.isBlank() })
 }
 
+// ./gradlew regression: all tests, then a non-regression SPRT [-10, 0] of the current bot against the newest
+// frozen build in ladder/ (at most 300 pairs, real time, 6 threads)
+tasks.register('regression', JavaExec) {
+    group = 'verification'
+    description = 'Tests plus a non-regression match against the newest ladder jar'
+    dependsOn test
+    classpath = sourceSets.tools.runtimeClasspath
+    mainClass = 'ch.qc.tools.MatchMain'
+    maxHeapSize = '2g'
+    doFirst {
+        def jars = fileTree('ladder') { include '*.jar' }.files.sort { it.lastModified() }
+        if (jars.isEmpty()) {
+            throw new GradleException('ladder/ has no frozen jar to compare against')
+        }
+        args('--a', 'ch.qc.bot.QcBot', '--b', 'jar:' + jars.last().path, '--pairs', '300', '--threads', '6',
+             '--sprt', '-10,0', '--openings', 'suites/openings-8x12.txt', '--out', 'results/regression.jsonl')
+    }
+}
+
+// ./gradlew fastmatch -Pargs="--a +razor --b '' --nodes 20000 --sprt 0,10"
+tasks.register('fastmatch', JavaExec) {
+    group = 'verification'
+    description = 'Fixed-node in-process matches between search configurations'
+    classpath = sourceSets.tools.runtimeClasspath
+    mainClass = 'ch.qc.tools.FastMatch'
+    maxHeapSize = '4g'
+    args((project.findProperty('args') ?: '').toString().split(' ').findAll { !it.isBlank() })
+}
+
+// ./gradlew latency -Pargs="--calls 20000" -Pjvm="-XX:+UseSerialGC"
+tasks.register('latency', JavaExec) {
+    group = 'verification'
+    description = 'Bot latency through the engine timer: inside the call, around it, and the overhead'
+    classpath = sourceSets.tools.runtimeClasspath
+    mainClass = 'ch.qc.tools.LatencyProbe'
+    maxHeapSize = '2g'
+    jvmArgs((project.findProperty('jvm') ?: '').toString().split(' ').findAll { !it.isBlank() })
+    args((project.findProperty('args') ?: '').toString().split(' ').findAll { !it.isBlank() })
+}
+
+// ./gradlew openings -Pargs="--count 2000 --ms 250"
+tasks.register('openings', JavaExec) {
+    group = 'verification'
+    description = 'Generates the balanced opening pool for colour-swapped matches'
+    classpath = sourceSets.tools.runtimeClasspath
+    mainClass = 'ch.qc.tools.OpeningGen'
+    args((project.findProperty('args') ?: '').toString().split(' ').findAll { !it.isBlank() })
+}
+
+// ./gradlew report -Pargs="--sprt 0,10 results/m3-vs-m2.jsonl"
+tasks.register('report', JavaExec) {
+    group = 'verification'
+    description = 'Pair statistics and SPRT verdicts of stored match logs'
+    classpath = sourceSets.tools.runtimeClasspath
+    mainClass = 'ch.qc.tools.ReportMain'
+    args((project.findProperty('args') ?: '').toString().split(' ').findAll { !it.isBlank() })
+}
+
 // Loads the built jar through a URLClassLoader in a fresh JVM, like an upload harness would
 tasks.register('probe', JavaExec) {
     group = 'verification'

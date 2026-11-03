@@ -24,11 +24,15 @@ public final class TranspositionTable {
     mask = (1 << log2Entries) - 1;
   }
 
-  /** Size chosen from the heap: at most an eighth of it, between 2^18 and 2^21 entries (4 to 32 MB). */
+  /**
+   * Size chosen from the heap: at most an eighth of it, between 2^17 and 2^19 entries (2 to 8 MB). A 62 ms search
+   * visits about 60k nodes, so 2^19 entries is ample; larger tables (32 MB were tried) made every new bot instance
+   * leave so much garbage that a ParallelGC full collection paused a call for 108 ms.
+   */
   public static TranspositionTable forHeap() {
     long budget = Runtime.getRuntime().maxMemory() / 8 / 16;
-    int log2 = 18;
-    while (log2 < 21 && (1L << (log2 + 1)) <= budget) {
+    int log2 = 17;
+    while (log2 < 19 && (1L << (log2 + 1)) <= budget) {
       log2++;
     }
     try {

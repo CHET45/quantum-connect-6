@@ -157,3 +157,51 @@ defender-blast refutations over 79,051 calls.
 Latency: 25x25 / 40x40 / 10x14 / 12x8 against `SpecialMoveBot` on 2 threads, max 67 ms (was 101 ms); 8x12 robustness
 run max 63 ms. Allocation per call on 8x12 p99 91 KB; on 40x40 p99 0.8 MB (a 40x40 board copy is about 40 KB).
 0 timeouts, 0 invalid columns, 0 invalid specials in all runs.
+
+## M4 Harness and SPRT (2026-11-03)
+
+What exists (all in `src/tools`, none of it in the uploadable jar):
+
+- `Sprt`: pentanomial GSPRT over colour-swapped pairs with the LLR of design 5.3, no verdict before 50 pairs.
+- `ReportMain` (`./gradlew report`): pair statistics, draw / blast / first-player shares and the SPRT verdict of
+  stored JSONL logs (also the logs written before the decimal-comma fix).
+- `MatchMain` (`./gradlew match`): pairs are tasks, results stream to the JSONL file as they finish, `--sprt E0,E1`
+  stops at the verdict, `--openings FILE` uses the pool (pair p plays line (p + seed) mod N in both colours),
+  pentanomial summary, draw share, blast share and first-player score in every report.
+- `OpeningGen` (`./gradlew openings`): `suites/openings-8x12.txt`, 2,000 lines (1,477 of 4-10 plies, 523 of 20-30
+  plies), each kept if no six, no full column and a 250 ms search scores the final position within +-150 units;
+  2,208 candidates, 1 minute on 6 threads. The design asked for a 1-second search; 250 ms was used to keep it short.
+- `FastGame` / `FastMatch` (`./gradlew fastmatch`): the in-process game loop with the engine's turn rules and
+  fixed-node search (`Searcher.run(..., maxNodes)`), reproducible bit for bit, about 15,000 games per hour on 16
+  threads at 20k nodes per move.
+- `LatencyProbe` (`./gradlew latency`): games driven through the engine's own `Experiment.executeWithTimeout`,
+  recording time inside the bot, around the official call, and the difference.
+- `./gradlew regression`: all tests, then a non-regression SPRT [-10, 0] against the newest jar in `ladder/`.
+- `ToolsFields`: harness access to the package-private `QuantumField` (tools source set only).
+
+| Check | Result |
+|---|---|
+| SPRT simulation (`SprtTest`, 1,000 runs per point, 40 % draws, uncapped) | P(accept H1): 0.003 at -5 Elo, 0.044 at 0 (alpha 0.05), 0.951 at +10 (power 0.95), 1.000 at +20; with the 4,000-pair cap 0.868 at +10. Without the 50-pair minimum the false-positive rate was 0.345 |
+| FastGame against the official engine (`FastGameConformanceTest`) | 300 games of position-determined engines identical in winner, reason and length (286 six, 9 blast, 5 full) |
+| Fixed-node determinism | two runs of 100 games with the same seed give byte-identical logs |
+| Stored verdicts reproduced (`report`, bounds [0, 10]) | M1 vs M0: H1 (500/500 pairs WW); M2 vs M1: H1, +352 Elo [+329, +377]; M3 vs M2: no verdict at 600 pairs, +6 [-8, +21] |
+| 2,000 official-protocol games, M3 vs M3, pool openings, 8 threads | 20.4 minutes, 0 timeouts in 253,161 calls; score 50.3 %, draw share 49.5 %, decided by a blast 4.1 %, first player scores 50.3 % (no first-move advantage measurable) |
+
+Latency through the engine timer (10,000 calls each, one game at a time):
+
+| GC / load | inside the bot p99.99 / max | around the official call max | engine overhead p50 / max |
+|---|---|---|---|
+| G1 (default) | 64.2 / 65.5 ms | 65.8 ms | 0.21 / 2.9 ms |
+| Serial | 64.4 / 64.4 ms | 64.7 ms | 0.21 / 4.5 ms |
+| Parallel, 32 MB TT | 92.2 / **108.2** ms | 108.6 ms | 0.20 / 4.7 ms |
+| Parallel, 8 MB TT (current) | 64.4 / 64.7 ms | 64.9 ms | 0.21 / 3.2 ms; one `useSpecialMove` call hit a 95 ms pause |
+| G1 with 6 busy background threads | 64.1 / 67.4 ms | 67.8 ms | 0.23 / 4.0 ms |
+
+The 108 ms call was a ParallelGC full collection: each bot instance allocated a 32 MB transposition table, so
+games that create new instances fill the old generation. The table is now capped at 2^19 entries (8 MB) and the
+VCF table at 2^16 (1 MB); against `ladder/m3.jar` (32 MB table) the current build scores 49.5 % (-3 Elo
+[-24, +17], 600 games), i.e. no measurable cost. A GC pause in `useSpecialMove` only drops the special (R16).
+Which GC and heap the tournament JVM uses is unknown (design 8.2).
+
+Not done: SPSA tuning of the scalar parameters. The scalars it would tune (hand-evaluation weights, margins) are
+replaced or retuned by the learned tables of M5, so it is deferred until after M5.

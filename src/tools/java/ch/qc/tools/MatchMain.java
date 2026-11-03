@@ -12,35 +12,40 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.SplittableRandom;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Minimal fixed-N match runner in the official protocol (real 100 ms limits, thread per call): colour-swapped
- * game pairs from shared random openings, timeouts and illegal answers per bot, latency percentiles.
+ * Match runner in the official protocol (real 100 ms limits, thread per call): colour-swapped game pairs from a
+ * shared opening, pentanomial statistics with an optional SPRT that stops the match at a verdict (design 5.2,
+ * 5.3), timeouts and illegal answers per bot, latency and search statistics.
  *
  * <pre>
- * --a SPEC --b SPEC       bots: a class with a public no-argument constructor, or jar:PATH (frozen build)
- * --pairs N               game pairs (default 50)
- * --sizes 8x12,6x7        board sizes, cycled per pair (default 8x12)
- * --opening N             random normal plies before the bots take over, at most 10 (default 4)
+ * --a SPEC --b SPEC       bots: a class name, qcbot:+opt,-opt (current QcBot with search switches), jar:PATH
+ * --pairs N               game pairs, the cap when --sprt is given (default 50)
+ * --sprt ELO0,ELO1        stop at the SPRT verdict (alpha = beta = 0.05)
+ * --openings FILE         opening pool, one comma-separated column list per line; pair p uses line (p + seed) mod N
+ * --opening N             without a pool: random normal plies before the bots take over, at most 10 (default 4)
+ * --sizes 8x12,6x7        board sizes, cycled per pair (default 8x12; a pool is for its own size)
  * --threads N             parallel games (default cores - 1)
- * --seed S                opening seed (default 1)
- * --out FILE              one JSON line per game
+ * --seed S                random-opening seed and pool offset (default 1)
+ * --out FILE              one JSON line per game, written as pairs finish
  * </pre>
  */
 public final class MatchMain {
-  public record Result(int pair, int game, int rows, int cols, boolean aFirst, int scoreA2, String reason, int plies,
-      int timeoutsA, int timeoutsB, int invalidA, int invalidB, int badSpecialsA, int badSpecialsB) {
+  public record Result(int pair, int game, int opening, int rows, int cols, boolean aFirst, int scoreA2,
+      String reason, int plies, int timeoutsA, int timeoutsB, int invalidA, int invalidB, int badSpecialsA,
+      int badSpecialsB) {
     String json() {
-      return String.format(
-          "{\"pair\":%d,\"game\":%d,\"rows\":%d,\"cols\":%d,\"aFirst\":%b,\"scoreA\":%.1f,\"reason\":\"%s\","
-              + "\"plies\":%d,\"timeoutsA\":%d,\"timeoutsB\":%d,\"invalidA\":%d,\"invalidB\":%d,"
+      return String.format(java.util.Locale.ROOT,
+          "{\"pair\":%d,\"game\":%d,\"opening\":%d,\"rows\":%d,\"cols\":%d,\"aFirst\":%b,\"scoreA\":%.1f,"
+              + "\"reason\":\"%s\",\"plies\":%d,\"timeoutsA\":%d,\"timeoutsB\":%d,\"invalidA\":%d,\"invalidB\":%d,"
               + "\"badSpecialsA\":%d,\"badSpecialsB\":%d}",
-          pair, game, rows, cols, aFirst, scoreA2 / 2.0, reason, plies, timeoutsA, timeoutsB, invalidA, invalidB,
-          badSpecialsA, badSpecialsB);
+          pair, game, opening, rows, cols, aFirst, scoreA2 / 2.0, reason, plies, timeoutsA, timeoutsB, invalidA,
+          invalidB, badSpecialsA, badSpecialsB);
     }
   }
 
@@ -53,6 +58,8 @@ public final class MatchMain {
     int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
     long seed = 1;
     String out = null;
+    double[] sprt = null;
+    String openings = null;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--a" -> a = args[++i];
@@ -63,21 +70,58 @@ public final class MatchMain {
         case "--threads" -> threads = Integer.parseInt(args[++i]);
         case "--seed" -> seed = Long.parseLong(args[++i]);
         case "--out" -> out = args[++i];
+        case "--sprt" -> {
+          String[] e = args[++i].split(",");
+          sprt = new double[] {Double.parseDouble(e[0]), Double.parseDouble(e[1])};
+        }
+        case "--openings" -> openings = args[++i];
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
     Match m = new Match(a, b, parseSizes(sizes), opening, seed);
-    List<Result> results = m.run(pairs, threads);
+    if (openings != null) {
+      m.useOpenings(readOpenings(Path.of(openings)));
+    }
+    if (sprt != null) {
+      m.useSprt(sprt[0], sprt[1]);
+    }
+    PrintWriter w = null;
     if (out != null) {
       Path p = Path.of(out);
       if (p.getParent() != null) {
         Files.createDirectories(p.getParent());
       }
-      try (PrintWriter w = new PrintWriter(Files.newBufferedWriter(p, StandardCharsets.UTF_8))) {
-        results.forEach(r -> w.println(r.json()));
+      w = new PrintWriter(Files.newBufferedWriter(p, StandardCharsets.UTF_8), true);
+    }
+    long t0 = System.nanoTime();
+    try {
+      List<Result> results = m.run(pairs, threads, w);
+      System.out.println(m.report(results));
+      System.out.printf(java.util.Locale.ROOT, "  wall time %.1f min on %d threads%n", (System.nanoTime() - t0) / 6e10,
+          threads);
+    } finally {
+      if (w != null) {
+        w.close();
       }
     }
-    System.out.println(m.report(results));
+  }
+
+  /** Opening pool file: one comma-separated column list per line (plies alternate from the first player). */
+  public static List<int[]> readOpenings(Path file) throws java.io.IOException {
+    List<int[]> pool = new ArrayList<>();
+    for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+      line = line.trim();
+      if (line.isEmpty() || line.startsWith("#")) {
+        continue;
+      }
+      String[] parts = line.split(",");
+      int[] cols = new int[parts.length];
+      for (int i = 0; i < parts.length; i++) {
+        cols[i] = Integer.parseInt(parts[i].trim());
+      }
+      pool.add(cols);
+    }
+    return pool;
   }
 
   static int[][] parseSizes(String spec) {
@@ -108,6 +152,9 @@ public final class MatchMain {
     private long nodesA;
     private long nanosA;
     private final long[] vcfA = new long[3];
+    private List<int[]> openingPool;
+    private Sprt sprt = new Sprt(0, 10);
+    private boolean stopAtVerdict;
 
     public Match(String classA, String classB, int[][] sizes, int openingPlies, long seed) {
       this.classA = classA;
@@ -121,20 +168,46 @@ public final class MatchMain {
       return callsA.get();
     }
 
+    public void useOpenings(List<int[]> pool) {
+      openingPool = pool;
+    }
+
+    /** Stop the match at the verdict of an SPRT with these bounds. */
+    public void useSprt(double elo0, double elo1) {
+      sprt = new Sprt(elo0, elo1);
+      stopAtVerdict = true;
+    }
+
+    public Sprt sprt() {
+      return sprt;
+    }
+
     public List<Result> run(int pairs, int threads) throws Exception {
+      return run(pairs, threads, null);
+    }
+
+    /** Plays up to the given number of pairs; each pair is one task, its two games share the opening. */
+    public List<Result> run(int pairs, int threads, PrintWriter out) throws Exception {
       ExecutorService pool = Executors.newFixedThreadPool(threads);
       try {
-        List<Future<Result>> futures = new ArrayList<>();
+        CompletionService<Result[]> done = new ExecutorCompletionService<>(pool);
         for (int p = 0; p < pairs; p++) {
-          for (int g = 0; g < 2; g++) {
-            int pair = p;
-            int game = g;
-            futures.add(pool.submit(() -> play(pair, game)));
-          }
+          int pair = p;
+          done.submit(() -> new Result[] {play(pair, 0), play(pair, 1)});
         }
         List<Result> results = new ArrayList<>();
-        for (Future<Result> f : futures) {
-          results.add(f.get());
+        for (int p = 0; p < pairs; p++) {
+          Result[] r = done.take().get();
+          results.add(r[0]);
+          results.add(r[1]);
+          sprt.add(r[0].scoreA2 + r[1].scoreA2);
+          if (out != null) {
+            out.println(r[0].json());
+            out.println(r[1].json());
+          }
+          if (stopAtVerdict && sprt.verdict() != Sprt.Verdict.CONTINUE) {
+            break;
+          }
         }
         return results;
       } finally {
@@ -146,7 +219,9 @@ public final class MatchMain {
       int[] size = sizes[pair % sizes.length];
       int rows = size[0];
       int cols = size[1];
-      int[][] openings = opening(rows, cols, new SplittableRandom(seed * 1_000_003L + pair));
+      int openingId = openingPool == null ? -1 : (int) ((pair + seed) % openingPool.size());
+      int[][] openings = openingPool == null ? opening(rows, cols, new SplittableRandom(seed * 1_000_003L + pair))
+          : split(openingPool.get(openingId));
       boolean aFirst = game == 0;
       BotProbe pa = new BotProbe(instantiate(classA));
       BotProbe pb = new BotProbe(instantiate(classB));
@@ -191,9 +266,23 @@ public final class MatchMain {
           vcfA[i] += v[i];
         }
       }
-      return new Result(pair, game, rows, cols, aFirst, scoreA2, reason, plies(exp),
+      return new Result(pair, game, openingId, rows, cols, aFirst, scoreA2, reason, plies(exp),
           Math.max(0, pa.expectedPlacements() - placedA), Math.max(0, pb.expectedPlacements() - placedB),
           pa.invalidColumns(), pb.invalidColumns(), pa.invalidSpecials(), pb.invalidSpecials());
+    }
+
+    /** Columns of an opening line split into the first player's and the second player's scripted turns. */
+    private static int[][] split(int[] line) {
+      int[] first = new int[(line.length + 1) / 2];
+      int[] second = new int[line.length / 2];
+      for (int i = 0; i < line.length; i++) {
+        if (i % 2 == 0) {
+          first[i / 2] = line[i];
+        } else {
+          second[i / 2] = line[i];
+        }
+      }
+      return new int[][] {first, second};
     }
 
     /** Random normal plies on an empty board, split per side; at most 10, so neither side can have six yet. */
@@ -253,7 +342,7 @@ public final class MatchMain {
       synchronized (depthA) {
         double nps = nanosA == 0 ? 0 : nodesA * 1e9 / nanosA;
         long calls = searchTimeA.count();
-        return String.format("median depth %d, %.0f knodes/s, allocation per call p99 %.0f KB max %.0f KB%n"
+        return String.format(java.util.Locale.ROOT, "median depth %d, %.0f knodes/s, allocation per call p99 %.0f KB max %.0f KB%n"
                 + "    search time %s; outside the search %s%n"
                 + "    VCF: %.1f%% of nodes, %.2f proofs per call, %d defender-blast refutations",
             medianDepthA(), nps / 1000, allocationA.quantileMillis(0.99), allocationA.maxMillis(),
@@ -276,7 +365,9 @@ public final class MatchMain {
       int iB = 0;
       int sA = 0;
       int sB = 0;
+      double firstScore = 0;
       for (Result r : results) {
+        firstScore += r.aFirst ? r.scoreA2 / 2.0 : 1 - r.scoreA2 / 2.0;
         score += r.scoreA2 / 2.0;
         if (r.scoreA2 == 2) {
           wins++;
@@ -300,13 +391,17 @@ public final class MatchMain {
       }
       double pct = games == 0 ? 0 : score / games;
       double elo = pct <= 0 || pct >= 1 ? Double.NaN : -400 * Math.log10(1 / pct - 1);
-      return String.format(
+      return String.format(java.util.Locale.ROOT,
           "%s vs %s: %d games, A +%d =%d -%d, score %.1f%% (Elo %+.0f)%n"
-              + "  decided by six %d, by blast %d; draws full %d, at cap %d%n"
+              + "  %s%n"
+              + "  decided by six %d, by blast %d; draws full %d, at cap %d; draw share %.1f%%, blast share %.1f%%,"
+              + " first player scores %.1f%%%n"
               + "  A: timeouts %d, invalid columns %d, invalid specials %d; accelerate %s; special %s%n"
               + "  A search: %s%n"
               + "  B: timeouts %d, invalid columns %d, invalid specials %d; accelerate %s",
-          classA, classB, games, wins, draws, losses, 100 * pct, elo, reasons[0], reasons[1], reasons[2], reasons[3],
+          classA, classB, games, wins, draws, losses, 100 * pct, elo, sprt.summary(), reasons[0], reasons[1],
+          reasons[2], reasons[3], games == 0 ? 0 : 100.0 * (reasons[2] + reasons[3]) / games,
+          games == 0 ? 0 : 100.0 * reasons[1] / games, games == 0 ? 0 : 100 * firstScore / games,
           tA, iA, sA, latencyA.summary(), specialLatencyA.summary(), searchSummary(), tB, iB, sB, latencyB.summary());
     }
   }

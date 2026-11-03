@@ -106,6 +106,7 @@ public final class Searcher {
   private final class Ctx {
     final int token;
     final long deadline;
+    final long maxNodes;
     final int turnBase;
     long nodes;
     final int[][] moves = new int[MAX_PLY][];
@@ -116,9 +117,10 @@ public final class Searcher {
     final Vcf vcf;
     final Vcf leafVcf;
 
-    Ctx(int token, long deadline, int turnBase) {
+    Ctx(int token, long deadline, long maxNodes, int turnBase) {
       this.token = token;
       this.deadline = deadline;
+      this.maxNodes = maxNodes;
       this.turnBase = turnBase;
       vcf = new Vcf(g, vcfTable, true);
       leafVcf = options.exactLeaves ? vcf : new Vcf(g, vcfTable, false);
@@ -201,9 +203,19 @@ public final class Searcher {
    * @param turnIndex engine iteration index of this turn (both players, from 0), for the 1,000-turn cap
    */
   public Result run(Board root, int me, int cdMe, int cdOpp, int turnIndex, long startNanos, long hardNanos) {
+    return run(root, me, cdMe, cdOpp, turnIndex, startNanos, hardNanos, Long.MAX_VALUE);
+  }
+
+  /**
+   * As {@link #run(Board, int, int, int, int, long, long)} with a node budget as well. With an unreachable time
+   * limit the search is reproducible: it stops at the first clock poll after maxNodes and starts no iteration once a
+   * third of the budget is used (the harness's fixed-node mode, design 5.2).
+   */
+  public Result run(Board root, int me, int cdMe, int cdOpp, int turnIndex, long startNanos, long hardNanos,
+      long maxNodes) {
     int myToken = ++token;
     tt.newSearch();
-    Ctx x = new Ctx(myToken, startNanos + hardNanos, turnIndex);
+    Ctx x = new Ctx(myToken, startNanos + hardNanos, maxNodes, turnIndex);
     int opp = 3 - me;
     cdMe = Math.min(cdMe, COOLDOWN);
     cdOpp = Math.min(cdOpp, COOLDOWN);
@@ -288,7 +300,7 @@ public final class Searcher {
       completed = depth;
       sortByScore(moves, scores, n);
       long elapsed = System.nanoTime() - startNanos;
-      if (Math.abs(bestScore) > MATE_BOUND || n == 1 || elapsed * EBF > hardNanos) {
+      if (Math.abs(bestScore) > MATE_BOUND || n == 1 || elapsed * EBF > hardNanos || x.nodes * EBF > maxNodes) {
         break;
       }
     }
@@ -586,7 +598,8 @@ public final class Searcher {
   }
 
   private void poll(Ctx x) {
-    if (System.nanoTime() > x.deadline || token != x.token || Thread.currentThread().isInterrupted()) {
+    if (x.nodes > x.maxNodes || System.nanoTime() > x.deadline || token != x.token
+        || Thread.currentThread().isInterrupted()) {
       throw ABORT;
     }
   }

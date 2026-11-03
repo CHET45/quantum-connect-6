@@ -20,7 +20,16 @@ Commands (the Gradle wrapper downloads JDK 25 if needed):
 ./gradlew match -Pargs="--b ch.qc.starter.SpecialMoveBot --pairs 200"
 ./gradlew build probe                            # jar, then load it through an isolated class loader
 ./gradlew run                                    # emulator window: QcBot vs SpecialMoveBot
+./gradlew match -Pargs="--b jar:ladder/m3.jar --openings suites/openings-8x12.txt --sprt 0,10 --pairs 2000"
+./gradlew fastmatch -Pargs="--a +razor --nodes 20000 --sprt 0,10"   # fixed-node, reproducible, all cores
+./gradlew report -Pargs="--sprt 0,10 results/m3-vs-m2.jsonl"        # verdict of a stored log
+./gradlew latency -Pargs="--calls 20000" -Pjvm="-XX:+UseSerialGC"   # latency through the engine timer
+./gradlew regression                             # tests + non-regression SPRT against the newest ladder jar
 ```
+
+Bot specs for `--a/--b`: a class name, `qcbot:+opt,-opt` (current QcBot with search switches, see
+`Searcher.Options`), or `jar:PATH` (a frozen build; `ladder/mN.jar` are built from the git tags). Results and the
+history of each milestone are in [`docs/milestones.md`](docs/milestones.md).
 
 ---
 

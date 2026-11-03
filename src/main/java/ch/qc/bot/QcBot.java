@@ -47,7 +47,7 @@ public final class QcBot implements Algorithm {
   public QcBot(Searcher.Options options) {
     this.options = options;
     tt = TranspositionTable.forHeap();
-    vcfTable = new Vcf.Table(17);
+    vcfTable = new Vcf.Table(16);
   }
 
   @Override
