@@ -10,17 +10,16 @@ import ch.qc.bot.rules.Tables;
  * family from the threat cells: discs-below distance d of each threat cell, stacked threats and the waiting-game
  * parity of the lowest latent threat per column. Immutable after construction, shareable between threads.
  */
-public final class HandEval implements Evaluator {
+public final class HandEval extends WindowSumEval {
 
   private static final int[] VAL = {0, 3, 13, 50, 150, 384};
 
-  private final Geometry g;
   private final int rows;
   /** windowScore[stm][code]: contribution of one window seen by side to move stm. */
   private final short[][] windowScore = new short[3][];
 
   public HandEval(Geometry g) {
-    this.g = g;
+    super(g);
     this.rows = g.rows;
     Tables t = g.tables;
     for (int stm = 1; stm <= 2; stm++) {
@@ -51,11 +50,7 @@ public final class HandEval implements Evaluator {
   @Override
   public int evaluate(Board b, int stm, int cdStm, int cdOpp) {
     int opp = 3 - stm;
-    short[] ws = windowScore[stm];
-    int sum = 0;
-    for (int w = 0; w < g.windows; w++) {
-      sum += ws[b.windowCode(w)];
-    }
+    int sum = windowSum(b, stm - 1, windowScore[stm], stm);
 
     int one0 = 0;
     int one1 = 0;
@@ -66,6 +61,9 @@ public final class HandEval implements Evaluator {
     int par1 = 0;
     int empty = g.cells - b.discs();
     for (int c = 0; c < g.cols; c++) {
+      if (b.columnThreats(c) == 0) {
+        continue;
+      }
       int h = b.height(c);
       boolean latent0 = false;
       boolean latent1 = false;
@@ -122,5 +120,29 @@ public final class HandEval implements Evaluator {
     sum += stmReady ? 40 : cdStm >= 7 ? 15 : 0;
     sum -= oppReady ? 40 : cdOpp >= 7 ? 15 : 0;
     return Math.max(-MAX_EVAL, Math.min(MAX_EVAL, sum));
+  }
+
+  @Override
+  int fullSum(Board b, short[] ws, int stm) {
+    int sum = 0;
+    for (int w = 0; w < g.windows; w++) {
+      sum += ws[b.windowCode(w)];
+    }
+    return sum;
+  }
+
+  @Override
+  int dropChange(Board b, int level, short[] ws, int stm) {
+    int cell = b.levelCell(level);
+    int colour = b.levelColour(level);
+    int[] pow = g.cellPow;
+    int log = b.levelLog(level);
+    int end = g.cellStart[cell + 1];
+    int sum = 0;
+    for (int j = g.cellStart[cell]; j < end; j++) {
+      int old = b.loggedCode(log++);
+      sum += ws[old + colour * pow[j]] - ws[old];
+    }
+    return sum;
   }
 }

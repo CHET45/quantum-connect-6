@@ -75,6 +75,9 @@ public final class Features {
           valleys++;
         }
       }
+      if (b.columnThreats(c) == 0) {
+        continue;
+      }
       boolean latent0 = false;
       boolean latent1 = false;
       for (int y = h; y < rows; y++) {

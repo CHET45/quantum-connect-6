@@ -9,6 +9,9 @@ public final class Board {
   public static final byte EMPTY = 0;
   public static final byte FIRST = 1;
   public static final byte SECOND = 2;
+  /** Keys of remembered window sums are below this; see {@link #rememberSum}. */
+  public static final int SUM_KEYS = 32;
+  private static final int SUM_SLOTS = 16 * SUM_KEYS;
 
   public final Geometry g;
   private final Tables t;
@@ -21,6 +24,8 @@ public final class Board {
   private final short[] wc;
   /** thr[colour][cell]: windows with K-1 discs of colour and their single empty cell here. */
   private final byte[][] thr;
+  /** colThreats[col]: the thr values of both colours added up over the column. */
+  private final int[] colThreats;
   private final int[] live3 = new int[3];
   private long hash;
   private int discs;
@@ -29,6 +34,22 @@ public final class Board {
   private int stampGen;
   /** Windows changed by the blast in progress. */
   private final int[] touched;
+  /**
+   * The drop stack: level 0 is the position as last set (load, copy, blast), each drop made since is one level.
+   * levelCell[l]: the dropped cell; levelLog[l]: where logCode holds the old code of each window through that cell;
+   * levelTag[l]: unique for this drop, so remembered sums need no clearing when the level is taken back.
+   */
+  private final int[] levelCell;
+  private final int[] levelLog;
+  private final long[] levelTag;
+  private final short[] logCode;
+  private int level;
+  private long lastTag;
+  /** Window sums of one evaluation, per (level, key); allocated when an evaluation first asks. */
+  private Object sumOwner;
+  private long[] sumTag;
+  private int[] sumValue;
+
   /** fall[c]: discs a blast being tested takes out of column c (from the band up); 0 outside {@link #blastWins}. */
   private final int[] fall;
 
@@ -42,9 +63,15 @@ public final class Board {
     height = new int[g.cols];
     wc = new short[g.windows];
     thr = new byte[3][g.cells];
+    colThreats = new int[g.cols];
+    levelCell = new int[g.cells + 2];
+    levelLog = new int[g.cells + 2];
+    levelTag = new long[g.cells + 2];
+    logCode = new short[g.cellWin.length];
     stamp = new int[g.windows];
     touched = new int[g.windows];
     fall = new int[g.cols];
+    resetLevels();
   }
 
   public void clear() {
@@ -63,6 +90,10 @@ public final class Board {
     }
     copy(o.thr[1], thr[1]);
     copy(o.thr[2], thr[2]);
+    for (int c = 0; c < colThreats.length; c++) {
+      colThreats[c] = o.colThreats[c];
+    }
+    resetLevels();
     live3[1] = o.live3[1];
     live3[2] = o.live3[2];
     hash = o.hash;
@@ -108,6 +139,8 @@ public final class Board {
     }
     java.util.Arrays.fill(thr[1], (byte) 0);
     java.util.Arrays.fill(thr[2], (byte) 0);
+    java.util.Arrays.fill(colThreats, 0);
+    resetLevels();
     live3[1] = live3[2] = 0;
     for (int w = 0; w < g.windows; w++) {
       int code = codeFromCells(w);
@@ -133,11 +166,15 @@ public final class Board {
     }
     int p = f & 15;
     if (p != 0) {
-      thr[1][g.winCells[w * k + p - 1]] += (byte) sign;
+      int cellIndex = g.winCells[w * k + p - 1];
+      thr[1][cellIndex] += (byte) sign;
+      colThreats[cellIndex / rows] += sign;
     }
     p = (f >> 4) & 15;
     if (p != 0) {
-      thr[2][g.winCells[w * k + p - 1]] += (byte) sign;
+      int cellIndex = g.winCells[w * k + p - 1];
+      thr[2][cellIndex] += (byte) sign;
+      colThreats[cellIndex / rows] += sign;
     }
     if ((f & 256) != 0) {
       live3[1] += sign;
@@ -163,9 +200,14 @@ public final class Board {
     int[] wins = g.cellWin;
     int[] pow = g.cellPow;
     int end = g.cellStart[i + 1];
+    int l = ++level;
+    levelCell[l] = i;
+    levelTag[l] = ++lastTag;
+    int log = levelLog[l];
     for (int j = g.cellStart[i]; j < end; j++) {
       int w = wins[j];
       int old = wc[w];
+      logCode[log++] = (short) old;
       int nw = old + colour * pow[j];
       wc[w] = (short) nw;
       if ((info[old] | info[nw]) != 0) {
@@ -176,6 +218,7 @@ public final class Board {
         win = true;
       }
     }
+    levelLog[l + 1] = log;
     return win;
   }
 
@@ -187,6 +230,11 @@ public final class Board {
     cell[i] = EMPTY;
     discs--;
     hash ^= g.zobrist[colour][i];
+    if (level > 0 && levelCell[level] == i) {
+      level--;
+    } else {
+      resetLevels();
+    }
     int[] wins = g.cellWin;
     int[] pow = g.cellPow;
     int end = g.cellStart[i + 1];
@@ -217,6 +265,7 @@ public final class Board {
       stampGen = 0;
     }
     int gen = ++stampGen;
+    resetLevels();
     int n = 0;
     int lo = Math.max(h - 1, 0);
     for (int x = Math.max(col - 1, 0); x <= Math.min(col + 1, g.cols - 1); x++) {
@@ -394,8 +443,74 @@ public final class Board {
     return thr[colour][cellIndex];
   }
 
+  /** Threat windows of both colours whose empty cell is in this column; 0 for most columns. */
+  public int columnThreats(int col) {
+    return colThreats[col];
+  }
+
   public int live3(int colour) {
     return live3[colour];
+  }
+
+  private void resetLevels() {
+    level = 0;
+    levelLog[1] = 0;
+    levelTag[0] = ++lastTag;
+  }
+
+  /** Current height of the drop stack; 0 right after load, copy or blast. */
+  public int level() {
+    return level;
+  }
+
+  /** Cell dropped at a level of the stack, level at least 1. */
+  public int levelCell(int l) {
+    return levelCell[l];
+  }
+
+  /** Colour dropped at a level of the stack, level at least 1. */
+  public int levelColour(int l) {
+    return cell[levelCell[l]];
+  }
+
+  /** Index of the first logged window code of a level, level at least 1. */
+  public int levelLog(int l) {
+    return levelLog[l];
+  }
+
+  /** A logged window code: the code before the drop of the n-th window through its cell at levelLog + n. */
+  public int loggedCode(int index) {
+    return logCode[index];
+  }
+
+  /** The evaluation whose window sums this board remembers. */
+  public Object sumOwner() {
+    return sumOwner;
+  }
+
+  /** Forgets all remembered sums and remembers those of this evaluation from now on. */
+  public void bindSums(Object owner) {
+    sumOwner = owner;
+    if (sumTag == null) {
+      sumTag = new long[SUM_SLOTS];
+      sumValue = new int[SUM_SLOTS];
+    }
+    java.util.Arrays.fill(sumTag, 0);
+  }
+
+  /** True if a sum is remembered for this level of the stack (as it stands now) and this key. */
+  public boolean sumKnown(int l, int key) {
+    return sumTag[(l * SUM_KEYS + key) & (SUM_SLOTS - 1)] == levelTag[l];
+  }
+
+  public int sum(int l, int key) {
+    return sumValue[(l * SUM_KEYS + key) & (SUM_SLOTS - 1)];
+  }
+
+  public void rememberSum(int l, int key, int value) {
+    int slot = (l * SUM_KEYS + key) & (SUM_SLOTS - 1);
+    sumTag[slot] = levelTag[l];
+    sumValue[slot] = value;
   }
 
   /** Copy of the cells in this class's index order. */
@@ -413,6 +528,7 @@ public final class Board {
         && java.util.Arrays.equals(fresh.wc, wc)
         && java.util.Arrays.equals(fresh.thr[1], thr[1])
         && java.util.Arrays.equals(fresh.thr[2], thr[2])
+        && java.util.Arrays.equals(fresh.colThreats, colThreats)
         && fresh.live3[1] == live3[1]
         && fresh.live3[2] == live3[2];
   }
