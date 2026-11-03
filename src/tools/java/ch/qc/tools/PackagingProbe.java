@@ -43,6 +43,11 @@ public final class PackagingProbe {
           fail("resource read through the jar loader failed");
         }
       }
+      Class<?> geometry = loader.loadClass("ch.qc.bot.rules.Geometry");
+      Object g812 = geometry.getConstructor(int.class, int.class).newInstance(8, 12);
+      Object learned = loader.loadClass("ch.qc.bot.eval.Weights").getMethod("forGeometry", geometry).invoke(null, g812);
+      System.out.println("evaluation on 8x12: "
+          + (learned == null ? "hand tables (no embedded weights)" : "learned tables (" + learned.getClass().getSimpleName() + ")"));
       Object opponent = loader.loadClass("ch.cern.quantumconnect.bots.RandomBot").getConstructor().newInstance();
       Class<?> experiment = loader.loadClass("ch.cern.quantumconnect.core.Experiment");
       Object exp = experiment.getConstructor(algorithm, algorithm, boolean.class, boolean.class, int.class, int.class)

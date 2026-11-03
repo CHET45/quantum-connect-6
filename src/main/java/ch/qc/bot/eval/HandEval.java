@@ -10,8 +10,7 @@ import ch.qc.bot.rules.Tables;
  * family from the threat cells: discs-below distance d of each threat cell, stacked threats and the waiting-game
  * parity of the lowest latent threat per column. Immutable after construction, shareable between threads.
  */
-public final class HandEval {
-  public static final int MAX_EVAL = 10_000;
+public final class HandEval implements Evaluator {
 
   private static final int[] VAL = {0, 3, 13, 50, 150, 384};
 
@@ -49,6 +48,7 @@ public final class HandEval {
    * @param cdStm engine cooldown counter of the side to move before its turn
    * @param cdOpp the other side's counter before its next turn
    */
+  @Override
   public int evaluate(Board b, int stm, int cdStm, int cdOpp) {
     int opp = 3 - stm;
     short[] ws = windowScore[stm];

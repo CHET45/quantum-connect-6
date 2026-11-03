@@ -47,3 +47,7 @@ bin/
 data/
 results/
 ladder/
+
+### Python ###
+__pycache__/
+*.pyc

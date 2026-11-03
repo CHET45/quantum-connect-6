@@ -1,6 +1,6 @@
 package ch.qc.bot.search;
 
-import ch.qc.bot.eval.HandEval;
+import ch.qc.bot.eval.Evaluator;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
 import ch.qc.bot.rules.Tables;
@@ -80,7 +80,7 @@ public final class Searcher {
 
   private final Geometry g;
   private final Tables t;
-  private final HandEval eval;
+  private final Evaluator eval;
   private final TranspositionTable tt;
   private final Vcf.Table vcfTable;
   private final Options options;
@@ -149,16 +149,16 @@ public final class Searcher {
     }
   }
 
-  public Searcher(Geometry g, HandEval eval, TranspositionTable tt) {
+  public Searcher(Geometry g, Evaluator eval, TranspositionTable tt) {
     this(g, eval, tt, Options.DEFAULT);
   }
 
-  public Searcher(Geometry g, HandEval eval, TranspositionTable tt, Options options) {
+  public Searcher(Geometry g, Evaluator eval, TranspositionTable tt, Options options) {
     this(g, eval, tt, options, new Vcf.Table(17));
   }
 
   /** The threat-search table is passed in so a bot can allocate it once, outside any timed call. */
-  public Searcher(Geometry g, HandEval eval, TranspositionTable tt, Options options, Vcf.Table vcfTable) {
+  public Searcher(Geometry g, Evaluator eval, TranspositionTable tt, Options options, Vcf.Table vcfTable) {
     this.g = g;
     this.t = g.tables;
     this.eval = eval;

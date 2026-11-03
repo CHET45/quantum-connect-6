@@ -2,7 +2,9 @@ package ch.qc.bot;
 
 import ch.cern.quantumconnect.core.Algorithm;
 import ch.cern.quantumconnect.core.QuantumField;
+import ch.qc.bot.eval.Evaluator;
 import ch.qc.bot.eval.HandEval;
+import ch.qc.bot.eval.Weights;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
 import ch.qc.bot.search.Searcher;
@@ -11,8 +13,8 @@ import ch.qc.bot.search.TranspositionTable;
 import ch.qc.bot.search.Vcf;
 
 /**
- * Quantum Connect bot. M3: alpha-beta search ({@link Searcher}) with the hand evaluation and the gravity threat
- * search ({@link Vcf}) at the root, under a 62 ms hard stop (40 ms on the first
+ * Quantum Connect bot. M5: alpha-beta search ({@link Searcher}) with the learned pattern tables ({@link Weights};
+ * the hand evaluation when no weights fit the board) and the gravity threat search ({@link Vcf}) at the root, under a 62 ms hard stop (40 ms on the first
  * call of an instance), on top of the per-call pipeline (snapshot, turn tracking, board load, guarded two-call
  * protocol). The M1 root tactics are the fallback if the search cannot run.
  */
@@ -47,6 +49,7 @@ public final class QcBot implements Algorithm {
   public QcBot(Searcher.Options options) {
     this.options = options;
     tt = TranspositionTable.forHeap();
+    Weights.preload();
     vcfTable = new Vcf.Table(16);
   }
 
@@ -119,7 +122,8 @@ public final class QcBot implements Algorithm {
     }
     if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
       geometry = new Geometry(s.rows, s.cols);
-      searcher = new Searcher(geometry, new HandEval(geometry), tt, options, vcfTable);
+      Evaluator learned = Weights.forGeometry(geometry);
+      searcher = new Searcher(geometry, learned != null ? learned : new HandEval(geometry), tt, options, vcfTable);
     }
     // a fresh board per call: a search that outlived its call may still be walking the previous one
     Board board = new Board(geometry);

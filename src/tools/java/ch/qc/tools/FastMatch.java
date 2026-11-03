@@ -1,6 +1,6 @@
 package ch.qc.tools;
 
-import ch.qc.bot.eval.HandEval;
+import ch.qc.bot.eval.Evaluator;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
 import ch.qc.bot.search.Searcher;
@@ -22,7 +22,8 @@ import java.util.concurrent.Executors;
  * every core can be used. Output lines have the {@link MatchMain} format, so {@link ReportMain} reads them.
  *
  * <pre>
- * --a SPEC --b SPEC       search options as for qcbot: specs ("" for the defaults, "+razor,-rootVcf", "noVcf")
+ * --a SPEC --b SPEC       search options as for qcbot: specs ("" for the defaults, "+razor,-rootVcf", "noVcf"),
+ *                         optionally followed by @WEIGHTS (a .qcw file, or @hand), e.g. "@data/models/gen001/eval.qcw"
  * --nodes N               node budget per move (default 20000)
  * --openings FILE         opening pool (default suites/openings-8x12.txt)
  * --pairs N --sprt E0,E1 --threads N --seed S --out FILE   as in MatchMain
@@ -32,8 +33,8 @@ public final class FastMatch {
   private FastMatch() {}
 
   /** A search configuration as a FastGame engine with its own tables, one per game and side. */
-  public static FastGame.Engine engine(Geometry g, Searcher.Options options, long nodes) {
-    Searcher s = new Searcher(g, new HandEval(g), new TranspositionTable(18), options, new Vcf.Table(16));
+  public static FastGame.Engine engine(Geometry g, Searcher.Options options, Evaluator eval, long nodes) {
+    Searcher s = new Searcher(g, eval, new TranspositionTable(18), options, new Vcf.Table(16));
     return (Board b, int me, int cdMe, int cdOpp, int turn) ->
         s.run(b, me, cdMe, cdOpp, turn, System.nanoTime(), Long.MAX_VALUE / 4, nodes).move();
   }
@@ -65,8 +66,12 @@ public final class FastMatch {
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
-    Searcher.Options oa = Searcher.Options.parse(a);
-    Searcher.Options ob = Searcher.Options.parse(b);
+    String[] sa = (a + "@hand").split("@", 3);
+    String[] sb = (b + "@hand").split("@", 3);
+    Searcher.Options oa = Searcher.Options.parse(sa[0]);
+    Searcher.Options ob = Searcher.Options.parse(sb[0]);
+    java.util.function.Function<Geometry, Evaluator> fa = Evaluators.factory(sa[1]);
+    java.util.function.Function<Geometry, Evaluator> fb = Evaluators.factory(sb[1]);
     List<int[]> pool = MatchMain.readOpenings(Path.of(openings));
     Geometry g = new Geometry(8, 12);
     Sprt sprt = bounds == null ? new Sprt(0, 10) : new Sprt(bounds[0], bounds[1]);
@@ -88,8 +93,8 @@ public final class FastMatch {
           MatchMain.Result[] r = new MatchMain.Result[2];
           for (int game = 0; game < 2; game++) {
             boolean aFirst = game == 0;
-            FastGame.Engine ea = engine(g, oa, n);
-            FastGame.Engine eb = engine(g, ob, n);
+            FastGame.Engine ea = engine(g, oa, fa.apply(g), n);
+            FastGame.Engine eb = engine(g, ob, fb.apply(g), n);
             FastGame.Outcome o = FastGame.play(g, line, aFirst ? ea : eb, aFirst ? eb : ea, null);
             int aColour = aFirst ? 1 : 2;
             int score2 = o.winner() == 0 ? 1 : o.winner() == aColour ? 2 : 0;
