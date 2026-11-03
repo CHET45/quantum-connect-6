@@ -33,6 +33,8 @@ public final class Geometry {
   public final int[] cellWin;
   /** Digit position of the cell inside the window. */
   public final int[] cellPos;
+  /** Value of that digit position: 3^cellPos[j]. */
+  public final int[] cellPow;
 
   /** Windows touching column c: entries colStart[c] .. colStart[c + 1] - 1 of colWin. */
   public final int[] colStart;
@@ -89,11 +91,13 @@ public final class Geometry {
     }
     cellWin = new int[n * k];
     cellPos = new int[n * k];
+    cellPow = new int[n * k];
     int[] fill = cellStart.clone();
     for (int j = 0; j < n * k; j++) {
       int c = winCells[j];
       cellWin[fill[c]] = j / k;
       cellPos[fill[c]] = j % k;
+      cellPow[fill[c]] = tables.pow3[j % k];
       fill[c]++;
     }
 

@@ -14,6 +14,11 @@ public final class Tables {
   public final byte[][] thrPos;
   /** live3[colour][code]: at least three digits of colour and none of the other colour. */
   public final boolean[][] live3;
+  /**
+   * info[code]: thrPos[1] + 1, thrPos[2] + 1 (four bits each), then one bit each for live3[1] and live3[2]; 0 for a
+   * window that counts for neither, by far the most common case.
+   */
+  public final short[] info;
   /** swap12[code]: the same window with the two colours exchanged. */
   public final short[] swap12;
 
@@ -29,6 +34,7 @@ public final class Tables {
     thrPos = new byte[3][codes];
     live3 = new boolean[3][codes];
     swap12 = new short[codes];
+    info = new short[codes];
     int[] count = new int[3];
     for (int code = 0; code < codes; code++) {
       count[0] = count[1] = count[2] = 0;
@@ -48,6 +54,8 @@ public final class Tables {
         thrPos[x][code] = (byte) (count[x] == k - 1 && count[0] == 1 ? emptyAt : -1);
         live3[x][code] = count[x] >= 3 && count[other] == 0;
       }
+      info[code] = (short) ((thrPos[1][code] + 1) | (thrPos[2][code] + 1) << 4 | (live3[1][code] ? 256 : 0)
+          | (live3[2][code] ? 512 : 0));
     }
   }
 }

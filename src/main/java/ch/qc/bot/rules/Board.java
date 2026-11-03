@@ -14,6 +14,7 @@ public final class Board {
   private final Tables t;
   private final int rows;
   private final int k;
+  private final short[] info;
 
   private final byte[] cell;
   private final int[] height;
@@ -26,6 +27,8 @@ public final class Board {
 
   private final int[] stamp;
   private int stampGen;
+  /** Windows changed by the blast in progress. */
+  private final int[] touched;
   /** fall[c]: discs a blast being tested takes out of column c (from the band up); 0 outside {@link #blastWins}. */
   private final int[] fall;
 
@@ -34,11 +37,13 @@ public final class Board {
     this.t = g.tables;
     this.rows = g.rows;
     this.k = g.k;
+    this.info = g.tables.info;
     cell = new byte[g.cells];
     height = new int[g.cols];
     wc = new short[g.windows];
     thr = new byte[3][g.cells];
     stamp = new int[g.windows];
+    touched = new int[g.windows];
     fall = new int[g.cols];
   }
 
@@ -122,14 +127,23 @@ public final class Board {
   }
 
   private void account(int w, int code, int sign) {
-    for (int x = 1; x <= 2; x++) {
-      int p = t.thrPos[x][code];
-      if (p >= 0) {
-        thr[x][g.winCells[w * k + p]] += (byte) sign;
-      }
-      if (t.live3[x][code]) {
-        live3[x] += sign;
-      }
+    int f = info[code];
+    if (f == 0) {
+      return;
+    }
+    int p = f & 15;
+    if (p != 0) {
+      thr[1][g.winCells[w * k + p - 1]] += (byte) sign;
+    }
+    p = (f >> 4) & 15;
+    if (p != 0) {
+      thr[2][g.winCells[w * k + p - 1]] += (byte) sign;
+    }
+    if ((f & 256) != 0) {
+      live3[1] += sign;
+    }
+    if ((f & 512) != 0) {
+      live3[2] += sign;
     }
   }
 
@@ -146,13 +160,18 @@ public final class Board {
     hash ^= g.zobrist[colour][i];
     boolean win = false;
     int target = t.six[colour];
-    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
-      int w = g.cellWin[j];
+    int[] wins = g.cellWin;
+    int[] pow = g.cellPow;
+    int end = g.cellStart[i + 1];
+    for (int j = g.cellStart[i]; j < end; j++) {
+      int w = wins[j];
       int old = wc[w];
-      int nw = old + colour * t.pow3[g.cellPos[j]];
-      account(w, old, -1);
-      account(w, nw, 1);
+      int nw = old + colour * pow[j];
       wc[w] = (short) nw;
+      if ((info[old] | info[nw]) != 0) {
+        account(w, old, -1);
+        account(w, nw, 1);
+      }
       if (nw == target) {
         win = true;
       }
@@ -168,13 +187,18 @@ public final class Board {
     cell[i] = EMPTY;
     discs--;
     hash ^= g.zobrist[colour][i];
-    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
-      int w = g.cellWin[j];
+    int[] wins = g.cellWin;
+    int[] pow = g.cellPow;
+    int end = g.cellStart[i + 1];
+    for (int j = g.cellStart[i]; j < end; j++) {
+      int w = wins[j];
       int old = wc[w];
-      int nw = old - colour * t.pow3[g.cellPos[j]];
-      account(w, old, -1);
-      account(w, nw, 1);
+      int nw = old - colour * pow[j];
       wc[w] = (short) nw;
+      if ((info[old] | info[nw]) != 0) {
+        account(w, old, -1);
+        account(w, nw, 1);
+      }
     }
   }
 
@@ -188,55 +212,51 @@ public final class Board {
     if (h >= rows) {
       return false;
     }
-    int lo = Math.max(h - 1, 0);
-    for (int n = Math.max(col - 1, 0); n <= Math.min(col + 1, g.cols - 1); n++) {
-      // the placed disc vanishes with the band, so column col keeps its own height h as the top
-      int top = height[n];
-      int hi = Math.min(h + 1, top - 1);
-      if (lo > hi) {
-        continue;
-      }
-      int cleared = hi - lo + 1;
-      int base = n * rows;
-      for (int y = lo; y < top; y++) {
-        int src = y + cleared;
-        setCell(base + y, src < top ? cell[base + src] : EMPTY);
-      }
-      height[n] = top - cleared;
-    }
-    boolean win = false;
     if (stampGen == Integer.MAX_VALUE) {
       java.util.Arrays.fill(stamp, 0);
       stampGen = 0;
     }
     int gen = ++stampGen;
-    for (int n = Math.max(col - 1, 0); n <= Math.min(col + 1, g.cols - 1); n++) {
-      for (int j = g.colStart[n]; j < g.colStart[n + 1]; j++) {
-        int w = g.colWin[j];
-        if (stamp[w] == gen) {
-          continue;
+    int n = 0;
+    int lo = Math.max(h - 1, 0);
+    for (int x = Math.max(col - 1, 0); x <= Math.min(col + 1, g.cols - 1); x++) {
+      // the placed disc vanishes with the band, so column col keeps its own height h as the top
+      int top = height[x];
+      int hi = Math.min(h + 1, top - 1);
+      if (lo > hi) {
+        continue;
+      }
+      int cleared = hi - lo + 1;
+      int base = x * rows;
+      for (int y = lo; y < top; y++) {
+        int src = y + cleared;
+        int v = src < top ? cell[base + src] : EMPTY;
+        if (cell[base + y] != v) {
+          n = setCell(base + y, v, gen, n);
         }
-        stamp[w] = gen;
-        int old = wc[w];
-        int nw = codeFromCells(w);
-        if (nw != old) {
-          account(w, old, -1);
-          account(w, nw, 1);
-          wc[w] = (short) nw;
-        }
-        if (nw == t.six[1] || nw == t.six[2]) {
-          win = true;
-        }
+      }
+      height[x] = top - cleared;
+    }
+    boolean win = false;
+    int six1 = t.six[1];
+    int six2 = t.six[2];
+    for (int i = 0; i < n; i++) {
+      int w = touched[i];
+      int code = wc[w];
+      account(w, code, 1);
+      if (code == six1 || code == six2) {
+        win = true;
       }
     }
     return win;
   }
 
-  private void setCell(int i, int v) {
+  /**
+   * Changes a cell during a blast: its windows get their new codes; a window leaves the threat and live counts when
+   * first touched and returns in {@link #blast} once all its cells are final. Returns the new count of touched windows.
+   */
+  private int setCell(int i, int v, int gen, int n) {
     int old = cell[i];
-    if (old == v) {
-      return;
-    }
     if (old != EMPTY) {
       hash ^= g.zobrist[old][i];
       discs--;
@@ -246,6 +266,18 @@ public final class Board {
       discs++;
     }
     cell[i] = (byte) v;
+    int diff = v - old;
+    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
+      int w = g.cellWin[j];
+      int code = wc[w];
+      if (stamp[w] != gen) {
+        stamp[w] = gen;
+        touched[n++] = w;
+        account(w, code, -1);
+      }
+      wc[w] = (short) (code + diff * g.cellPow[j]);
+    }
+    return n;
   }
 
   /**
