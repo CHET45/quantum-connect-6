@@ -50,8 +50,6 @@ public final class Board {
   private long[] sumTag;
   private int[] sumValue;
 
-  /** fall[c]: discs a blast being tested takes out of column c (from the band up); 0 outside {@link #blastWins}. */
-  private final int[] fall;
 
   public Board(Geometry g) {
     this.g = g;
@@ -70,7 +68,6 @@ public final class Board {
     logCode = new short[g.cellWin.length];
     stamp = new int[g.windows];
     touched = new int[g.windows];
-    fall = new int[g.cols];
     resetLevels();
   }
 
@@ -343,58 +340,68 @@ public final class Board {
 
   /**
    * What {@link #blast} would return in col, without changing or copying anything; the position must hold no line.
-   * A new line must contain a disc that falls, and only neighbours at least three discs taller than col have one, so
-   * the test walks the four lines through each falling disc on the board as it would be after the blast.
+   * A new line must contain a disc that falls, and only a neighbour at least three discs taller than col has one.
    */
   public boolean blastWins(int col) {
-    if (!blastMayWin(col)) {
+    int h = height[col];
+    if (h >= rows) {
       return false;
     }
-    int h = height[col];
-    int lo = Math.max(h - 1, 0);
-    int from = Math.max(col - 1, 0);
-    int to = Math.min(col + 1, g.cols - 1);
-    for (int n = from; n <= to; n++) {
-      fall[n] = Math.max(0, Math.min(h + 1, height[n] - 1) - lo + 1);
-    }
-    boolean win = (col > 0 && fallingLine(col - 1, lo)) || (col + 1 < g.cols && fallingLine(col + 1, lo));
-    for (int n = from; n <= to; n++) {
-      fall[n] = 0;
-    }
-    return win;
+    return (col > 0 && height[col - 1] >= h + 3 && fallingLine(col - 1, -1, h))
+        || (col + 1 < g.cols && height[col + 1] >= h + 3 && fallingLine(col + 1, 1, h));
   }
 
-  /** True if a disc falling in column n completes a line, with fall[] set up for the tested blast. */
-  private boolean fallingLine(int n, int lo) {
+  /**
+   * True if a blast at height h in the column next to n completes a line through a disc falling in n; away is the
+   * direction from that column to n. After the blast that column is empty from lo up, so a line can only reach it
+   * below lo. That leaves, for a fallen disc at height y: the vertical line where the fallen discs meet the discs
+   * below them, the horizontal and the two diagonal lines starting at the disc and running away from the blast, all
+   * on cells the blast does not change, and for y = lo the rising diagonal that also continues below lo on the other side.
+   */
+  private boolean fallingLine(int n, int away, int h) {
+    int lo = Math.max(h - 1, 0);
+    int drop = h + 2 - lo;
     int base = n * rows;
-    int drop = fall[n];
     int end = height[n] - drop;
+    int need = k - 1;
+    int v = cell[base + lo + drop];
+    if (lo > 0 && cell[base + lo - 1] == v) {
+      int same = 1;
+      for (int y = lo - 1; y >= 0 && cell[base + y] == v; y--) {
+        same++;
+      }
+      for (int i = base + lo + drop + 1; i < base + rows && cell[i] == v; i++) {
+        same++;
+      }
+      if (same >= k) {
+        return true;
+      }
+    }
+    int far = n + away * need;
+    boolean room = far >= 0 && far < g.cols;
     for (int y = lo; y < end; y++) {
-      int v = cell[base + y + drop];
-      if (run(n, y, 1, 0, v, lo) + run(n, y, -1, 0, v, lo) >= k - 1
-          || run(n, y, 0, 1, v, lo) + run(n, y, 0, -1, v, lo) >= k - 1
-          || run(n, y, 1, 1, v, lo) + run(n, y, -1, -1, v, lo) >= k - 1
-          || run(n, y, 1, -1, v, lo) + run(n, y, -1, 1, v, lo) >= k - 1) {
+      v = cell[base + y + drop];
+      if (room && (lineRun(n + away, y, away, 0, v) >= need || lineRun(n + away, y - 1, away, -1, v) >= need)) {
+        return true;
+      }
+      if (y == lo) {
+        if (lineRun(n + away, y + 1, away, 1, v) + lineRun(n - away, y - 1, -away, -1, v) >= need) {
+          return true;
+        }
+      } else if (room && lineRun(n + away, y + 1, away, 1, v) >= need) {
         return true;
       }
     }
     return false;
   }
 
-  /** Discs of colour v next to (x, y) in direction (dx, dy) on the board after the tested blast, at most k - 1. */
-  private int run(int x, int y, int dx, int dy, int v, int lo) {
+  /** Discs of colour v from (x, y) on in direction (dx, dy), on cells a tested blast does not change, at most k - 1. */
+  private int lineRun(int x, int y, int dx, int dy, int v) {
     int n = 0;
-    while (n < k - 1) {
+    while (n < k - 1 && x >= 0 && x < g.cols && y >= 0 && y < rows && cell[x * rows + y] == v) {
+      n++;
       x += dx;
       y += dy;
-      if (x < 0 || x >= g.cols || y < 0 || y >= rows) {
-        break;
-      }
-      int real = y >= lo ? y + fall[x] : y;
-      if (real >= rows || cell[x * rows + real] != v) {
-        break;
-      }
-      n++;
     }
     return n;
   }

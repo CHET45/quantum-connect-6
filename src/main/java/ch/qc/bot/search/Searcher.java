@@ -193,8 +193,12 @@ public final class Searcher {
   private final long[][] zCd = new long[3][COOLDOWN + 1];
   private final long[] zTurn = new long[MAX_PLY + 1];
   private final int[] centreBonus;
-  /** live[colour][code]: square of the colour's discs in a window without opponent discs, else 0. */
-  private final int[][] live = new int[3][];
+  /**
+   * gain[colour][code]: what a disc of the colour on an empty cell of this window is worth for the move ordering: the
+   * rise of the square of its discs if the opponent has none there, plus the square of the opponent's discs if the
+   * colour has none (a window then lost to the opponent). The empty cell's position does not matter.
+   */
+  private final int[][] gain = new int[3][];
   private volatile int token;
   /**
    * Context of the last finished call, reused by the next one so a call allocates almost nothing (the server
@@ -300,15 +304,15 @@ public final class Searcher {
       zTurn[i] = rnd.nextLong();
     }
     for (int colour = 1; colour <= 2; colour++) {
-      live[colour] = new int[t.codes];
+      gain[colour] = new int[t.codes];
       for (int code = 0; code < t.codes; code++) {
         int own = 0;
-        boolean dead = false;
+        int other = 0;
         for (int i = 0, c = code; i < t.k; i++, c /= 3) {
-          dead |= c % 3 == 3 - colour;
           own += c % 3 == colour ? 1 : 0;
+          other += c % 3 == 3 - colour ? 1 : 0;
         }
-        live[colour][code] = dead ? 0 : own * own;
+        gain[colour][code] = (other == 0 ? 2 * own + 1 : 0) + (own == 0 ? other * other : 0);
       }
     }
     centreBonus = new int[g.cols];
@@ -544,8 +548,8 @@ public final class Searcher {
     int oppThreats = 0;
     int threatCol = -1;
     for (int c = 0; c < g.cols; c++) {
-      if (b.isFull(c)) {
-        continue;
+      if (b.columnThreats(c) == 0) {
+        continue; // a full column has no threat cell either
       }
       int cell = g.index(c, b.height(c));
       if (b.threats(stm, cell) > 0) {
@@ -768,14 +772,13 @@ public final class Searcher {
 
   /** Window potential gained and denied by dropping into column c (move ordering only). */
   private int potential(Board b, int c, int stm) {
-    int[] mine = live[stm];
-    int[] theirs = live[3 - stm];
+    int[] value = gain[stm];
+    int[] wins = g.cellWin;
     int i = g.index(c, b.height(c));
+    int end = g.cellStart[i + 1];
     int s = 0;
-    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
-      int old = b.windowCode(g.cellWin[j]);
-      int nw = old + stm * t.pow3[g.cellPos[j]];
-      s += mine[nw] - mine[old] + theirs[old] - theirs[nw];
+    for (int j = g.cellStart[i]; j < end; j++) {
+      s += value[b.windowCode(wins[j])];
     }
     return s;
   }
