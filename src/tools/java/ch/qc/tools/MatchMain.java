@@ -107,6 +107,7 @@ public final class MatchMain {
     private final long[] depthA = new long[65];
     private long nodesA;
     private long nanosA;
+    private final long[] vcfA = new long[3];
 
     public Match(String classA, String classB, int[][] sizes, int openingPlies, long seed) {
       this.classA = classA;
@@ -185,6 +186,10 @@ public final class MatchMain {
         }
         nodesA += pa.searchNodes();
         nanosA += pa.searchNanos();
+        long[] v = pa.vcfStats();
+        for (int i = 0; i < 3; i++) {
+          vcfA[i] += v[i];
+        }
       }
       return new Result(pair, game, rows, cols, aFirst, scoreA2, reason, plies(exp),
           Math.max(0, pa.expectedPlacements() - placedA), Math.max(0, pb.expectedPlacements() - placedB),
@@ -247,10 +252,14 @@ public final class MatchMain {
     public String searchSummary() {
       synchronized (depthA) {
         double nps = nanosA == 0 ? 0 : nodesA * 1e9 / nanosA;
+        long calls = searchTimeA.count();
         return String.format("median depth %d, %.0f knodes/s, allocation per call p99 %.0f KB max %.0f KB%n"
-                + "    search time %s; outside the search %s",
+                + "    search time %s; outside the search %s%n"
+                + "    VCF: %.1f%% of nodes, %.2f proofs per call, %d defender-blast refutations",
             medianDepthA(), nps / 1000, allocationA.quantileMillis(0.99), allocationA.maxMillis(),
-            searchTimeA.summary(), outsideSearchA.summary());
+            searchTimeA.summary(), outsideSearchA.summary(),
+            nodesA + vcfA[0] == 0 ? 0 : 100.0 * vcfA[0] / (nodesA + vcfA[0]),
+            calls == 0 ? 0 : (double) vcfA[1] / calls, vcfA[2]);
       }
     }
 

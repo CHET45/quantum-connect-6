@@ -22,15 +22,70 @@ public final class Searcher {
   private static final int MAX_DEPTH = 64;
   private static final int COOLDOWN = 10;
   private static final int MAX_TURNS = 1000;
+  /** Clock polling interval in nodes; nodes on boards above 400 cells cost much more (blast copies, eval). */
   private static final int POLL_MASK = 255;
+  private static final int POLL_MASK_LARGE = 15;
   private static final int EBF = 3;
 
-  public record Result(int move, int score, int depth, long nodes, long nanos) {}
+  /** Search outcome; vcfNodes and vcfProofs count the threat-search work of this call. */
+  public record Result(int move, int score, int depth, long nodes, long nanos, long vcfNodes, long vcfProofs,
+      long blastRefutations) {}
+
+  /**
+   * Switches of the threat-search integration (design 2.5): own VCF at the root, the opponent's VCF check at the
+   * root, VCF at the leaves (only while the defender's special is not ready), exact or tentative leaves [H1],
+   * razoring into the VCF [H9]. Leaf VCF is off by default: unrestricted it cost 160 Elo through lost depth.
+   */
+  public record Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor) {
+    public static final Options DEFAULT = new Options(true, true, false, true, false);
+    public static final Options NONE = new Options(false, false, false, true, false);
+
+    /** Applies a spec such as "+razor,-leafVcf" to the defaults. */
+    public static Options parse(String spec) {
+      Options o = DEFAULT;
+      for (String part : spec.split(",")) {
+        part = part.trim();
+        if (part.isEmpty()) {
+          continue;
+        }
+        boolean on = !part.startsWith("-");
+        String name = part.replaceFirst("^[+-]", "");
+        o = switch (name) {
+          case "rootVcf" -> new Options(on, o.opponentVcf, o.leafVcf, o.exactLeaves, o.razor);
+          case "opponentVcf" -> new Options(o.rootVcf, on, o.leafVcf, o.exactLeaves, o.razor);
+          case "leafVcf" -> new Options(o.rootVcf, o.opponentVcf, on, o.exactLeaves, o.razor);
+          case "exactLeaves" -> new Options(o.rootVcf, o.opponentVcf, o.leafVcf, on, o.razor);
+          case "razor" -> new Options(o.rootVcf, o.opponentVcf, o.leafVcf, o.exactLeaves, on);
+          case "noVcf" -> NONE;
+          default -> throw new IllegalArgumentException("unknown search option " + name);
+        };
+      }
+      return o;
+    }
+  }
+
+  private static final int ROOT_VCF_MOVES = 12;
+  private static final long ROOT_VCF_NODES = 20_000;
+  private static final long ROOT_VCF_NANOS = 10_000_000L;
+  private static final int OPP_VCF_MOVES = 8;
+  private static final long OPP_VCF_NODES = 8_000;
+  private static final long OPP_VCF_NANOS = 5_000_000L;
+  private static final long OPP_VCF_REPLY_NODES = 1_500;
+  private static final int LEAF_VCF_MOVES = 3;
+  private static final long LEAF_VCF_NODES = 100;
+  private static final int TENTATIVE_WIN = 5_000;
+  /** Leaf and razor VCF only on boards up to this many cells; above it a leaf proof costs too much time. */
+  private static final int LEAF_VCF_MAX_CELLS = 400;
+  private static final int[] RAZOR_MARGIN = {0, 300, 600};
 
   private final Geometry g;
   private final Tables t;
   private final HandEval eval;
   private final TranspositionTable tt;
+  private final Vcf.Table vcfTable;
+  private final Options options;
+  private final boolean leafVcf;
+  private final int pollMask;
   private final long zStm;
   private final long[][] zCd = new long[3][COOLDOWN + 1];
   private final long[] zTurn = new long[MAX_PLY + 1];
@@ -58,11 +113,15 @@ public final class Searcher {
     final int[][] killers = new int[MAX_PLY][2];
     final int[][] history = new int[3][];
     final Board[] pool = new Board[MAX_PLY];
+    final Vcf vcf;
+    final Vcf leafVcf;
 
     Ctx(int token, long deadline, int turnBase) {
       this.token = token;
       this.deadline = deadline;
       this.turnBase = turnBase;
+      vcf = new Vcf(g, vcfTable, true);
+      leafVcf = options.exactLeaves ? vcf : new Vcf(g, vcfTable, false);
       history[1] = new int[g.cols];
       history[2] = new int[g.cols];
       for (int[] k : killers) {
@@ -89,10 +148,23 @@ public final class Searcher {
   }
 
   public Searcher(Geometry g, HandEval eval, TranspositionTable tt) {
+    this(g, eval, tt, Options.DEFAULT);
+  }
+
+  public Searcher(Geometry g, HandEval eval, TranspositionTable tt, Options options) {
+    this(g, eval, tt, options, new Vcf.Table(17));
+  }
+
+  /** The threat-search table is passed in so a bot can allocate it once, outside any timed call. */
+  public Searcher(Geometry g, HandEval eval, TranspositionTable tt, Options options, Vcf.Table vcfTable) {
     this.g = g;
     this.t = g.tables;
     this.eval = eval;
     this.tt = tt;
+    this.options = options;
+    this.leafVcf = options.leafVcf && g.cells <= LEAF_VCF_MAX_CELLS;
+    this.pollMask = g.cells > LEAF_VCF_MAX_CELLS ? POLL_MASK_LARGE : POLL_MASK;
+    this.vcfTable = vcfTable;
     SplittableRandom rnd = new SplittableRandom(0x7C0FFEE5EA4C4L);
     zStm = rnd.nextLong();
     for (int colour = 1; colour <= 2; colour++) {
@@ -142,13 +214,13 @@ public final class Searcher {
     for (int c = 0; c < g.cols; c++) {
       if (!root.isFull(c)) {
         if (root.threats(me, g.index(c, root.height(c))) > 0) {
-          return new Result(c, MATE - 1, 1, 1, System.nanoTime() - startNanos);
+          return result(x, c, MATE - 1, 1, startNanos);
         }
         moves[n++] = c;
       }
     }
     if (n == 0) {
-      return new Result(Tactics.NONE, 0, 0, 0, System.nanoTime() - startNanos);
+      return result(x, Tactics.NONE, 0, 0, startNanos);
     }
     if (cdMe >= COOLDOWN) {
       Board probe = x.pool(0);
@@ -157,7 +229,7 @@ public final class Searcher {
           if (root.blastMayWin(c)) {
             probe.copyFrom(root);
             if (probe.blast(c)) {
-              return new Result(c | Tactics.SPECIAL, MATE - 1, 1, 1, System.nanoTime() - startNanos);
+              return result(x, c | Tactics.SPECIAL, MATE - 1, 1, startNanos);
             }
           }
           moves[n++] = c | Tactics.SPECIAL;
@@ -169,6 +241,19 @@ public final class Searcher {
           + centreBonus[Tactics.column(moves[i])];
     }
     sortByScore(moves, scores, n);
+
+    long hardDeadline = startNanos + hardNanos;
+    if (options.rootVcf) {
+      int m = x.vcf.attack(root, me, cdMe, cdOpp, ROOT_VCF_MOVES, turnIndex,
+          Math.min(hardDeadline, System.nanoTime() + ROOT_VCF_NANOS), ROOT_VCF_NODES);
+      if (m != Tactics.NONE) {
+        return result(x, m, MATE_BOUND + 1, 0, startNanos);
+      }
+    }
+    if (options.opponentVcf && n > 1) {
+      n = dropMovesLosingToVcf(x, root, me, cdMe, cdOpp, turnIndex, moves, scores, n,
+          Math.min(hardDeadline, System.nanoTime() + OPP_VCF_NANOS));
+    }
 
     int best = moves[0];
     int bestScore = -INF;
@@ -207,7 +292,59 @@ public final class Searcher {
         break;
       }
     }
-    return new Result(best, bestScore, completed, x.nodes, System.nanoTime() - startNanos);
+    return result(x, best, bestScore, completed, startNanos);
+  }
+
+  private Result result(Ctx x, int move, int score, int depth, long startNanos) {
+    boolean two = x.leafVcf != x.vcf;
+    long vn = x.vcf.nodes + (two ? x.leafVcf.nodes : 0);
+    long vp = x.vcf.proofs + (two ? x.leafVcf.proofs : 0);
+    long br = x.vcf.blastRefutations + (two ? x.leafVcf.blastRefutations : 0);
+    return new Result(move, score, depth, x.nodes, System.nanoTime() - startNanos, vn, vp, br);
+  }
+
+  /**
+   * If the opponent would win by VCF after a pass, keeps only the root moves after which its VCF is no longer
+   * found (moves stay in their order). Returns the new move count; all moves are kept if none stops it.
+   */
+  private int dropMovesLosingToVcf(Ctx x, Board root, int me, int cdMe, int cdOpp, int turnIndex, int[] moves,
+      int[] scores, int n, long deadline) {
+    int opp = 3 - me;
+    if (x.vcf.attack(root, opp, cdOpp, cdMe, OPP_VCF_MOVES, turnIndex + 1, deadline, OPP_VCF_NODES) == Tactics.NONE) {
+      return n;
+    }
+    int kept = 0;
+    int[] keep = new int[n];
+    Board child = new Board(g);
+    for (int i = 0; i < n; i++) {
+      int m = moves[i];
+      int c = Tactics.column(m);
+      child.copyFrom(root);
+      int cdNext;
+      if (Tactics.isSpecial(m)) {
+        child.blast(c);
+        cdNext = 1;
+      } else {
+        child.make(c, me);
+        cdNext = Math.min(cdMe + 1, COOLDOWN);
+      }
+      if (x.vcf.attack(child, opp, cdOpp, cdNext, OPP_VCF_MOVES, turnIndex + 1, deadline, OPP_VCF_REPLY_NODES)
+          == Tactics.NONE) {
+        keep[kept++] = i;
+      }
+    }
+    if (kept == 0 || kept == n) {
+      return n;
+    }
+    int[] m2 = new int[kept];
+    int[] s2 = new int[kept];
+    for (int i = 0; i < kept; i++) {
+      m2[i] = moves[keep[i]];
+      s2[i] = scores[keep[i]];
+    }
+    System.arraycopy(m2, 0, moves, 0, kept);
+    System.arraycopy(s2, 0, scores, 0, kept);
+    return kept;
   }
 
   private int rootChild(Ctx x, Board root, int me, int opp, int cdMe, int cdOpp, int m, int depth, int alpha,
@@ -250,7 +387,7 @@ public final class Searcher {
 
   private int search(Ctx x, Board b, int stm, int cdStm, int cdOpp, int depth, int alpha, int beta, int ply,
       boolean pv) {
-    if ((++x.nodes & POLL_MASK) == 0) {
+    if ((++x.nodes & pollMask) == 0) {
       poll(x);
     }
     if (x.turnBase + ply >= MAX_TURNS) {
@@ -290,9 +427,22 @@ public final class Searcher {
     boolean forced = oppThreats == 1;
     if (depth <= 0 || ply >= MAX_PLY - 2) {
       if (!forced || ply >= MAX_PLY - 2) {
+        if (leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0) {
+          int v = leafProof(x, b, stm, cdStm, cdOpp, ply);
+          if (v != 0) {
+            return v;
+          }
+        }
         return eval.evaluate(b, stm, cdStm, cdOpp);
       }
       depth = 1;
+    }
+    if (options.razor && !pv && !forced && depth <= 2) {
+      int ev = eval.evaluate(b, stm, cdStm, cdOpp);
+      if (ev + RAZOR_MARGIN[depth] < alpha) {
+        int v = leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0 ? leafProof(x, b, stm, cdStm, cdOpp, ply) : 0;
+        return v != 0 ? v : ev;
+      }
     }
 
     long key = key(b, stm, cdStm, cdOpp, x.turnBase + ply);
@@ -411,6 +561,15 @@ public final class Searcher {
         : TranspositionTable.EXACT;
     tt.store(key, depth, toTT(best, ply), bound, bestMove);
     return best;
+  }
+
+  /** Short VCF for the side to move at a leaf: a win score if it finds one, else 0. */
+  private int leafProof(Ctx x, Board b, int stm, int cdStm, int cdOpp, int ply) {
+    int m = x.leafVcf.attack(b, stm, cdStm, cdOpp, LEAF_VCF_MOVES, x.turnBase + ply, x.deadline, LEAF_VCF_NODES);
+    if (m == Tactics.NONE) {
+      return 0;
+    }
+    return options.exactLeaves ? MATE - ply - (2 * LEAF_VCF_MOVES + 1) : TENTATIVE_WIN;
   }
 
   private boolean blastWins(Ctx x, Board b, int ply) {

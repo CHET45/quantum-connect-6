@@ -113,3 +113,47 @@ Notes:
   this machine, not from the bot. Clock polling was tightened from 1,024 to 256 nodes. Latency targets are
   therefore measured on at most 2 threads.
 - Thread-creation overhead outside the bot call (engine side) is not measured yet; that is the M4 latency probe.
+
+## M3 Gravity threat search (2026-11-03)
+
+What exists: `search/Vcf`, a gravity VCF prover. The attacker plays only drops that leave it a playable threat
+cell; the defender's replies are enumerated in full (its own immediate win, the block of a single threat, every
+blast while its special is ready), so a returned win is a proof; drops are made and taken back in place, blasts
+use copies; own lockless result table (2^17 entries, allocated in the `QcBot` constructor) keyed by cells, attacker,
+both cooldown counters and, near the cap, the turns left; node and time limits, clock checked at every node; an
+optional tentative mode (H1) that skips defender blasts and uses separate keys. `Searcher.Options` switches the
+uses, and `MatchMain` accepts `qcbot:+razor,-leafVcf`-style specs to play variants against each other.
+
+Default configuration after the ablations: own VCF at the root (12 forcing drops, 20k nodes, 10 ms) and the
+opponent's VCF check at the root (8 drops; if the opponent wins by VCF after a pass, keep only root moves after
+which its VCF is no longer found); leaf VCF and razoring off. Clock polling is every 16 nodes on boards above
+400 cells (a 40x40 call had reached 101 ms with 256).
+
+| Check | Command | Result |
+|---|---|---|
+| T7 short proofs vs the exhaustive solver | `VcfTest` | 100,000 positions, 11,507 proofs, no false proof (the solver finds 11,753 wins within 3 plies; the 246 the VCF misses start with a blast or a quiet move) |
+| T7 long proofs vs an independent checker (defender tries every legal move, including the no-op blast on a full column) | `VcfTest` | 50,000 positions, 5,879 proofs up to 5 forcing drops, no false proof; 26 need two or more drops |
+| Table independence | `VcfTest` | 5,000 positions, same verdict with a shared or an empty table |
+| T1-T5, T2, T6, conformance, differential, robustness | `test` | pass (T2 302/302) |
+
+Ablations (`match`, 8x12, 600 games each, 6 threads; A against the then-default with every VCF use on):
+
+| A | Score of A | Note |
+|---|---|---|
+| leaf VCF off | 71.6 % (+160 Elo) | the leaf VCF took 66 % of all nodes, 266k instead of ~1 M nodes/s, median depth 6 instead of 7 |
+| tentative leaves | 47.8 % | within noise |
+| razoring on | 49.6 % | within noise |
+| opponent VCF check off | 50.2 % | within noise |
+| leaf VCF gated to "defender special not ready", 100 nodes (against leaf VCF off) | 36.1 % (-99 Elo) | still 57 % of nodes |
+
+Final M3 against frozen M2 (`jar:ladder/m2.jar`, 1,200 games, 6 threads): **50.9 % (+6 Elo), 325 / 571 / 304,
+not significant** (about +-10 Elo at this sample). The definition of done asks for an SPRT gain over M2; it is
+not met. The design anticipated this ("could be lower if shallow search already finds most threats"): the M2
+search with its zero-cost forced reply already resolves short forcing lines, and a leaf VCF at this node cost
+loses more depth than it wins. The root VCF and the opponent check are kept because they are almost free (0.1 %
+of nodes) and turn long forced wins into immediate moves. Statistics in that run: 0.23 proofs per call, 3,377
+defender-blast refutations over 79,051 calls.
+
+Latency: 25x25 / 40x40 / 10x14 / 12x8 against `SpecialMoveBot` on 2 threads, max 67 ms (was 101 ms); 8x12 robustness
+run max 63 ms. Allocation per call on 8x12 p99 91 KB; on 40x40 p99 0.8 MB (a 40x40 board copy is about 40 KB).
+0 timeouts, 0 invalid columns, 0 invalid specials in all runs.

@@ -8,11 +8,13 @@ import ch.qc.bot.rules.Geometry;
 import ch.qc.bot.search.Searcher;
 import ch.qc.bot.search.Tactics;
 import ch.qc.bot.search.TranspositionTable;
+import ch.qc.bot.search.Vcf;
 
 /**
- * Quantum Connect bot. M2: alpha-beta search ({@link Searcher}) with the hand evaluation, under a 62 ms hard stop
- * (40 ms on the first call of an instance), on top of the per-call pipeline (snapshot, turn tracking, board load,
- * guarded two-call protocol). The M1 root tactics are the fallback if the search cannot run.
+ * Quantum Connect bot. M3: alpha-beta search ({@link Searcher}) with the hand evaluation and the gravity threat
+ * search ({@link Vcf}) at the root, under a 62 ms hard stop (40 ms on the first
+ * call of an instance), on top of the per-call pipeline (snapshot, turn tracking, board load, guarded two-call
+ * protocol). The M1 root tactics are the fallback if the search cannot run.
  */
 public final class QcBot implements Algorithm {
   /** A special is never raised if the first call took longer than this (it may have timed out, R10, R15). */
@@ -29,6 +31,8 @@ public final class QcBot implements Algorithm {
 
   private final TurnTracker tracker = new TurnTracker();
   private final TranspositionTable tt;
+  private final Searcher.Options options;
+  private final Vcf.Table vcfTable;
   private Geometry geometry;
   private Searcher searcher;
   private int calls;
@@ -36,7 +40,14 @@ public final class QcBot implements Algorithm {
   private volatile Searcher.Result lastResult;
 
   public QcBot() {
+    this(Searcher.Options.DEFAULT);
+  }
+
+  /** A bot with non-default search switches (harness experiments). */
+  public QcBot(Searcher.Options options) {
+    this.options = options;
     tt = TranspositionTable.forHeap();
+    vcfTable = new Vcf.Table(17);
   }
 
   @Override
@@ -108,7 +119,7 @@ public final class QcBot implements Algorithm {
     }
     if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
       geometry = new Geometry(s.rows, s.cols);
-      searcher = new Searcher(geometry, new HandEval(geometry), tt);
+      searcher = new Searcher(geometry, new HandEval(geometry), tt, options, vcfTable);
     }
     // a fresh board per call: a search that outlived its call may still be walking the previous one
     Board board = new Board(geometry);

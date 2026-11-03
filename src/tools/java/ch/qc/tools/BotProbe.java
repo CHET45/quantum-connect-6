@@ -21,6 +21,9 @@ public final class BotProbe implements Algorithm {
   public final long[] depthCounts = new long[65];
   private long searchNodes;
   private long searchNanos;
+  private long vcfNodes;
+  private long vcfProofs;
+  private long blastRefutations;
   /** Search time reported by the bot and call time minus search time, per call. */
   public final LatencyHistogram searchTime = new LatencyHistogram();
   public final LatencyHistogram outsideSearch = new LatencyHistogram();
@@ -61,6 +64,9 @@ public final class BotProbe implements Algorithm {
           depthCounts[Math.min(64, r.depth())]++;
           searchNodes += r.nodes();
           searchNanos += r.nanos();
+          vcfNodes += r.vcfNodes();
+          vcfProofs += r.vcfProofs();
+          blastRefutations += r.blastRefutations();
         }
         searchTime.record(r.nanos());
         outsideSearch.record(System.nanoTime() - t0 - r.nanos());
@@ -124,6 +130,11 @@ public final class BotProbe implements Algorithm {
 
   public synchronized long searchNanos() {
     return searchNanos;
+  }
+
+  /** {vcf nodes, vcf proofs, defender blasts that refuted a VCF line}. */
+  public synchronized long[] vcfStats() {
+    return new long[] {vcfNodes, vcfProofs, blastRefutations};
   }
 
   public synchronized int calls() {

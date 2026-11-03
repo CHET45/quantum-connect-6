@@ -11,8 +11,9 @@ import org.junit.jupiter.api.Test;
 /**
  * Suite T2 of design 5.4: positions where the side to move forces a win in 3 or 5 plies (double and stacked
  * threats, also through blasts) but not in 1, proven by an exhaustive full-width solver on Board (which the
- * conformance and differential tests tie to the engine). The search must find a first move that keeps the
- * forced win within 80 ms in at least 80 percent of the positions. Size with -Pqc.mate.positions=N.
+ * conformance and differential tests tie to the engine). The search must find a first move that keeps a forced
+ * win (within the same plies, or a longer one confirmed by the independent proof checker of {@link VcfTest}) within
+ * 80 ms in at least 80 percent of the positions. Size with -Pqc.mate.positions=N.
  */
 class MateSuiteTest {
   private static final int POSITIONS = Integer.getInteger("qc.mate.positions", 300);
@@ -158,6 +159,9 @@ class MateSuiteTest {
     if (special ? a.blast(c) : a.make(c, me)) {
       return true;
     }
-    return !a.topRowFull() && opponentLosesAll(a, me, special ? 1 : Math.min(10, cdMe + 1), cdOpp, plies - 1);
+    int cdNext = special ? 1 : Math.min(10, cdMe + 1);
+    // a longer forced win (the root threat search returns the first proof it finds) also counts
+    return !a.topRowFull() && (opponentLosesAll(a, me, cdNext, cdOpp, plies - 1)
+        || VcfTest.Checker.everyDefenceLoses(a, me, cdNext, cdOpp, 5, 1));
   }
 }
