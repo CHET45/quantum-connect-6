@@ -190,14 +190,15 @@ public final class QcBot implements Algorithm {
       return false;
     }
     Decision d = decision;
-    if (d == null || !d.finishedInTime() || d.callId() != calls || !secondCallInTime(firstCallStart, t0)) {
+    if (d == null || d.callId() != calls || !secondCallInTime(firstCallStart, t0)) {
       return false;
     }
     int col = d.column();
     if (col < 0 || col >= cols || field.isColumnFull(col) || Snapshot.fingerprint(field) != d.fingerprint()) {
       return false;
     }
-    if (d.special() && tracker.ownSpecialReady()) {
+    // only the blast needs the stricter limit: a search here cannot crash the engine, whatever the first call did
+    if (d.special() && d.finishedInTime() && tracker.ownSpecialReady()) {
       tracker.noteSpecialRequested();
       return true;
     }
