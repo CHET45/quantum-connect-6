@@ -166,11 +166,18 @@ public final class BookCheck {
         + " book - played | rollouts played | rollouts book |");
     System.out.println("|---|---|---|---|---|---|---|---|---|---|---|---|");
     ExecutorService pool = Executors.newFixedThreadPool(threads);
-    long nps = 800_000L * (g.cells <= 200 ? 1 : 1);
+    long nps = deepMs > 0 ? BookBuilder.calibrate(g, eval) : 0;
     List<double[]> scored = new ArrayList<>();
+    if (deepMs == 0) {
+      for (Diff d : list) {
+        System.out.printf(Locale.ROOT, "| %d | %s | %s | %s | %d | %d-%d | %s |%n", d.ply, d.prefix,
+            Character.forDigit(d.played, 36), Character.forDigit(d.book, 36), d.games, d.wins, d.losses,
+            String.join(",", d.who.subList(0, Math.min(2, d.who.size()))));
+      }
+    }
     try {
       int rank = 0;
-      for (Diff d : list) {
+      for (Diff d : deepMs > 0 ? list : new ArrayList<Diff>()) {
         Board b = position(g, d.prefix);
         int stm = d.ply % 2 == 0 ? 1 : 2;
         TranspositionTable tt = new TranspositionTable(22);

@@ -38,8 +38,8 @@ import java.util.zip.CRC32;
  * tree grows best first along the moves we would play and the replies an opponent might play (those strong bots really
  * played on the server cost almost nothing, other replies cost by rank and by how much worse they score), scores back
  * up by minimax, and when a backed-up score overturns a choice the alternative is expanded in turn. Mirror positions
- * share a node. Our choice also carries a small bonus or penalty from the results of strong-against-strong server games
- * through that move, so a line known to have lost 0-10 is left unless the search clearly prefers it. Blasts stay out
+ * share a node. Our choice also carries a bonus or penalty from the results of strong-against-strong server games
+ * through that move, net of the two bots' ratings ({@link #RECORD_WEIGHT}). Blasts stay out
  * of the book: a position where the search prefers a blast gets no entry, and the bot's own search decides there.
  *
  * <pre>
@@ -52,17 +52,21 @@ import java.util.zip.CRC32;
  * --sizes LIST      board sizes in build order (default 15x11,8x12,15x22)
  * --share LIST      share of the time per size (default 0.5,0.25,0.25)
  * --max-ply LIST    deepest position with an entry per size (default 30,24,24)
- * --deep-ms N       long search per candidate, converted to a node count at the start (default 1500)
- * --scan-ms N       short search per legal drop (default 60)
- * --k N             candidates searched long (default 3)
+ * --deep-ms N       long search per candidate, converted to a node count at the start (default 700)
+ * --scan-ms N       short search per legal drop (default 30)
+ * --k N             candidates searched long where we move (default 2)
  * --cache DIR       per-position analysis cache, reused only for the same weights and search classes (default: next to
  *                   FILE); --fresh ignores what is there
  * </pre>
  */
 public final class BookBuilder {
   private static final int MATE_BOUND = Searcher.MATE_BOUND;
-  /** Weight of the server record of a move in our choice: this many score units at a 100% record (0.25 logit). */
-  private static final int RECORD_WEIGHT = 64;
+  /**
+   * Weight of the server record of a move in our choice: score units per game of surprise. The surprise of a game is
+   * its result minus what the two bots' ratings predict, so losing to a bot that beats everyone says little about the
+   * move, and beating it says a lot; with n games it is damped by n + 2.
+   */
+  private static final int RECORD_WEIGHT = 256;
   /** An alternative of ours is followed while within this much of the best. */
   private static final int OUR_MARGIN = 51;
   /** A reply nobody strong played is followed only with rank below this and within this much of the best. */
@@ -113,9 +117,14 @@ public final class BookBuilder {
   /** What strong bots played from one position: per canonical column plays and the mover's wins and losses. */
   static final class Seen {
     final Map<Integer, int[]> byCol = new HashMap<>();
+    final Map<Integer, double[]> surprise = new HashMap<>();
 
     int[] at(int col) {
       return byCol.computeIfAbsent(col, c -> new int[3]);
+    }
+
+    void addResult(int col, double delta) {
+      surprise.computeIfAbsent(col, c -> new double[1])[0] += delta;
     }
 
     int plays(int col) {
@@ -125,7 +134,8 @@ public final class BookBuilder {
 
     int bonus(int col) {
       int[] r = byCol.get(col);
-      return r == null ? 0 : RECORD_WEIGHT * (r[1] - r[2]) / (r[1] + r[2] + 2);
+      double[] d = surprise.get(col);
+      return r == null || d == null ? 0 : (int) Math.round(RECORD_WEIGHT * d[0] / (r[1] + r[2] + 2));
     }
   }
 
@@ -197,9 +207,9 @@ public final class BookBuilder {
     String sizes = "15x11,8x12,15x22";
     String share = "0.5,0.25,0.25";
     String maxPly = "30,24,24";
-    long deepMs = 1500;
-    long scanMs = 60;
-    int k = 3;
+    long deepMs = 700;
+    long scanMs = 30;
+    int k = 2;
     Path cacheDir = null;
     boolean fresh = false;
     for (int i = 0; i < args.length; i++) {
@@ -247,7 +257,7 @@ public final class BookBuilder {
       long elapsed = System.nanoTime() - start;
       long slice = (long) ((totalNanos - elapsed) * shares[s] / shareLeft);
       shareLeft -= shares[s];
-      String tag = evalTag(weights, g) + "-" + searchTag + "-d" + deepMs + "-s" + scanMs + "-k" + k;
+      String tag = evalTag(weights, g) + "-" + searchTag;
       Path cacheFile = cacheDir.resolve("cache-" + name + "-" + tag + ".txt");
       if (!fresh && Files.exists(cacheFile)) {
         for (String line : Files.readAllLines(cacheFile, StandardCharsets.UTF_8)) {
@@ -343,7 +353,7 @@ public final class BookBuilder {
     return Long.toHexString(crc.getValue());
   }
 
-  private static long calibrate(Geometry g, Evaluator eval) {
+  static long calibrate(Geometry g, Evaluator eval) {
     Worker w = new Worker(g, eval);
     Board b = w.board;
     b.clear();
@@ -379,6 +389,7 @@ public final class BookBuilder {
       boolean[] strong = {p[1].equals("1"), p[2].equals("1")};
       int winner = p[3].equals("F") ? 1 : p[3].equals("S") ? 2 : 0;
       boolean bothStrong = strong[0] && strong[1];
+      double pFirst = p.length > 6 ? Double.parseDouble(p[6]) : 0.5;
       b.clear();
       int stm = 1;
       games++;
@@ -392,6 +403,8 @@ public final class BookBuilder {
         r[0] += strong[stm - 1] ? 1 : 0;
         if (bothStrong && winner != 0) {
           r[winner == stm ? 1 : 2]++;
+          double expected = stm == 1 ? pFirst : 1 - pFirst;
+          run.seen.get(c.key).addResult(canonCol(col, c, g.cols), (winner == stm ? 1 : 0) - expected);
         }
         if (b.make(col, stm)) {
           break;
@@ -882,7 +895,8 @@ public final class BookBuilder {
                 .append(n.deep[i] ? 1 : 0);
             if (seen != null && seen.plays(n.cols[i]) > 0) {
               int[] rec = seen.byCol.get(n.cols[i]);
-              text.append(":n").append(rec[0]).append("+").append(rec[1]).append("-").append(rec[2]);
+              text.append(":n").append(rec[0]).append("+").append(rec[1]).append("-").append(rec[2]).append("b")
+                  .append(seen.bonus(n.cols[i]));
             }
           }
         }
