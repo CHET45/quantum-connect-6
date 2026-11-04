@@ -15,6 +15,7 @@ def main():
     print("# rows x cols, 1, 1, winner, self|self, clean prefix (no blast, no skipped turn), mean score of F")
     for path in sys.argv[1:]:
         games = [json.loads(x) for x in open(path, encoding="utf-8") if x.strip()]
+        games = [g for g in games if g["reason"] != "crash"]
         if not games:
             continue
         f_scores = [g["scoreA"] if g["aFirst"] else 1 - g["scoreA"] for g in games]

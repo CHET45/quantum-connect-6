@@ -51,6 +51,10 @@ def lost_turns(games):
 
 def report(path, top):
     games = [json.loads(x) for x in open(path, encoding="utf-8") if x.strip()]
+    crashes = sum(g["reason"] == "crash" for g in games)
+    games = [g for g in games if g["reason"] != "crash"]
+    if crashes:
+        print(f"{path}: {crashes} games dropped, the engine crashed (special after a timed-out first call)")
     if not games:
         print(path, "empty")
         return

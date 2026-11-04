@@ -105,13 +105,22 @@ public final class BookMatch {
     BotProbe pa = new BotProbe(BotLoader.create(a));
     BotProbe pb = new BotProbe(BotLoader.create(b));
     Experiment exp = new Experiment(aFirst ? pa : pb, aFirst ? pb : pa, false, false, rows, cols);
-    exp.runExperiment();
+    // the engine crashes when a special follows a first call that timed out (design R10, R15); under the night's load
+    // that happens to any jar, so such a game is reported, not counted
+    boolean crashed = false;
+    try {
+      exp.runExperiment();
+    } catch (RuntimeException e) {
+      crashed = true;
+    }
     ExperimentStatus st = exp.getExperimentStatus();
     List<Move> history = new ArrayList<>(exp.getHistory());
     SpaceOwnership aColour = aFirst ? SpaceOwnership.FIRST_PLAYER : SpaceOwnership.SECOND_PLAYER;
     double scoreA = 0.5;
     String reason = st == ExperimentStatus.UNCERTAIN ? "full" : "cap";
-    if (st == ExperimentStatus.COLLAPSED) {
+    if (crashed) {
+      reason = "crash";
+    } else if (st == ExperimentStatus.COLLAPSED) {
       scoreA = exp.getCurrentPlayer() == aColour ? 1 : 0;
       reason = history.get(history.size() - 1).isSpecialMove() ? "blast" : "six";
     }
