@@ -22,7 +22,8 @@ import ch.qc.bot.search.Vcf;
  *
  * <p>The first turn of a game knows neither the call limit nor the board's tables, so it plays without search; nothing
  * can be lost there with at most one disc on the board. Its second call, where running late costs nothing, builds the
- * tables of this board, whatever its size, and finds out whether the call limit is below 100 ms ({@link CallLimit}).
+ * tables of this board, whatever its size, and finds out whether the call limit is below 100 ms ({@link CallLimit}); a
+ * shorter limit is measured on the next two turns as well.
  *
  * <p>Upload rules: only basic Java (no java.lang.System, java.io, java.nio, reflection, threads or runtime access),
  * and no exceptions thrown or caught anywhere in the bot; UploadRulesTest checks the compiled classes. Time comes
@@ -48,12 +49,10 @@ public final class QcBot implements Algorithm {
   private static final int NO_SEARCH_DISCS = 3;
   /** A search before the limit is known: only harness games with scripted openings get there. */
   static final long UNPROBED_STOP_NANOS = 20_000_000L;
-  /** The probe of the first turn ends here: on a limit of 100 ms a late thread start cannot turn this into a timeout. */
+  /** The probe ends here: on a limit of 100 ms a late thread start can hardly turn this into a timeout. */
   static final long PROBE_NANOS = 85_000_000L;
   /** The probe for a limit above 100 ms gives up here and takes this as the limit. */
   static final long PROBE_UP_NANOS = 2_000_000_000L;
-  /** One slice of warm-up games between looks at the field during a probe. */
-  private static final long PROBE_SLICE_NANOS = 2_000_000L;
   /** An opponent's whole turn longer than this share of the limit, plus a little, hints at a longer limit. */
   private static final int HINT_PERCENT = 110;
   private static final long HINT_SLACK_NANOS = 5_000_000L;
@@ -216,9 +215,9 @@ public final class QcBot implements Algorithm {
 
   /**
    * Finds out where the call limit lies: the engine applies our move as soon as it gives up on this call, so a change of
-   * the field tells when that was. Until then the time goes to warm-up games on this very board. This thread touches
-   * the field only by reading it, as every call does, and it ends as soon as the field changes, so it takes nothing from
-   * the opponent's turn. A probe that ends at its own time leaves no timeout behind.
+   * the field tells when that was. This thread touches the field only by reading it, as every call does, and it ends as
+   * soon as the field changes, so it takes nothing from the opponent's turn. A probe that ends at its own time leaves no
+   * timeout behind.
    */
   private void probe(QuantumField field, Decision d, long t0, long until) {
     boolean upward = until > PROBE_NANOS;
@@ -227,8 +226,6 @@ public final class QcBot implements Algorithm {
       upward = true;
       probedUpward = true;
     }
-    WarmUp warm = geometry != null && geometry.sameSize(field.getNumberOfRows(), field.getNumberOfColumns())
-        ? new WarmUp(new Geometry[] {geometry}, options) : null;
     while (true) {
       long now = Clock.nanos();
       if (Snapshot.fingerprint(field) != d.fingerprint()) {
@@ -242,9 +239,6 @@ public final class QcBot implements Algorithm {
           limit.assumePrior();
         }
         return;
-      }
-      if (warm != null) {
-        warm.run(Math.min(PROBE_SLICE_NANOS, until - (now - t0)));
       }
     }
   }

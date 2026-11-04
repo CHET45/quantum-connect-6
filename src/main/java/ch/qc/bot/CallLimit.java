@@ -12,12 +12,16 @@ package ch.qc.bot;
 final class CallLimit {
   static final long PRIOR_NANOS = 100_000_000L;
   private static final long MS = 1_000_000L;
+  private static final long NEAR_PRIOR_NANOS = 85 * MS;
   /** Limits a server would plausibly set; a measurement just above one of them is that limit plus some delay. */
   private static final long[] ROUND_MS = {1, 2, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 500, 750, 1000,
       1500, 2000};
 
+  /** Measurements below the prior, whose median counts: a stall lengthens one, a late thread start shortens it. */
+  private final long[] samples = new long[3];
+  private int count;
   private volatile long nanos = PRIOR_NANOS;
-  /** Measured below the prior, or measured or assumed to hold, so no probe is due any more. */
+  /** Measured or assumed to hold, so no probe is due any more. */
   private volatile boolean known;
 
   long nanos() {
@@ -33,10 +37,30 @@ final class CallLimit {
     known = true;
   }
 
-  /** The engine gave up on a call after this long. */
+  /** The engine gave up on a call after this long. Below the prior more samples are due, if any are left. */
   void measured(long took) {
-    nanos = round(took);
-    known = true;
+    if (known || took >= NEAR_PRIOR_NANOS || count == samples.length) {
+      // just below the prior is the prior seen from a thread that started late
+      nanos = took >= NEAR_PRIOR_NANOS && took < PRIOR_NANOS ? PRIOR_NANOS : round(took);
+      known = true;
+      return;
+    }
+    samples[count++] = took;
+    nanos = round(median());
+    known = count == samples.length;
+  }
+
+  private long median() {
+    long a = samples[0];
+    if (count == 1) {
+      return a;
+    }
+    long b = samples[1];
+    if (count == 2) {
+      return Math.min(a, b);
+    }
+    long c = samples[2];
+    return Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
   }
 
   /** A call ran this long without the engine giving up. */

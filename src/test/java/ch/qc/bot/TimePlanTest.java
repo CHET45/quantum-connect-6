@@ -265,6 +265,24 @@ class TimePlanTest {
     assertEquals(149 * MS / 10 * 9, CallLimit.round(149 * MS));
   }
 
+  @Test
+  void aLimitBelowThePriorIsTheMedianOfThreeMeasurements() {
+    CallLimit l = new CallLimit();
+    l.measured(52 * MS);
+    assertFalse(l.known());
+    assertEquals(50 * MS, l.nanos());
+    l.measured(90 * MS);
+    assertTrue(l.known(), "a measurement near the prior settles it");
+    assertEquals(CallLimit.PRIOR_NANOS, l.nanos());
+    CallLimit m = new CallLimit();
+    m.measured(30 * MS);
+    m.measured(26 * MS);
+    assertFalse(m.known());
+    m.measured(70 * MS);
+    assertTrue(m.known());
+    assertEquals(30 * MS, m.nanos());
+  }
+
   /** The engine's timer, a late second call: the field changes while the bot is in its second call. */
   @Test
   void theProbeReadsTheLimitFromTheField() throws Exception {
