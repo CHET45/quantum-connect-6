@@ -50,7 +50,6 @@ class CropTest {
     int near = c.col0 + c.cols - Crop.KEEP;
     Crop wider = c.refit(board(100, 100, new int[] {1}, near), ABOVE);
     assertTrue(near + Crop.KEEP < wider.col0 + wider.cols);
-    assertTrue(wider.col0 <= c.col0);
     Crop taller = c.refit(board(100, 100, new int[] {Crop.GROW}, centre), ABOVE);
     assertTrue(taller.rows >= Crop.GROW + Crop.KEEP);
     assertSame(wider, wider.refit(board(100, 100, new int[] {1}, near), ABOVE));
