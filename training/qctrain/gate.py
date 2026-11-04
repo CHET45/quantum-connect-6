@@ -55,6 +55,8 @@ def run_size(args, size, nodes, pairs, seed, tag):
     cmd = [JAVA, "-Xmx6g", "-cp", args.cp, "ch.qc.tools.FastMatch", "--a", f"contempt=0@{args.a}",
            "--b", f"contempt=0@{args.b}", "--nodes", str(nodes), "--pairs", str(pairs), "--threads", str(args.threads),
            "--seed", str(seed), "--rows", rows, "--cols", cols, "--out", out]
+    if getattr(args, "openings", None):
+        cmd += ["--openings", f"{args.openings}{size}.txt"]
     t0 = time.time()
     p = subprocess.run(cmd, capture_output=True, text=True, creationflags=BELOW_NORMAL if args.below else IDLE if args.idle else 0, cwd=args.cwd)
     if p.returncode != 0:

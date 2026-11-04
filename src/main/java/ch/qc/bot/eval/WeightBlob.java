@@ -5,11 +5,15 @@ package ch.qc.bot.eval;
  * the .qcw file: big-endian, "QCW1", i32 version, rows, cols, k, i64 specHash, i32 scale, stages, cdContexts,
  * classes, codes, t1, t2, t3, then int16 W[stage][cd][class * codes + code], T1[cd][t1], T2[cd][t2], T3[t3].
  * A blob with rows = cols = 0 holds the size-independent tables of {@link GenericSpec} (its spec hash is
- * {@link GenericSpec#hash}) and may be in units of 1/1024 logit. A blob with one stage holds stage-independent window tables (large boards, where per-stage tables would cost
+ * {@link GenericSpec#hash}) and may be in units of 1/1024 logit; its class count gives the number of row bands, and version
+ * {@link #VERSION_HEIGHT_STAGE} means its stages are {@link Features#heightStage}. A blob with one stage holds stage-independent window tables (large boards, where per-stage tables would cost
  * too much memory). The bot gets these bytes already inflated (the build does it, see EvalBlob), because uploaded bots may not use
  * java.util.zip or java.nio; parsing is by hand and reports problems by returning null, as bots may not throw.
  */
 public final class WeightBlob {
+  public static final int VERSION_HEIGHT_STAGE = 2;
+
+  public final int version;
   public final int rows;
   public final int cols;
   public final int k;
@@ -25,7 +29,8 @@ public final class WeightBlob {
   public final short[] t2;
   public final short[] t3;
 
-  private WeightBlob(int[] header, long specHash, int scale, short[] w, short[] t1, short[] t2, short[] t3) {
+  private WeightBlob(int version, int[] header, long specHash, int scale, short[] w, short[] t1, short[] t2, short[] t3) {
+    this.version = version;
     rows = header[0];
     cols = header[1];
     k = header[2];
@@ -46,9 +51,10 @@ public final class WeightBlob {
   /** Parses an inflated blob; returns null on any format problem. */
   public static WeightBlob parse(byte[] raw) {
     if (raw == null || raw.length < HEADER_BYTES || raw[0] != 'Q' || raw[1] != 'C' || raw[2] != 'W'
-        || raw[3] != '1' || i32(raw, 4) != 1) {
+        || raw[3] != '1') {
       return null;
     }
+    int version = i32(raw, 4);
     // rows, cols, k, (unused), stages, cdContexts, classes, codes
     int[] h = new int[8];
     h[0] = i32(raw, 8);
@@ -64,8 +70,9 @@ public final class WeightBlob {
     int n2 = i32(raw, 52);
     int n3 = i32(raw, 56);
     boolean generic = h[0] == 0 && h[1] == 0;
-    if ((scale != 256 && !(generic && scale == 1024)) || h[2] < 1 || h[2] > 9 || (!generic && (h[0] < 1 || h[1] < 1))
-        || (generic && (h[6] != GenericSpec.CLASSES || specHash != GenericSpec.hash(h[2])))
+    if ((version != 1 && !(generic && version == VERSION_HEIGHT_STAGE))
+        || (scale != 256 && !(generic && scale == 1024)) || h[2] < 1 || h[2] > 9 || (!generic && (h[0] < 1 || h[1] < 1))
+        || (generic && (h[6] % GenericSpec.GROUPS != 0 || specHash != GenericSpec.hash(h[2], h[6] / GenericSpec.GROUPS)))
         || (h[4] != Features.STAGES && h[4] != 1)
         || h[5] != Features.CD_CONTEXTS || n1 != Features.T1_SIZE || n2 != Features.T2_SIZE
         || n3 != Features.T3_SIZE || h[6] < 1 || h[7] < 1 || (long) h[6] * h[7] > 1L << 24) {
@@ -81,7 +88,7 @@ public final class WeightBlob {
     short[] t1 = shorts(raw, pos, h[5] * n1);
     short[] t2 = shorts(raw, pos, h[5] * n2);
     short[] t3 = shorts(raw, pos, n3);
-    return new WeightBlob(h, specHash, scale, w, t1, t2, t3);
+    return new WeightBlob(version, h, specHash, scale, w, t1, t2, t3);
   }
 
   private static int i32(byte[] b, int at) {
