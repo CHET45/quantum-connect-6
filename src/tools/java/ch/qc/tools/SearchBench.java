@@ -26,10 +26,15 @@ import java.util.concurrent.Future;
  * --positions FILE --depth D --specs "A;B;C" [--weights hand|FILE] [--threads 4] [--cap NODES] [--limit N]
  *                                              fixed-depth runs; ratios are geometric means against the first spec
  * --positions FILE --budget NODES --specs "A;B"    fixed-node runs: mean completed depth and nodes per second
+ * --positions FILE --budget NODES --oracle NODES [--oracleSpec S] --specs "A;B"    move quality: each spec picks a move at
+ *                                              the budget, a deep search scores every picked move, loss is against the best
  * </pre>
  */
 public final class SearchBench {
   private SearchBench() {}
+
+  /** Transposition table size of the runs, log2 entries (the bot uses 18). */
+  private static int ttBits = 18;
 
   record Position(int rows, int cols, int stm, int cdStm, int cdOpp, int turn, byte[] cells) {}
 
@@ -49,6 +54,8 @@ public final class SearchBench {
     String weights = "hand";
     int threads = 4;
     int limit = Integer.MAX_VALUE;
+    long oracle = 0;
+    String oracleSpec = "wd=0";
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--gen" -> gen = Integer.parseInt(args[++i]);
@@ -66,6 +73,9 @@ public final class SearchBench {
         case "--weights" -> weights = args[++i];
         case "--threads" -> threads = Integer.parseInt(args[++i]);
         case "--limit" -> limit = Integer.parseInt(args[++i]);
+        case "--tt" -> ttBits = Integer.parseInt(args[++i]);
+        case "--oracle" -> oracle = Long.parseLong(args[++i]);
+        case "--oracleSpec" -> oracleSpec = args[++i];
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
@@ -74,6 +84,10 @@ public final class SearchBench {
       return;
     }
     List<Position> ps = read(Path.of(positions), limit);
+    if (oracle > 0) {
+      oracle(ps, specs.split(";", -1), weights, budget, oracle, oracleSpec, threads);
+      return;
+    }
     run(ps, specs.split(";", -1), weights, depth, budget, cap, threads);
   }
 
@@ -146,7 +160,7 @@ public final class SearchBench {
         for (Position p : ps) {
           fs.add(ex.submit(() -> {
             // a new table per position, the bot's size: no position profits from the one before it
-            TranspositionTable tt = new TranspositionTable(18);
+            TranspositionTable tt = new TranspositionTable(ttBits);
             Searcher s = new Searcher(g, eval, tt, opts, new Vcf.Table(16));
             Board b = new Board(g);
             b.load(p.cells);
@@ -181,6 +195,93 @@ public final class SearchBench {
     } finally {
       ex.shutdownNow();
     }
+  }
+
+  /**
+   * Move quality against a deep search: every spec picks a move at the node budget; the deep search then scores each
+   * distinct picked move plus its own choice, all at the same node count, so scores are comparable within a position.
+   */
+  private static void oracle(List<Position> ps, String[] specs, String weights, long budget, long deep, String oracleSpec,
+      int threads) throws Exception {
+    Geometry g = new Geometry(ps.get(0).rows, ps.get(0).cols);
+    Evaluator eval = Evaluators.factory(weights).apply(g);
+    ExecutorService ex = Executors.newFixedThreadPool(threads);
+    Searcher.Options[] opts = new Searcher.Options[specs.length];
+    for (int i = 0; i < specs.length; i++) {
+      opts[i] = SearchOptions.parse(specs[i]).withNodeRule(false);
+    }
+    Searcher.Options oo = SearchOptions.parse(oracleSpec).withNodeRule(false);
+    try {
+      List<Future<long[][]>> fs = new ArrayList<>();
+      for (Position p : ps) {
+        fs.add(ex.submit(() -> {
+          long[][] res = new long[specs.length][];
+          Board b = new Board(g);
+          b.load(p.cells);
+          int[] moves = new int[specs.length];
+          for (int i = 0; i < specs.length; i++) {
+            Searcher s = new Searcher(g, eval, new TranspositionTable(18), opts[i], new Vcf.Table(16));
+            moves[i] = s.run(b, p.stm, p.cdStm, p.cdOpp, p.turn, ch.qc.bot.Clock.nanos(), Long.MAX_VALUE / 4, budget).move();
+          }
+          Searcher root = new Searcher(g, eval, new TranspositionTable(18), oo, new Vcf.Table(16));
+          int oracleMove = root.run(b, p.stm, p.cdStm, p.cdOpp, p.turn, ch.qc.bot.Clock.nanos(), Long.MAX_VALUE / 4, deep).move();
+          java.util.Map<Integer, Integer> value = new java.util.HashMap<>();
+          value.put(oracleMove, childValue(g, eval, oo, p, oracleMove, deep));
+          for (int m : moves) {
+            value.computeIfAbsent(m, k -> childValue(g, eval, oo, p, k, deep));
+          }
+          int best = java.util.Collections.max(value.values());
+          for (int i = 0; i < specs.length; i++) {
+            int loss = best - value.get(moves[i]);
+            res[i] = new long[] {loss, moves[i] == oracleMove ? 1 : 0};
+          }
+          return res;
+        }));
+      }
+      long[][] sum = new long[specs.length][4];
+      long[][][] all = new long[ps.size()][][];
+      for (int k = 0; k < all.length; k++) {
+        all[k] = fs.get(k).get();
+        for (int i = 0; i < specs.length; i++) {
+          sum[i][0] += all[k][i][0];
+          sum[i][1] += all[k][i][1];
+          sum[i][2] += all[k][i][0] >= 100 ? 1 : 0;
+          sum[i][3] += all[k][i][0] >= 400 ? 1 : 0;
+        }
+      }
+      for (int i = 0; i < specs.length; i++) {
+        double diff = 0;
+        double dd = 0;
+        for (long[][] r : all) {
+          double d = r[i][0] - r[0][0];
+          diff += d;
+          dd += d * d;
+        }
+        int n = all.length;
+        double mean = diff / n;
+        double se = Math.sqrt(Math.max(0, dd / n - mean * mean) / n);
+        System.out.printf(Locale.ROOT, "[%s] %d pos: mean loss %.1f, vs first %+.1f +- %.1f, same as deep %.1f%%, loss>=100 %.1f%%, loss>=400 %.1f%%%n",
+            specs[i], n, (double) sum[i][0] / n, mean, 1.96 * se, 100.0 * sum[i][1] / n, 100.0 * sum[i][2] / n, 100.0 * sum[i][3] / n);
+      }
+    } finally {
+      ex.shutdownNow();
+    }
+  }
+
+  /** Deep value of a root move for its mover, mate scores clipped so one lost mate does not swamp the mean. */
+  private static int childValue(Geometry g, Evaluator eval, Searcher.Options oo, Position p, int m, long deep) {
+    Board b = new Board(g);
+    b.load(p.cells);
+    int c = ch.qc.bot.search.Tactics.column(m);
+    boolean special = ch.qc.bot.search.Tactics.isSpecial(m);
+    boolean win = special ? b.blast(c) : b.make(c, p.stm);
+    if (win) {
+      return 1000;
+    }
+    int cdNext = special ? 1 : Math.min(p.cdStm + 1, 10);
+    Searcher s = new Searcher(g, eval, new TranspositionTable(18), oo, new Vcf.Table(16));
+    int v = -s.run(b, 3 - p.stm, p.cdOpp, cdNext, p.turn + 1, ch.qc.bot.Clock.nanos(), Long.MAX_VALUE / 4, deep).score();
+    return Math.max(-1000, Math.min(1000, v));
   }
 
   private static void report(String spec, long[][] rs, long[][] base) {

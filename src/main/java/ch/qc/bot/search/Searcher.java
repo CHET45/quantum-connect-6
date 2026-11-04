@@ -103,12 +103,15 @@ public final class Searcher {
    * draw scores from that colour's view). ebf: no new iteration starts past 1/ebf of the hard stop, 0 uses the whole
    * budget (fixed-node runs keep the node rule). blastWinMinDepth: the winning-blast scan, costly at leaves on large
    * boards, runs only with at least this much depth left. blastMargin (1/256 logit): a non-winning root blast must
-   * beat the other moves by this much. lmrFrom: quiet drops from this index in the move order on, with no threat to
-   * answer and at least 3 plies left, are searched one ply shallower (two from twice that index with at least 5 plies
-   * left) and again in full if they beat alpha; 0 turns this off.
+   * beat the other moves by this much. lmrFrom: drops from this index in the move order on (twice that at PV nodes),
+   * with no threat to answer and at least lmrDepth plies left, are searched two plies shallower and again in full if
+   * they beat alpha; 0 turns this off. Two plies, because one would land on the other side to move at the leaves, and
+   * the evaluation swings between odd and even depths. lmrTact: 0 reduces any such drop, 1 keeps drops into a window
+   * holding at least 4 discs of one colour at full depth, 2 also drops in the column of the last move, 3 also windows
+   * holding 3 discs (an audit of wrongly reduced moves found these 2 to 6 times more often than others).
    */
   public static final class Options {
-    public static final Options DEFAULT = new Options(true, true, false, true, false, 0, 0, 1, 0, 0);
+    public static final Options DEFAULT = new Options(true, true, false, true, false, 0, 0, 1, 0, 2);
     public static final Options NONE = new Options(false, false, false, true, false);
 
     public final boolean rootVcf;
@@ -184,9 +187,8 @@ public final class Searcher {
     public boolean trace;
     public boolean audit;
     public boolean forcedExt;
-    public int lmrMode;
     public int lmrDepth = 3;
-    public int lmrTact;
+    public int lmrTact = 2;
     public int lmrRoot;
     public int lmrBlast;
     public int lmp;
@@ -205,7 +207,6 @@ public final class Searcher {
       trace = o.trace;
       audit = o.audit;
       forcedExt = o.forcedExt;
-      lmrMode = o.lmrMode;
       lmrDepth = o.lmrDepth;
       lmrTact = o.lmrTact;
       lmrRoot = o.lmrRoot;
@@ -951,15 +952,8 @@ public final class Searcher {
         int feat = options.audit ? auditFeatures(b, c, cell, stm, prevCell, x) : 0;
         boolean win = b.make(c, stm);
         int lmr = options.lmrFrom;
-        int red = 0;
-        if (oppThreats == 0 && !win) {
-          if (options.lmrMode == 0) {
-            red = lmr == 0 || i < lmr || depth < 3 ? 0 : i >= 2 * lmr && depth >= 5 ? 2 : 1;
-          } else if (i >= (pv ? 2 * lmr : lmr) && depth >= options.lmrDepth && tactic[i] == 0) {
-            // an even reduction keeps the side to move at the leaves, and with it the evaluation's parity swing
-            red = options.lmrMode == 3 && i >= 3 * lmr && depth >= options.lmrDepth + 2 ? 4 : 2;
-          }
-        }
+        int red = lmr > 0 && oppThreats == 0 && !win && i >= (pv ? 2 * lmr : lmr) && depth >= options.lmrDepth
+            && tactic[i] == 0 ? 2 : 0;
         if (win) {
           s = MATE - ply - 1;
         } else if (b.topRowFull()) {
