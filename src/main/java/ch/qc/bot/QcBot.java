@@ -61,6 +61,8 @@ public final class QcBot implements Algorithm {
   private static final long HINT_SLACK_NANOS = 5_000_000L;
   private static final int HINT_TURNS = 5;
   private static final int HINT_AGREE_PERCENT = 15;
+  /** This many lost turns since the limit was last measured call for measuring it again. */
+  private static final int FORFEITS_TO_MEASURE = 2;
   /** Budget of the fallback tactics. */
   static final long TACTICS_NANOS = 10_000_000L;
 
@@ -82,6 +84,8 @@ public final class QcBot implements Algorithm {
   private int hintCount;
   /** An opponent that loses turns says nothing about the limit, even if some of its turns are long. */
   private boolean hintClosed;
+  /** Own lost turns at the last measurement of the limit. */
+  private int forfeitsMeasured;
   private Geometry geometry;
   private Searcher searcher;
   private int calls;
@@ -163,6 +167,7 @@ public final class QcBot implements Algorithm {
     if (tracker.turn() == 1) {
       lastScore = 0;
       stall = 0;
+      forfeitsMeasured = 0;
     } else if (lastReturn > 0) {
       noteOpponentTurn(t0 - lastReturn);
     }
@@ -398,6 +403,10 @@ public final class QcBot implements Algorithm {
     int turn = tracker.turn() - 1;
     if (tracker.lostPreviousTurn()) {
       limit.closeUpward();
+      if (tracker.ownForfeits() - forfeitsMeasured >= FORFEITS_TO_MEASURE) {
+        forfeitsMeasured = tracker.ownForfeits();
+        limit.measureAgain();
+      }
       stall = Math.min(stall + LOST_TURN_STALL_NANOS, limit.nanos() / 100 * MAX_STALL_PERCENT);
     }
     long min = limit.nanos() / 100 * MIN_STOP_PERCENT;

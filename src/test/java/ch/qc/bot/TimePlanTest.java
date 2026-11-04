@@ -313,6 +313,20 @@ class TimePlanTest {
     assertEquals(CallLimit.PRIOR_NANOS, real.nanos(), "a lost turn takes the raise back");
   }
 
+  /** Turns keep being lost at a limit believed too long: the bot measures again and believes the new measurement. */
+  @Test
+  void lostTurnsMakeTheBotMeasureAgain() {
+    CallLimit l = new CallLimit();
+    l.assumePrior();
+    l.measureAgain();
+    assertFalse(l.known());
+    l.measured(26 * MS);
+    l.measured(25 * MS);
+    l.measured(27 * MS);
+    assertTrue(l.known());
+    assertEquals(25 * MS, l.nanos());
+  }
+
   /** The engine's timer, a late second call: the field changes while the bot is in its second call. */
   @Test
   void theProbeReadsTheLimitFromTheField() throws Exception {

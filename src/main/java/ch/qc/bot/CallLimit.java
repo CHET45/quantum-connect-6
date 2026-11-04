@@ -64,6 +64,12 @@ final class CallLimit {
     return Math.max(Math.min(s[0], s[1]), Math.min(Math.max(s[0], s[1]), s[2]));
   }
 
+  /** Turns keep being lost: measure again, as the limit may be shorter than a late first measurement made it look. */
+  void measureAgain() {
+    count = 0;
+    known = false;
+  }
+
   /**
    * True while a limit above the prior may still be proven. Such a limit is hypothetical and a lost turn is real, and a
    * stall makes a measurement late, so only three samples that agree and are clearly above the prior raise it.
