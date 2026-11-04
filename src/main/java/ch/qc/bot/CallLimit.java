@@ -32,8 +32,12 @@ final class CallLimit {
     return known;
   }
 
-  /** The prior stands: the probe saw no timeout up to the point where a timeout would mean a limit below the prior. */
+  /**
+   * The prior stands: the probe saw no timeout up to the point where a timeout would mean a limit below the prior. That
+   * also overrules an earlier short measurement, which then came from a thread that started very late.
+   */
   void assumePrior() {
+    nanos = PRIOR_NANOS;
     known = true;
   }
 
@@ -78,11 +82,14 @@ final class CallLimit {
     }
   }
 
-  /** The largest round limit at most a measurement that delays can only lengthen, or just below it if none is near. */
+  /**
+   * The round limit a measurement most likely means: a stall lengthens it a lot, a thread that started late shortens it
+   * a little. Far above any round limit it is taken just below what was measured.
+   */
   static long round(long took) {
     for (int i = ROUND_MS.length - 1; i >= 0; i--) {
       long r = ROUND_MS[i] * MS;
-      if (took >= r) {
+      if (took >= r - r / 20) {
         return took < r / 10 * 13 ? r : took / 10 * 9;
       }
     }

@@ -10,17 +10,17 @@ public final class Timing {
   private static final long MS = 1_000_000L;
 
   /**
-   * One-line switch: real search in the constructor, 0 for none. Whether the server times the constructor is unknown
-   * (about 200 ms is known to work). Without a warm-up the code stays cold for longer, so the plan below has lower
-   * stops for longer and a later second-call search.
+   * One-line switch: real search in the constructor until it has taken this long, 0 for none. Whether the server times
+   * the constructor is unknown (about 200 ms is known to work). Without a warm-up the code stays cold for longer, so the
+   * plan below has lower stops for longer and a later second-call search.
    */
   private static final long CONSTRUCTOR_WARMUP_NANOS = 1000 * MS;
 
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {70 * MS, 80 * MS}, 85 * MS,
-          CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 70 * MS, 75 * MS)
+          CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS)
       : new Timing(new int[] {10, 20, 30, 60, Integer.MAX_VALUE}, new long[] {50 * MS, 60 * MS, 70 * MS, 75 * MS, 80 * MS},
-          85 * MS, 0L, 96 * MS, 85, 100, 30, false, 70 * MS, 75 * MS);
+          85 * MS, 0L, 96 * MS, 85, 100, 30, false, 55 * MS, 60 * MS);
 
   /** stopNanos[i] holds for own turn indices (0-based) below untilTurn[i], the first match wins. */
   final int[] untilTurn;
