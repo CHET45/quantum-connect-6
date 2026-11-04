@@ -233,7 +233,7 @@ public final class SearchBench {
           int best = java.util.Collections.max(value.values());
           for (int i = 0; i < specs.length; i++) {
             int loss = best - value.get(moves[i]);
-            res[i] = new long[] {loss, moves[i] == oracleMove ? 1 : 0};
+            res[i] = new long[] {loss, moves[i] == oracleMove ? 1 : 0, moves[i], oracleMove, value.get(moves[i]), best};
           }
           return res;
         }));
@@ -242,6 +242,17 @@ public final class SearchBench {
       long[][][] all = new long[ps.size()][][];
       for (int k = 0; k < all.length; k++) {
         all[k] = fs.get(k).get();
+        for (int i = 0; i < specs.length; i++) {
+          if (all[k][i][0] >= 100) {
+            System.out.printf(Locale.ROOT, "big loss: pos %d spec %d move %d%s value %d, deep move %d%s best %d, other specs:", k, i,
+                all[k][i][2] & 0xFFFF, (all[k][i][2] & 0x10000) != 0 ? "*" : "", all[k][i][4], all[k][i][3] & 0xFFFF,
+                (all[k][i][3] & 0x10000) != 0 ? "*" : "", all[k][i][5]);
+            for (int j = 0; j < specs.length; j++) {
+              System.out.printf(Locale.ROOT, " %d:%d%s", j, all[k][j][2] & 0xFFFF, (all[k][j][2] & 0x10000) != 0 ? "*" : "");
+            }
+            System.out.println();
+          }
+        }
         for (int i = 0; i < specs.length; i++) {
           sum[i][0] += all[k][i][0];
           sum[i][1] += all[k][i][1];
