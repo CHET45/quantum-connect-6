@@ -41,8 +41,8 @@ public final class Geometry {
   public final int[] colWin;
 
   /**
-   * Searches read the clock when (nodes & clockMask) == 0. A reading allocates, so not more often than needed; a node
-   * costs more with more windows (copies and blasts in a tall, wide board), so the gap must not grow with the board.
+   * The threat search reads the clock when (nodes & clockMask) == 0. A reading allocates, so not more often than needed;
+   * a node costs more with more windows (copies and blasts in a tall, wide board), so the gap must not grow with the board.
    */
   public final int clockMask;
 
@@ -66,7 +66,7 @@ public final class Geometry {
       n += count(cols, d[0]) * count(rows, Math.abs(d[1]));
     }
     windows = n;
-    clockMask = n <= 1500 ? 63 : 15;
+    clockMask = n <= 1000 ? 63 : 15;
     winCells = new int[n * k];
     winDir = new byte[n];
     int w = 0;
