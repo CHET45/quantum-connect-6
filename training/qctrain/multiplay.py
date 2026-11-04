@@ -10,7 +10,7 @@ import os
 import subprocess
 import time
 
-from .gate import IDLE, JAVA
+from .gate import BELOW_NORMAL, IDLE, JAVA
 
 
 def main():
@@ -25,6 +25,7 @@ def main():
     ap.add_argument("--generation", type=int, default=0)
     ap.add_argument("--cp", required=True)
     ap.add_argument("--xmx", default="4g")
+    ap.add_argument("--below", action="store_true", help="Below Normal priority instead of Idle")
     args = ap.parse_args()
     for i, item in enumerate(args.plan.split(",")):
         size, nodes, positions, *tag = item.split(":")
@@ -49,7 +50,7 @@ def main():
             cmd += ["--mix", args.mix]
         t0 = time.time()
         with open(d + ".log", "w", encoding="utf-8") as log:
-            p = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, creationflags=IDLE)
+            p = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, creationflags=BELOW_NORMAL if args.below else IDLE)
         if p.returncode == 0:
             with open(os.path.join(d, "done.txt"), "w", encoding="utf-8") as f:
                 f.write(f"{positions} positions in {(time.time() - t0) / 60:.1f} min\n")

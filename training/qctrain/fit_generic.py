@@ -3,7 +3,9 @@
 python -m qctrain.fit_generic --set spec/generic-8x12.json:../data/it02 --set spec/generic-15x11.json:../data/x11/gen000
     --out ../data/models/generic001 --lam 0.9 --k 8x12=256
 
-Each --set is a generic spec JSON (FeatureSpecDump --generic) and its data directories (comma-separated). Every board
+Each --set is a generic spec JSON (FeatureSpecDump --generic) and its data directories (comma-separated), optionally
+followed by :K and :WEIGHT for this set alone (labels of different generations have different value scales, so one
+board size may appear in several sets; each set has its own learned output scale and its own batches). Every board
 size has its own model view of one shared parameter vector (the layout depends only on the class count); batches
 of all sizes are interleaved in proportion to their record counts. Targets as in fit.py, with the search-value
 scale K fitted per size unless given (--k ROWSxCOLS=K, repeatable). The blob is written with rows = cols = 0 and the
@@ -68,7 +70,7 @@ def family_spec(spec, family):
 
 
 def load_set(arg, ks, lam, device, cap=0):
-    spec_path, dirs = arg.split(":", 1)
+    spec_path, dirs, *extra = arg.split(":")
     with open(spec_path, encoding="utf-8") as f:
         raw = json.load(f)
     if not raw.get("generic"):
@@ -89,7 +91,9 @@ def load_set(arg, ks, lam, device, cap=0):
     hashed = np.array([zlib.crc32(int(k).to_bytes(8, "little")) for k in games], dtype=np.int64)
     is_val = np.isin(keys, games[hashed % 20 == 0])
     size = f"{spec.rows}x{spec.cols}"
-    if size in ks:
+    if extra and extra[0]:
+        k = float(extra[0])
+    elif size in ks:
         k = ks[size]
     else:
         k, k_loss = fit.fit_scale(recs[~is_val])
@@ -98,7 +102,8 @@ def load_set(arg, ks, lam, device, cap=0):
     train = fit.to_device(recs[~is_val], spec, y[~is_val], device)
     val = fit.to_device(recs[is_val], spec, y[is_val], device)
     print(f"{size}: {len(recs)} records, {train['y'].shape[0]} train, {val['y'].shape[0]} validation", flush=True)
-    return {"size": size, "spec": spec, "hash": generic_hash, "k": k, "train": train, "val": val, "dirs": dirs,
+    return {"size": size, "share": float(extra[1]) if len(extra) > 1 else None, "spec": spec, "hash": generic_hash,
+            "k": k, "train": train, "val": val, "dirs": dirs,
             "val_value": recs["value"][is_val].astype(np.float64), "val_stage": recs["stage"][is_val].copy(),
             "val_proven": recs["proven"][is_val].copy()}
 
@@ -130,9 +135,12 @@ def main():
     ap.add_argument("--no-stage", action="store_true", help="one window table for all game stages")
     ap.add_argument("--scale", type=int, default=1024, help="units per logit in the blob, 256 or 1024")
     ap.add_argument("--balance", action="store_true", help="every size gets the same number of batches per epoch")
+    ap.add_argument("--weight", action="append", default=[], help="ROWSxCOLS=W, share of batches under --balance")
+    ap.add_argument("--max-steps", type=int, default=0, help="at most this many batches per epoch under --balance")
     ap.add_argument("--temp", action="store_true", help="learn one output scale per size; the tables stay unscaled")
     ap.add_argument("--cap", type=int, default=0, help="at most about this many records per size (whole games)")
     ap.add_argument("--mask-empty", action="store_true", help="the all-empty window code contributes exactly zero")
+    ap.add_argument("--mask-mixed", action="store_true", help="windows holding both colours contribute exactly zero")
     ap.add_argument("--sym", type=float, default=None, help="colour-even share of the window tables, 0 = antisymmetric")
     ap.add_argument("--family", type=int, default=0, help="window class family, see family_spec")
     args = ap.parse_args()
@@ -140,6 +148,8 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ks = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in args.k}
     sets = [load_set(a, ks, args.lam, device, args.cap) for a in args.set]
+    for i, s in enumerate(sets):
+        s["name"] = f'{s["size"]}.{i}'
     if len({s["hash"] for s in sets}) != 1:
         raise SystemExit("the specs belong to different generic families")
     for s in sets:
@@ -161,11 +171,17 @@ def main():
     base_slice = slice(lay.base, lay.stage)
     delta_slice = slice(lay.stage, lay.t1)
     empty_mask = None
-    if args.mask_empty:
-        codes = sets[0]["spec"].codes
+    if args.mask_empty or args.mask_mixed:
+        spec0 = sets[0]["spec"]
+        code_mask = np.zeros(spec0.codes, dtype=bool)
+        for c in range(spec0.codes):
+            digits = {(c // 3 ** i) % 3 for i in range(spec0.k)}
+            code_mask[c] = (args.mask_empty and digits == {0}) or (args.mask_mixed and 1 in digits and 2 in digits)
+        window_mask = torch.as_tensor(np.tile(code_mask, spec0.classes), device=device)
         empty_mask = torch.zeros(lay.size, dtype=torch.bool, device=device)
-        for block, count in ((lay.base, 1), (lay.stage, sets[0]["spec"].stages), (lay.cd, sets[0]["spec"].cd_contexts)):
-            empty_mask[torch.arange(block, block + count * lay.p, codes, device=device)] = True
+        for block, count in ((lay.base, 1), (lay.stage, spec0.stages), (lay.cd, spec0.cd_contexts)):
+            for i in range(count):
+                empty_mask[block + i * lay.p:block + (i + 1) * lay.p] = window_mask
         theta.data[empty_mask] = 0.0
     tau = torch.nn.Parameter(torch.zeros(len(sets), device=device))
     params = [{"params": [theta]}]
@@ -176,9 +192,11 @@ def main():
     batches = [math.ceil(s["train"]["y"].shape[0] / args.batch) for s in sets]
     steps_per_epoch = sum(batches)
     if args.balance:
-        per_size = steps_per_epoch // len(sets)
-        batches = [per_size] * len(sets)
-        steps_per_epoch = per_size * len(sets)
+        shares = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in args.weight}
+        w = [s["share"] if s["share"] is not None else shares.get(s["size"], 1.0) for s in sets]
+        total = min(steps_per_epoch, args.max_steps) if args.max_steps else steps_per_epoch
+        batches = [max(1, int(total * x / sum(w))) for x in w]
+        steps_per_epoch = sum(batches)
     gamma = (args.lr_end / args.lr) ** (1.0 / (args.epochs * steps_per_epoch))
     sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma)
     best = (float("inf"), None, 0, None)
@@ -215,7 +233,7 @@ def main():
         weighted = 0.0
         for i, s in enumerate(sets):
             v, _ = evaluate_scaled(s, tau[i])
-            vals[s["size"]] = v
+            vals[s["name"]] = v
             weighted += v * (1.0 if args.balance else s["val"]["y"].shape[0])
         weighted /= len(sets) if args.balance else sum(s["val"]["y"].shape[0] for s in sets)
         history.append({"epoch": epoch, "train": total / n_total, "val": vals, "val_mean": weighted})
