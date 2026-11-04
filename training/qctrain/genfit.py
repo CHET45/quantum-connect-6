@@ -23,6 +23,7 @@ DATA = os.path.abspath(os.path.join(ROOT, "..", ".."))
 SEEN = {"15x11", "15x22", "8x12"}
 HAND = {"15x11": ["x11/gen000"], "15x22": ["x15/gen000", "x15/gen000b"]}
 OLD_8X12 = ["it03-partial"]
+MIN_SET = 2000
 
 
 def records(dirs):
@@ -91,8 +92,9 @@ def main():
         if not sources:
             continue
         counts = {k: records(v) for k, v in sources.items()}
-        sources = {k: v for k, v in sources.items() if counts[k] > 0}
-        counts = {k: c for k, c in counts.items() if c > 0}
+        # a set this small is a self-play chunk that has only just started
+        sources = {k: v for k, v in sources.items() if counts[k] >= MIN_SET}
+        counts = {k: c for k, c in counts.items() if c >= MIN_SET}
         if not sources:
             continue
         n = sum(counts.values())

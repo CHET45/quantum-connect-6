@@ -60,6 +60,10 @@ def load_set(arg, ks, lam, device, cap=0, k_std=None):
     games = np.unique(keys)
     hashed = np.array([zlib.crc32(int(k).to_bytes(8, "little")) for k in games], dtype=np.int64)
     is_val = np.isin(keys, games[hashed % 20 == 0])
+    if not is_val.any():
+        # a chunk that has just started holds few games and none may hash into the split; an empty split would make the
+        # validation mean NaN and end the fit without a best epoch
+        is_val = keys == games[0]
     size = f"{spec.rows}x{spec.cols}"
     if extra and extra[0]:
         k = float(extra[0])

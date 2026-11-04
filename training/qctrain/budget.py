@@ -5,7 +5,8 @@ they have none), plus those of a running CPU fit; Idle jobs do not count. The ru
 logical CPUs stay free.
 
 python -m qctrain.budget LOCKDIR command args...  runs a fit while holding the lock, so only one of ours runs at a time.
-The GPU is used only if the driver watchdog's stop flag is absent and nvidia-smi lists no compute program at all;
+The GPU is used only if the driver watchdog's stop flag is absent and nvidia-smi lists no compute program (the Windows
+desktop programs in WINDOWS_DESKTOP do not count);
 otherwise the fit runs on the CPU with CPU_FIT_THREADS threads at Below Normal priority. A fit that dies (the watchdog
 ends a GPU fit if another program starts computing or the driver reports an error) is started again, on whatever is
 allowed then, and resumes from its checkpoint.
@@ -22,6 +23,9 @@ BELOW_NORMAL = 0x00004000
 GPU_STOP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "logs", "gpu-stop")
 CPU_MARK = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "qc-bot", "data",
                                         "night", "eval", "cpu-fit.txt"))
+
+# Windows desktop programs that nvidia-smi can list as compute programs; exact file names, nothing broader
+WINDOWS_DESKTOP = {"dwm.exe", "LogonUI.exe", "explorer.exe", "TextInputHost.exe"}
 
 _PS = (
     "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | Where-Object { $_.CommandLine -match 'ch\\.qc\\.tools\\.' } "
@@ -55,7 +59,8 @@ def gpu_allowed():
         return False, f"nvidia-smi failed: {e}"
     if p.returncode != 0:
         return False, f"nvidia-smi exit {p.returncode}"
-    others = p.stdout.strip()
+    others = [x.strip() for x in p.stdout.splitlines() if x.strip()]
+    others = [x for x in others if x.replace("/", "\\").rsplit("\\", 1)[-1] not in WINDOWS_DESKTOP]
     return (False, f"on the GPU: {others}") if others else (True, "free")
 
 
