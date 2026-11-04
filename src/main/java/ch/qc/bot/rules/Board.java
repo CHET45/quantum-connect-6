@@ -9,34 +9,80 @@ public final class Board {
   public static final byte EMPTY = 0;
   public static final byte FIRST = 1;
   public static final byte SECOND = 2;
+  /** Keys of remembered window sums are below this; see {@link #rememberSum}. */
+  public static final int SUM_KEYS = 32;
+  private static final int SUM_SLOTS = 16 * SUM_KEYS;
 
   public final Geometry g;
   private final Tables t;
   private final int rows;
   private final int k;
+  private final short[] info;
+  private final int cols;
+  private final int[] cellStart;
+  private final int[] cellWin;
+  private final int[] cellPow;
+  private final int[] winCells;
+  private final long[][] zobrist;
 
   private final byte[] cell;
   private final int[] height;
   private final short[] wc;
   /** thr[colour][cell]: windows with K-1 discs of colour and their single empty cell here. */
   private final byte[][] thr;
+  /** colThreats[col]: the thr values of both colours added up over the column. */
+  private final int[] colThreats;
+  /** Bit c % 64 of threatCols[c / 64] says whether colThreats[c] is above 0. */
+  private final long[] threatCols;
   private final int[] live3 = new int[3];
   private long hash;
   private int discs;
 
-  private final int[] stamp;
+  /** Allocated by the first blast (most boards never see one). stamp[w] == stampGen: w is in touched already. */
+  private int[] stamp;
   private int stampGen;
+  /** Windows changed by the blast in progress. */
+  private int[] touched;
+  /**
+   * The drop stack: level 0 is the position as last set (load, copy, blast), each drop made since is one level.
+   * levelCell[l]: the dropped cell; levelLog[l]: where logCode holds the old code of each window through that cell;
+   * levelTag[l]: unique for this drop, so remembered sums need no clearing when the level is taken back.
+   */
+  private final int[] levelCell;
+  private final int[] levelLog;
+  private final long[] levelTag;
+  private final short[] logCode;
+  private int level;
+  private long lastTag;
+  /** Window sums of one evaluation, per (level, key); allocated when an evaluation first asks. */
+  private Object sumOwner;
+  private long[] sumTag;
+  private int[] sumValue;
+
 
   public Board(Geometry g) {
     this.g = g;
     this.t = g.tables;
     this.rows = g.rows;
     this.k = g.k;
+    this.info = g.tables.info;
+    this.cols = g.cols;
+    this.cellStart = g.cellStart;
+    this.cellWin = g.cellWin;
+    this.cellPow = g.cellPow;
+    this.winCells = g.winCells;
+    this.zobrist = g.zobrist;
     cell = new byte[g.cells];
     height = new int[g.cols];
     wc = new short[g.windows];
     thr = new byte[3][g.cells];
-    stamp = new int[g.windows];
+    colThreats = new int[g.cols];
+    threatCols = new long[(g.cols + 63) >> 6];
+    levelCell = new int[g.cells + 2];
+    levelLog = new int[g.cells + 2];
+    levelTag = new long[g.cells + 2];
+    logCode = new short[g.cellWin.length];
+    resetLevels();
   }
 
   public void clear() {
@@ -55,6 +101,13 @@ public final class Board {
     }
     copy(o.thr[1], thr[1]);
     copy(o.thr[2], thr[2]);
+    for (int c = 0; c < colThreats.length; c++) {
+      colThreats[c] = o.colThreats[c];
+    }
+    for (int i = 0; i < threatCols.length; i++) {
+      threatCols[i] = o.threatCols[i];
+    }
+    resetLevels();
     live3[1] = o.live3[1];
     live3[2] = o.live3[2];
     hash = o.hash;
@@ -100,6 +153,9 @@ public final class Board {
     }
     java.util.Arrays.fill(thr[1], (byte) 0);
     java.util.Arrays.fill(thr[2], (byte) 0);
+    java.util.Arrays.fill(colThreats, 0);
+    java.util.Arrays.fill(threatCols, 0);
+    resetLevels();
     live3[1] = live3[2] = 0;
     for (int w = 0; w < g.windows; w++) {
       int code = codeFromCells(w);
@@ -119,14 +175,37 @@ public final class Board {
   }
 
   private void account(int w, int code, int sign) {
-    for (int x = 1; x <= 2; x++) {
-      int p = t.thrPos[x][code];
-      if (p >= 0) {
-        thr[x][g.winCells[w * k + p]] += (byte) sign;
-      }
-      if (t.live3[x][code]) {
-        live3[x] += sign;
-      }
+    int f = info[code];
+    if (f == 0) {
+      return;
+    }
+    int p = f & 15;
+    if (p != 0) {
+      int cellIndex = winCells[w * k + p - 1];
+      thr[1][cellIndex] += (byte) sign;
+      countThreat(cellIndex / rows, sign);
+    }
+    p = (f >> 4) & 15;
+    if (p != 0) {
+      int cellIndex = winCells[w * k + p - 1];
+      thr[2][cellIndex] += (byte) sign;
+      countThreat(cellIndex / rows, sign);
+    }
+    if ((f & 256) != 0) {
+      live3[1] += sign;
+    }
+    if ((f & 512) != 0) {
+      live3[2] += sign;
+    }
+  }
+
+  private void countThreat(int col, int sign) {
+    int n = colThreats[col] + sign;
+    colThreats[col] = n;
+    if (n == 0) {
+      threatCols[col >> 6] &= ~(1L << col);
+    } else {
+      threatCols[col >> 6] |= 1L << col;
     }
   }
 
@@ -140,20 +219,31 @@ public final class Board {
     cell[i] = (byte) colour;
     height[col]++;
     discs++;
-    hash ^= g.zobrist[colour][i];
+    hash ^= zobrist[colour][i];
     boolean win = false;
     int target = t.six[colour];
-    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
-      int w = g.cellWin[j];
+    int[] wins = cellWin;
+    int[] pow = cellPow;
+    int end = cellStart[i + 1];
+    int l = ++level;
+    levelCell[l] = i;
+    levelTag[l] = ++lastTag;
+    int log = levelLog[l];
+    for (int j = cellStart[i]; j < end; j++) {
+      int w = wins[j];
       int old = wc[w];
-      int nw = old + colour * t.pow3[g.cellPos[j]];
-      account(w, old, -1);
-      account(w, nw, 1);
+      logCode[log++] = (short) old;
+      int nw = old + colour * pow[j];
       wc[w] = (short) nw;
+      if ((info[old] | info[nw]) != 0) {
+        account(w, old, -1);
+        account(w, nw, 1);
+      }
       if (nw == target) {
         win = true;
       }
     }
+    levelLog[l + 1] = log;
     return win;
   }
 
@@ -164,14 +254,24 @@ public final class Board {
     int colour = cell[i];
     cell[i] = EMPTY;
     discs--;
-    hash ^= g.zobrist[colour][i];
-    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
-      int w = g.cellWin[j];
+    hash ^= zobrist[colour][i];
+    if (level > 0 && levelCell[level] == i) {
+      level--;
+    } else {
+      resetLevels();
+    }
+    int[] wins = cellWin;
+    int[] pow = cellPow;
+    int end = cellStart[i + 1];
+    for (int j = cellStart[i]; j < end; j++) {
+      int w = wins[j];
       int old = wc[w];
-      int nw = old - colour * t.pow3[g.cellPos[j]];
-      account(w, old, -1);
-      account(w, nw, 1);
+      int nw = old - colour * pow[j];
       wc[w] = (short) nw;
+      if ((info[old] | info[nw]) != 0) {
+        account(w, old, -1);
+        account(w, nw, 1);
+      }
     }
   }
 
@@ -185,64 +285,78 @@ public final class Board {
     if (h >= rows) {
       return false;
     }
+    if (stamp == null) {
+      stamp = new int[g.windows];
+      touched = new int[g.windows];
+    } else if (stampGen == Integer.MAX_VALUE) {
+      java.util.Arrays.fill(stamp, 0);
+      stampGen = 0;
+    }
+    int gen = ++stampGen;
+    resetLevels();
+    int n = 0;
     int lo = Math.max(h - 1, 0);
-    for (int n = Math.max(col - 1, 0); n <= Math.min(col + 1, g.cols - 1); n++) {
+    for (int x = Math.max(col - 1, 0); x <= Math.min(col + 1, g.cols - 1); x++) {
       // the placed disc vanishes with the band, so column col keeps its own height h as the top
-      int top = height[n];
+      int top = height[x];
       int hi = Math.min(h + 1, top - 1);
       if (lo > hi) {
         continue;
       }
       int cleared = hi - lo + 1;
-      int base = n * rows;
+      int base = x * rows;
       for (int y = lo; y < top; y++) {
         int src = y + cleared;
-        setCell(base + y, src < top ? cell[base + src] : EMPTY);
+        int v = src < top ? cell[base + src] : EMPTY;
+        if (cell[base + y] != v) {
+          n = setCell(base + y, v, gen, n);
+        }
       }
-      height[n] = top - cleared;
+      height[x] = top - cleared;
     }
     boolean win = false;
-    if (stampGen == Integer.MAX_VALUE) {
-      java.util.Arrays.fill(stamp, 0);
-      stampGen = 0;
-    }
-    int gen = ++stampGen;
-    for (int n = Math.max(col - 1, 0); n <= Math.min(col + 1, g.cols - 1); n++) {
-      for (int j = g.colStart[n]; j < g.colStart[n + 1]; j++) {
-        int w = g.colWin[j];
-        if (stamp[w] == gen) {
-          continue;
-        }
-        stamp[w] = gen;
-        int old = wc[w];
-        int nw = codeFromCells(w);
-        if (nw != old) {
-          account(w, old, -1);
-          account(w, nw, 1);
-          wc[w] = (short) nw;
-        }
-        if (nw == t.six[1] || nw == t.six[2]) {
-          win = true;
-        }
+    int six1 = t.six[1];
+    int six2 = t.six[2];
+    for (int i = 0; i < n; i++) {
+      int w = touched[i];
+      int code = wc[w];
+      account(w, code, 1);
+      if (code == six1 || code == six2) {
+        win = true;
       }
     }
     return win;
   }
 
-  private void setCell(int i, int v) {
+  /**
+   * Changes a cell during a blast: its windows get their new codes; a window leaves the threat and live counts when
+   * first touched and returns in {@link #blast} once all its cells are final. Returns the new count of touched windows.
+   */
+  private int setCell(int i, int v, int gen, int n) {
     int old = cell[i];
-    if (old == v) {
-      return;
-    }
     if (old != EMPTY) {
-      hash ^= g.zobrist[old][i];
+      hash ^= zobrist[old][i];
       discs--;
     }
     if (v != EMPTY) {
-      hash ^= g.zobrist[v][i];
+      hash ^= zobrist[v][i];
       discs++;
     }
     cell[i] = (byte) v;
+    int diff = v - old;
+    int[] wins = cellWin;
+    int end = cellStart[i + 1];
+    for (int j = cellStart[i]; j < end; j++) {
+      int w = wins[j];
+      int code = wc[w];
+      if (stamp[w] != gen) {
+        stamp[w] = gen;
+        touched[n++] = w;
+        account(w, code, -1);
+      }
+      wc[w] = (short) (code + diff * cellPow[j]);
+    }
+    return n;
   }
 
   /**
@@ -255,6 +369,91 @@ public final class Board {
       return false;
     }
     return (col > 0 && height[col - 1] >= h + 3) || (col + 1 < g.cols && height[col + 1] >= h + 3);
+  }
+
+  /**
+   * What {@link #blast} would return in col, without changing or copying anything; the position must hold no line.
+   * A new line must contain a disc that falls, and only a neighbour at least three discs taller than col has one.
+   */
+  public boolean blastWins(int col) {
+    int h = height[col];
+    if (h >= rows) {
+      return false;
+    }
+    return (col > 0 && height[col - 1] >= h + 3 && fallingLine(col - 1, -1, h))
+        || (col + 1 < cols && height[col + 1] >= h + 3 && fallingLine(col + 1, 1, h));
+  }
+
+  /** True if a blast in some column would win (see {@link #blastWins}). */
+  public boolean anyBlastWins() {
+    int last = cols - 1;
+    int left = 0;
+    int here = height[0];
+    for (int c = 0; c <= last; c++) {
+      int right = c < last ? height[c + 1] : 0;
+      if (here < rows && ((c > 0 && left >= here + 3 && fallingLine(c - 1, -1, here))
+          || (right >= here + 3 && fallingLine(c + 1, 1, here)))) {
+        return true;
+      }
+      left = here;
+      here = right;
+    }
+    return false;
+  }
+
+  /**
+   * True if a blast at height h in the column next to n completes a line through a disc falling in n; away is the
+   * direction from that column to n. After the blast that column is empty from lo up, so a line can only reach it
+   * below lo. That leaves, for a fallen disc at height y: the vertical line where the fallen discs meet the discs
+   * below them, the horizontal and the two diagonal lines starting at the disc and running away from the blast, all
+   * on cells the blast does not change, and for y = lo the rising diagonal that also continues below lo on the other side.
+   */
+  private boolean fallingLine(int n, int away, int h) {
+    int lo = Math.max(h - 1, 0);
+    int drop = h + 2 - lo;
+    int base = n * rows;
+    int end = height[n] - drop;
+    int need = k - 1;
+    int v = cell[base + lo + drop];
+    if (lo > 0 && cell[base + lo - 1] == v) {
+      int same = 1;
+      for (int y = lo - 1; y >= 0 && cell[base + y] == v; y--) {
+        same++;
+      }
+      for (int i = base + lo + drop + 1; i < base + rows && cell[i] == v; i++) {
+        same++;
+      }
+      if (same >= k) {
+        return true;
+      }
+    }
+    int far = n + away * need;
+    boolean room = far >= 0 && far < cols;
+    for (int y = lo; y < end; y++) {
+      v = cell[base + y + drop];
+      if (room && (lineRun(n + away, y, away, 0, v) >= need || lineRun(n + away, y - 1, away, -1, v) >= need)) {
+        return true;
+      }
+      if (y == lo) {
+        if (lineRun(n + away, y + 1, away, 1, v) + lineRun(n - away, y - 1, -away, -1, v) >= need) {
+          return true;
+        }
+      } else if (room && lineRun(n + away, y + 1, away, 1, v) >= need) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Discs of colour v from (x, y) on in direction (dx, dy), on cells a tested blast does not change, at most k - 1. */
+  private int lineRun(int x, int y, int dx, int dy, int v) {
+    int n = 0;
+    while (n < k - 1 && x >= 0 && x < cols && y >= 0 && y < rows && cell[x * rows + y] == v) {
+      n++;
+      x += dx;
+      y += dy;
+    }
+    return n;
   }
 
   /** Full scan for a K-line of the given colour (1 or 2), or of either colour when colour is 0. */
@@ -301,8 +500,92 @@ public final class Board {
     return thr[colour][cellIndex];
   }
 
+  /** Threat windows of both colours whose empty cell is in this column; 0 for most columns. */
+  public int columnThreats(int col) {
+    return colThreats[col];
+  }
+
+  /** The first column from col on with {@link #columnThreats} above 0, or -1. A full column never qualifies. */
+  public int nextThreatColumn(int col) {
+    int word = col >> 6;
+    if (word >= threatCols.length) {
+      return -1;
+    }
+    long m = threatCols[word] >>> col;
+    if (m != 0) {
+      return col + Long.numberOfTrailingZeros(m);
+    }
+    for (word++; word < threatCols.length; word++) {
+      if (threatCols[word] != 0) {
+        return (word << 6) + Long.numberOfTrailingZeros(threatCols[word]);
+      }
+    }
+    return -1;
+  }
+
   public int live3(int colour) {
     return live3[colour];
+  }
+
+  private void resetLevels() {
+    level = 0;
+    levelLog[1] = 0;
+    levelTag[0] = ++lastTag;
+  }
+
+  /** Current height of the drop stack; 0 right after load, copy or blast. */
+  public int level() {
+    return level;
+  }
+
+  /** Cell dropped at a level of the stack, level at least 1. */
+  public int levelCell(int l) {
+    return levelCell[l];
+  }
+
+  /** Colour dropped at a level of the stack, level at least 1. */
+  public int levelColour(int l) {
+    return cell[levelCell[l]];
+  }
+
+  /** Index of the first logged window code of a level, level at least 1. */
+  public int levelLog(int l) {
+    return levelLog[l];
+  }
+
+  /** A logged window code: the code before the drop of the n-th window through its cell at levelLog + n. */
+  public int loggedCode(int index) {
+    return logCode[index];
+  }
+
+  /** The evaluation whose window sums this board remembers. */
+  public Object sumOwner() {
+    return sumOwner;
+  }
+
+  /** Forgets all remembered sums and remembers those of this evaluation from now on. */
+  public void bindSums(Object owner) {
+    sumOwner = owner;
+    if (sumTag == null) {
+      sumTag = new long[SUM_SLOTS];
+      sumValue = new int[SUM_SLOTS];
+    }
+    java.util.Arrays.fill(sumTag, 0);
+  }
+
+  /** True if a sum is remembered for this level of the stack (as it stands now) and this key. */
+  public boolean sumKnown(int l, int key) {
+    return sumTag[(l * SUM_KEYS + key) & (SUM_SLOTS - 1)] == levelTag[l];
+  }
+
+  public int sum(int l, int key) {
+    return sumValue[(l * SUM_KEYS + key) & (SUM_SLOTS - 1)];
+  }
+
+  public void rememberSum(int l, int key, int value) {
+    int slot = (l * SUM_KEYS + key) & (SUM_SLOTS - 1);
+    sumTag[slot] = levelTag[l];
+    sumValue[slot] = value;
   }
 
   /** Copy of the cells in this class's index order. */
@@ -320,6 +603,8 @@ public final class Board {
         && java.util.Arrays.equals(fresh.wc, wc)
         && java.util.Arrays.equals(fresh.thr[1], thr[1])
         && java.util.Arrays.equals(fresh.thr[2], thr[2])
+        && java.util.Arrays.equals(fresh.colThreats, colThreats)
+        && java.util.Arrays.equals(fresh.threatCols, threatCols)
         && fresh.live3[1] == live3[1]
         && fresh.live3[2] == live3[2];
   }

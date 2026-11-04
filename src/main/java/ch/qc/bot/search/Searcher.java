@@ -209,7 +209,7 @@ public final class Searcher {
     public boolean partial;
     public boolean pvFix = true;
     public boolean lazyOrder = true;
-    public int evalCacheBits = 16;
+    public int evalCacheBits;
     public int rootVcfMs = 10;
     public int oppVcfMs = 5;
 
@@ -298,6 +298,12 @@ public final class Searcher {
   private final long[][] zCd = new long[3][COOLDOWN + 1];
   private final long[] zTurn = new long[MAX_PLY + 1];
   private final int[] centreBonus;
+  /**
+   * gain[colour][code]: what a disc of the colour on an empty cell of this window is worth for the move ordering: the
+   * rise of the square of its discs if the opponent has none there, plus the square of the opponent's discs if the
+   * colour has none (a window then lost to the opponent). The empty cell's position does not matter.
+   */
+  private final int[][] gain = new int[3][];
   /** live[colour][code]: square of the colour's discs in a window without opponent discs, else 0. */
   private final int[][] live = new int[3][];
   /** valGain[colour][code]: the hand evaluation's window value of the code for colour, move ordering only. */
@@ -432,15 +438,17 @@ public final class Searcher {
       zTurn[i] = rnd.nextLong();
     }
     for (int colour = 1; colour <= 2; colour++) {
+      gain[colour] = new int[t.codes];
       live[colour] = new int[t.codes];
       for (int code = 0; code < t.codes; code++) {
         int own = 0;
-        boolean dead = false;
+        int other = 0;
         for (int i = 0, c = code; i < t.k; i++, c /= 3) {
-          dead |= c % 3 == 3 - colour;
           own += c % 3 == colour ? 1 : 0;
+          other += c % 3 == 3 - colour ? 1 : 0;
         }
-        live[colour][code] = dead ? 0 : own * own;
+        gain[colour][code] = (other == 0 ? 2 * own + 1 : 0) + (own == 0 ? other * other : 0);
+        live[colour][code] = other > 0 ? 0 : own * own;
       }
     }
     evalCache = options.evalCacheBits > 0 ? new long[1 << options.evalCacheBits] : null;
@@ -514,14 +522,10 @@ public final class Searcher {
       return result(x, Tactics.NONE, 0, 0, startNanos);
     }
     if (cdMe >= COOLDOWN) {
-      Board probe = x.pool(0);
       for (int c = 0; c < g.cols; c++) {
         if (!root.isFull(c)) {
-          if (root.blastMayWin(c)) {
-            probe.copyFrom(root);
-            if (probe.blast(c)) {
-              return result(x, c | Tactics.SPECIAL, MATE - 1, 1, startNanos);
-            }
+          if (root.blastWins(c)) {
+            return result(x, c | Tactics.SPECIAL, MATE - 1, 1, startNanos);
           }
           moves[n++] = c | Tactics.SPECIAL;
         }
@@ -774,10 +778,7 @@ public final class Searcher {
     int opp = 3 - stm;
     int oppThreats = 0;
     int threatCol = -1;
-    for (int c = 0; c < g.cols; c++) {
-      if (b.isFull(c)) {
-        continue;
-      }
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
       int cell = g.index(c, b.height(c));
       if (b.threats(stm, cell) > 0) {
         return MATE - ply - 1;
@@ -788,7 +789,7 @@ public final class Searcher {
       }
     }
     boolean ready = cdStm >= COOLDOWN;
-    if (ready && depth >= options.blastWinMinDepth && blastWins(x, b, ply)) {
+    if (ready && depth >= options.blastWinMinDepth && b.anyBlastWins()) {
       return MATE - ply - 1;
     }
     if (oppThreats >= 2 && !ready) {
@@ -1177,19 +1178,6 @@ public final class Searcher {
     return options.exactLeaves ? MATE - ply - (2 * LEAF_VCF_MOVES + 1) : TENTATIVE_WIN;
   }
 
-  private boolean blastWins(Ctx x, Board b, int ply) {
-    for (int c = 0; c < g.cols; c++) {
-      if (b.blastMayWin(c)) {
-        Board p = x.pool(ply);
-        p.copyFrom(b);
-        if (p.blast(c)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
   /** Checks the limits; returns true (and sets the stop flag) once the search must end. */
   private boolean poll(Ctx x) {
     if (x.nodes > x.maxNodes || Clock.nanos() > x.deadline || token != x.token) {
@@ -1214,14 +1202,13 @@ public final class Searcher {
 
   /** Window potential gained and denied by dropping into column c (move ordering only). */
   private int potential(Board b, int c, int stm) {
-    int[] mine = live[stm];
-    int[] theirs = live[3 - stm];
+    int[] value = gain[stm];
+    int[] wins = g.cellWin;
     int i = g.index(c, b.height(c));
+    int end = g.cellStart[i + 1];
     int s = 0;
-    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
-      int old = b.windowCode(g.cellWin[j]);
-      int nw = old + stm * t.pow3[g.cellPos[j]];
-      s += mine[nw] - mine[old] + theirs[old] - theirs[nw];
+    for (int j = g.cellStart[i]; j < end; j++) {
+      s += value[b.windowCode(wins[j])];
     }
     return s;
   }

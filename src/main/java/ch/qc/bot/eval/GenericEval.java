@@ -9,8 +9,7 @@ import ch.qc.bot.rules.Geometry;
  * tables stay small (a few hundred kB for all contexts) and one blob covers every board. One instance per board
  * geometry, built from the shared tables in microseconds; immutable, shareable between bots.
  */
-public final class GenericEval implements Evaluator {
-  private final Geometry g;
+public final class GenericEval extends WindowSumEval {
   private final short[] swap12;
   private final int codes;
   /** Parameter base (class * codes) and canonical-code table of each window. */
@@ -26,7 +25,7 @@ public final class GenericEval implements Evaluator {
 
   /** Tables of a generic blob ({@link #fits}): w[stage * cdContexts + cd][class * codes + canonical code]. */
   GenericEval(Geometry g, short[][] w, boolean staged, int shift, short[] t1, short[] t2, short[] t3) {
-    this.g = g;
+    super(g);
     this.swap12 = g.tables.swap12;
     this.codes = g.tables.codes;
     int[][] canon = GenericSpec.canonTables(g.k);
@@ -72,7 +71,17 @@ public final class GenericEval implements Evaluator {
   /** The unclamped integer sum, in 1/256 logit. */
   public int rawSum(Board b, int stm, int cdStm, int cdOpp) {
     int cd = Features.cdContext(cdStm, cdOpp);
-    short[] table = w[staged ? Features.stage(b) * Features.CD_CONTEXTS + cd : cd];
+    int ctx = staged ? Features.stage(b) * Features.CD_CONTEXTS + cd : cd;
+    int sum = windowSum(b, 2 * ctx + stm - 1, w[ctx], stm);
+    int packed = Features.threatIndices(b, stm, cdStm, cdOpp);
+    sum += t1[cd * Features.T1_SIZE + Features.t1(packed)];
+    sum += t2[cd * Features.T2_SIZE + Features.t2(packed)];
+    sum += t3[Features.t3(packed)];
+    return sum >> shift;
+  }
+
+  @Override
+  int fullSum(Board b, short[] table, int stm) {
     int sum = 0;
     if (stm == Board.FIRST) {
       for (int win = 0; win < g.windows; win++) {
@@ -83,10 +92,33 @@ public final class GenericEval implements Evaluator {
         sum += table[base[win] + canonOf[win][swap12[b.windowCode(win)]]];
       }
     }
-    int packed = Features.threatIndices(b, stm, cdStm, cdOpp);
-    sum += t1[cd * Features.T1_SIZE + Features.t1(packed)];
-    sum += t2[cd * Features.T2_SIZE + Features.t2(packed)];
-    sum += t3[Features.t3(packed)];
-    return sum >> shift;
+    return sum;
+  }
+
+  @Override
+  int dropChange(Board b, int level, short[] table, int stm) {
+    int cell = b.levelCell(level);
+    int colour = b.levelColour(level);
+    int[] wins = g.cellWin;
+    int[] pow = g.cellPow;
+    int log = b.levelLog(level);
+    int end = g.cellStart[cell + 1];
+    int sum = 0;
+    if (stm == Board.FIRST) {
+      for (int j = g.cellStart[cell]; j < end; j++) {
+        int win = wins[j];
+        int[] canon = canonOf[win];
+        int old = b.loggedCode(log++);
+        sum += table[base[win] + canon[old + colour * pow[j]]] - table[base[win] + canon[old]];
+      }
+    } else {
+      for (int j = g.cellStart[cell]; j < end; j++) {
+        int win = wins[j];
+        int[] canon = canonOf[win];
+        int old = b.loggedCode(log++);
+        sum += table[base[win] + canon[swap12[old + colour * pow[j]]]] - table[base[win] + canon[swap12[old]]];
+      }
+    }
+    return sum;
   }
 }

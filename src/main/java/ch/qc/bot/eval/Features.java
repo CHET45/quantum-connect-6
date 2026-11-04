@@ -68,13 +68,20 @@ public final class Features {
     int nat1 = 0;
     int unn1 = 0;
     int valleys = 0;
-    for (int c = 0; c < g.cols; c++) {
-      int h = b.height(c);
-      if ((c > 0 && b.height(c - 1) >= h + 3) || (c + 1 < g.cols && b.height(c + 1) >= h + 3)) {
-        if (h < rows) {
-          valleys++;
-        }
+    int last = g.cols - 1;
+    int left = 0;
+    int h = b.height(0);
+    for (int c = 0; c <= last; c++) {
+      int here = h;
+      int right = c < last ? b.height(c + 1) : 0;
+      if (((c > 0 && left >= here + 3) || right >= here + 3) && here < rows) {
+        valleys++;
       }
+      left = here;
+      h = right;
+    }
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
+      h = b.height(c);
       boolean latent0 = false;
       boolean latent1 = false;
       for (int y = h; y < rows; y++) {
