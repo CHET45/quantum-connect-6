@@ -297,6 +297,21 @@ class TimePlanTest {
     assertTrue(took >= 80 && took < 100, "the probe took " + took + " ms");
   }
 
+  /** The real engine, its real limit, a bot that looks for the limit from the first turn on: nothing else changes. */
+  @Test
+  void theUpwardProbeInTheRealEngine() throws Exception {
+    QcBot bot = new QcBot("up=1,s=10,p=0");
+    ch.qc.tools.BotProbe probe = new ch.qc.tools.BotProbe(bot);
+    ch.cern.quantumconnect.core.Experiment exp =
+        new ch.cern.quantumconnect.core.Experiment(probe, new RandomBot(), false, false, 8, 12);
+    exp.runExperiment();
+    assertEquals(CallLimit.PRIOR_NANOS, bot.callLimitNanos());
+    assertEquals(0, probe.invalidColumns());
+    assertEquals(0, probe.exceptions());
+    assertEquals(0, probe.invalidSpecials());
+    assertTrue(exp.getExperimentStatus() != ExperimentStatus.INCOMPLETE);
+  }
+
   private static int discs(QuantumField f) {
     return Snapshot.read(f).discs;
   }
