@@ -34,6 +34,7 @@ import java.util.concurrent.Future;
  * <pre>
  * --book FILE --lines suites/book-lines.txt --size 15x11 --weights hand --target Savi --us beater --deep-ms 4000
  * --rollouts N (games per move, 0 = none) --rollout-nodes N --threads N --top N (how many differences get rollouts)
+ * --games LOG (instead: how long side A stayed in the book in a BookMatch or BookFast log)
  * </pre>
  */
 public final class BookCheck {
@@ -66,6 +67,7 @@ public final class BookCheck {
     long rolloutNodes = 30_000;
     int threads = 2;
     int top = 8;
+    Path gamesLog = null;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--book" -> bookFile = Path.of(args[++i]);
@@ -79,6 +81,7 @@ public final class BookCheck {
         case "--rollout-nodes" -> rolloutNodes = Long.parseLong(args[++i]);
         case "--threads" -> threads = Integer.parseInt(args[++i]);
         case "--top" -> top = Integer.parseInt(args[++i]);
+        case "--games" -> gamesLog = Path.of(args[++i]);
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
@@ -86,6 +89,10 @@ public final class BookCheck {
     String[] rc = size.split("x");
     Geometry g = new Geometry(Integer.parseInt(rc[0]), Integer.parseInt(rc[1]));
     Evaluator eval = Evaluators.factory(weights).apply(g);
+    if (gamesLog != null) {
+      bookUseInGames(g, book, gamesLog);
+      return;
+    }
     List<Line> lines = new ArrayList<>();
     for (String l : Files.readAllLines(linesFile, StandardCharsets.UTF_8)) {
       if (l.startsWith(size + " ")) {
@@ -216,6 +223,56 @@ public final class BookCheck {
         wn += x[2];
       }
       System.out.printf(Locale.ROOT, "rollouts, weighted by games: played %.1f%%, book %.1f%%%n", wa / wn, wc / wn);
+    }
+  }
+
+  /** How long side A stays in the book in a BookMatch or BookFast log, and how it scores by that length. */
+  private static void bookUseInGames(Geometry g, Book book, Path log) throws java.io.IOException {
+    java.util.regex.Pattern token = java.util.regex.Pattern.compile("([FS])([0-9a-z])([*]?)");
+    Map<Integer, double[]> byPlies = new java.util.TreeMap<>();
+    int games = 0;
+    long hits = 0;
+    for (String l : Files.readAllLines(log, StandardCharsets.UTF_8)) {
+      if (l.isBlank()) {
+        continue;
+      }
+      boolean aFirst = l.contains("\"aFirst\":true");
+      double score = l.contains("\"scoreA\":1.0") ? 1 : l.contains("\"scoreA\":0.5") ? 0.5 : 0;
+      int at = l.indexOf("\"moves\":\"") + 9;
+      java.util.regex.Matcher m = token.matcher(l.substring(at));
+      Board b = new Board(g);
+      int ply = 0;
+      int last = 0;
+      int us = aFirst ? 1 : 2;
+      int stm = 1;
+      while (m.find()) {
+        if (!m.group(3).isEmpty() || (m.group(1).equals("F") ? 1 : 2) != stm) {
+          break;
+        }
+        int col = Character.digit(m.group(2).charAt(0), 36);
+        if (stm == us) {
+          if (book.column(b, ply, us, (ply + 1) / 2) == col) {
+            hits++;
+            last = ply + 1;
+          } else {
+            break;
+          }
+        }
+        if (b.make(col, stm)) {
+          break;
+        }
+        stm = 3 - stm;
+        ply++;
+      }
+      double[] r = byPlies.computeIfAbsent(last, k -> new double[2]);
+      r[0]++;
+      r[1] += score;
+      games++;
+    }
+    System.out.printf(Locale.ROOT, "%s: %d games, %.1f book moves per game for A%n", log, games, games == 0 ? 0 : (double) hits / games);
+    for (Map.Entry<Integer, double[]> e : byPlies.entrySet()) {
+      System.out.printf(Locale.ROOT, "  in book up to ply %d: %d games, A %.0f%%%n", e.getKey(), (int) e.getValue()[0],
+          100 * e.getValue()[1] / e.getValue()[0]);
     }
   }
 
