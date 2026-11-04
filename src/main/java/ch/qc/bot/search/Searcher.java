@@ -330,6 +330,14 @@ public final class Searcher {
    * limits the heap). A call that is still running (abandoned by the engine) keeps its own.
    */
   private volatile Ctx idle;
+  /** See {@link #setStallLimit}; 0 is off. */
+  private long stallLimit;
+  /** See {@link #setBlastStop}; 0 is off. */
+  private long blastStop;
+  /** Longest time between two clock polls of the last finished search. */
+  private volatile long lastMaxGap;
+  /** Best drop of the last finished search, NONE if it stopped before it had one. */
+  private volatile int lastBestDrop = Tactics.NONE;
 
   /** Mutable state of one search call. */
   private static final class Ctx {
@@ -341,6 +349,16 @@ public final class Searcher {
     long nodes;
     /** Set by the first poll past a limit; from then on every search call returns at once. */
     boolean stop;
+    /** Time of the last clock poll, the longest gap between polls, and the start of the call. */
+    long lastPoll;
+    long maxGap;
+    long start;
+    long stallLimit;
+    /** Best root move that is not a blast, in the order of the last completed iteration. */
+    int bestDrop;
+    /** The move this search would play now is a blast; past blastDeadline that ends the search. */
+    boolean leadingBlast;
+    long blastDeadline;
     final int[][] moves = new int[MAX_PLY][];
     final int[][] order = new int[MAX_PLY][];
     final int[][] killers = new int[MAX_PLY][2];
@@ -490,6 +508,34 @@ public final class Searcher {
   }
 
   /**
+   * The clock polls double as a stall sensor: a long gap between two polls means this thread lost its CPU (compiler
+   * threads, throttling) or runs very slow code. With a limit set, a gap g moves the deadline of the running search to
+   * at most limit - g after its start, because the next such gap could come just before the stop.
+   */
+  public void setStallLimit(long nanos) {
+    stallLimit = nanos;
+  }
+
+  /**
+   * A search whose current choice is a blast ends this long after its start: a blast needs a first call that surely
+   * ended in time (the engine crashes on a special after a timed-out first call), and searching on would only eat that
+   * margin. A later iteration may still change its mind before this time.
+   */
+  public void setBlastStop(long nanos) {
+    blastStop = nanos;
+  }
+
+  /** Longest time between two clock polls of the last finished search. */
+  public long lastMaxGapNanos() {
+    return lastMaxGap;
+  }
+
+  /** The move to play if a chosen blast cannot be requested safely any more: the best drop of the last search. */
+  public int lastBestDrop() {
+    return lastBestDrop;
+  }
+
+  /**
    * Searches the position for colour me and returns the best move found before the hard deadline.
    *
    * @param cdMe engine cooldown counter of me before this turn
@@ -516,6 +562,13 @@ public final class Searcher {
     } else {
       x.reset(myToken, startNanos + hardNanos, maxNodes, turnIndex, options.histKeep);
     }
+    x.start = startNanos;
+    x.lastPoll = startNanos;
+    x.maxGap = 0;
+    x.stallLimit = stallLimit;
+    x.bestDrop = Tactics.NONE;
+    x.leadingBlast = false;
+    x.blastDeadline = blastStop > 0 ? startNanos + blastStop : Long.MAX_VALUE;
     int opp = 3 - me;
     cdMe = Math.min(cdMe, COOLDOWN);
     cdOpp = Math.min(cdOpp, COOLDOWN);
@@ -549,6 +602,7 @@ public final class Searcher {
           + centreBonus[Tactics.column(moves[i])];
     }
     sortByScore(moves, scores, n);
+    x.bestDrop = firstDrop(moves, n);
 
     long hardDeadline = startNanos + hardNanos;
     if (options.rootVcf) {
@@ -563,6 +617,7 @@ public final class Searcher {
           Math.min(hardDeadline, Clock.nanos() + options.oppVcfMs * 1_000_000L));
     }
 
+    x.lastPoll = Clock.nanos();
     int best = moves[0];
     int bestScore = -INF;
     int completed = 0;
@@ -610,6 +665,7 @@ public final class Searcher {
           if (score > alpha) {
             alpha = score;
           }
+          x.leadingBlast = Tactics.isSpecial(completed > 0 && iterScore <= bestScore ? best : iterBest);
           if (alpha >= aspHigh) {
             break;
           }
@@ -667,6 +723,7 @@ public final class Searcher {
       } else {
       sortByScore(moves, scores, n);
       }
+      x.bestDrop = firstDrop(moves, n);
       long elapsed = Clock.nanos() - startNanos;
       if (Math.abs(bestScore) > MATE_BOUND || n == 1 || (options.ebf > 0 && elapsed * options.ebf > hardNanos)
           || (options.nodeRule && x.nodes * EBF > maxNodes)) {
@@ -674,6 +731,15 @@ public final class Searcher {
       }
     }
     return result(x, best, bestScore, completed, startNanos);
+  }
+
+  private static int firstDrop(int[] moves, int n) {
+    for (int i = 0; i < n; i++) {
+      if (!Tactics.isSpecial(moves[i])) {
+        return moves[i];
+      }
+    }
+    return Tactics.NONE;
   }
 
   private Result result(Ctx x, int move, int score, int depth, long startNanos) {
@@ -685,6 +751,8 @@ public final class Searcher {
     if (options.trace) {
       r.stats = x.stats.clone();
     }
+    lastMaxGap = x.maxGap;
+    lastBestDrop = x.bestDrop;
     idle = x;
     return r;
   }
@@ -1238,7 +1306,21 @@ public final class Searcher {
 
   /** Checks the limits; returns true (and sets the stop flag) once the search must end. */
   private boolean poll(Ctx x) {
-    if (x.nodes > x.maxNodes || ((x.nodes & CLOCK_MASK) == 0 && Clock.nanos() > x.deadline) || token != x.token) {
+    if ((x.nodes & CLOCK_MASK) == 0) {
+      long now = Clock.nanos();
+      long gap = now - x.lastPoll;
+      x.lastPoll = now;
+      if (gap > x.maxGap) {
+        x.maxGap = gap;
+        if (x.stallLimit > 0) {
+          x.deadline = Math.min(x.deadline, x.start + x.stallLimit - gap);
+        }
+      }
+      if (now > x.deadline || (x.leadingBlast && now > x.blastDeadline)) {
+        x.stop = true;
+      }
+    }
+    if (x.nodes > x.maxNodes || token != x.token) {
       x.stop = true;
     }
     return x.stop;

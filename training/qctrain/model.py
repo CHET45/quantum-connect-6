@@ -20,10 +20,42 @@ class Layout:
         self.size = self.t3 + spec.t3
 
 
+def swap_index(spec):
+    """Per window-table parameter: the parameter of the same window with the two colours exchanged, in the size-
+    independent family (classes 0-5 are horizontal windows, whose canonical code is the smaller of code and reversed)."""
+    codes, k = spec.codes, spec.k
+    pow3 = [3 ** i for i in range(k)]
+    swap = [0] * codes
+    rev = [0] * codes
+    for c in range(codes):
+        d = [(c // pow3[i]) % 3 for i in range(k)]
+        swap[c] = sum((3 - x if x else 0) * pow3[i] for i, x in enumerate(d))
+        rev[c] = sum(x * pow3[k - 1 - i] for i, x in enumerate(d))
+    table = []
+    for cls in range(spec.classes):
+        horizontal = cls < spec.classes // 3
+        for c in range(codes):
+            t = swap[c]
+            table.append(cls * codes + (min(t, rev[t]) if horizontal else t))
+    return table
+
+
 class Model(torch.nn.Module):
-    def __init__(self, spec, device):
+    def __init__(self, spec, device, sym=None):
+        """sym: None for free tables; else the share in [0, 1] kept of the part of the window tables that is even under
+        exchanging the colours, so 0 makes them exactly antisymmetric and 1 is the free model."""
         super().__init__()
         self.layout = Layout(spec)
+        self.sym = sym
+        if sym is not None:
+            lay = self.layout
+            sw = torch.as_tensor(swap_index(spec), device=device, dtype=torch.int64)
+            cd_swap = [0, 2, 1, 3]
+            idx = [lay.base + sw]
+            idx += [lay.stage + st * lay.p + sw for st in range(spec.stages)]
+            idx += [lay.cd + cd_swap[c] * lay.p + sw for c in range(spec.cd_contexts)]
+            idx.append(torch.arange(lay.t1, lay.size, device=device))
+            self.swap_all = torch.cat(idx)
         self.theta = torch.nn.Parameter(torch.zeros(self.layout.size, device=device))
         self.win_cells = torch.as_tensor(spec.win_cells, device=device)  # [W, k]
         self.feat_map = torch.as_tensor(spec.feat_map, device=device).view(spec.windows, spec.codes)
@@ -38,10 +70,21 @@ class Model(torch.nn.Module):
         codes = (rel[:, self.win_cells] * self.pow3).sum(-1)  # [B, W]
         return self.feat_map[self.w_index.view(1, -1), codes]
 
+    def effective(self):
+        """The parameters the evaluation uses: theta, or its colour-antisymmetric part plus a share of the even part."""
+        if self.sym is None:
+            return self.theta
+        lay = self.layout
+        n = lay.t1
+        th = self.theta
+        other = th[self.swap_all[:n]]
+        win = 0.5 * (th[:n] - other) + 0.5 * self.sym * (th[:n] + other)
+        return torch.cat([win, th[n:]])
+
     def forward(self, cells, stm, stage, cd, t1, t2, t3):
         lay = self.layout
         idx = self.window_index(cells, stm)  # [B, W]
-        th = self.theta
+        th = self.effective()
         stage = stage.long().view(-1, 1)
         cd = cd.long().view(-1, 1)
         q = th[lay.base + idx].sum(1)
@@ -54,7 +97,7 @@ class Model(torch.nn.Module):
         return q
 
     def component_views(self):
-        lay, s, th = self.layout, self.layout.spec, self.theta
+        lay, s, th = self.layout, self.layout.spec, self.effective()
         return {
             "base": th[lay.base:lay.stage],
             "stage": th[lay.stage:lay.cd].view(s.stages, lay.p),
