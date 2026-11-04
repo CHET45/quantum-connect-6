@@ -39,9 +39,7 @@ public final class QcBot implements Algorithm {
   /** A lost turn counts as a stall of this much on top of the one remembered, up to MAX_STALL_PERCENT of the limit. */
   static final long LOST_TURN_STALL_NANOS = 30_000_000L;
   static final int MAX_STALL_PERCENT = 60;
-  /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
-  static final int MAX_MODEL_CELLS = 4096;
-  /** Search is limited to boards whose column index fits the transposition-table move field. */
+  /** Search is limited to models whose column index fits the transposition-table move field. */
   static final int MAX_SEARCH_COLS = 255;
   /** The stall sensor never takes the first-call stop below this share of the limit. */
   static final int MIN_STOP_PERCENT = 25;
@@ -88,6 +86,11 @@ public final class QcBot implements Algorithm {
   private int forfeitsMeasured;
   private Geometry geometry;
   private Searcher searcher;
+  /** The part of the board that geometry and searcher cover; set last, so a set crop means a usable model. */
+  private volatile Crop crop;
+  /** Added to the column of what {@link #choose} returns to get the real column. */
+  private int moveOffset;
+  private int searchedOffset;
   private int calls;
   private volatile Decision decision;
   private volatile long firstCallStart;
@@ -143,15 +146,17 @@ public final class QcBot implements Algorithm {
   }
 
   /**
-   * Builds the tables of this board. This runs in the second call, where running late costs nothing: the first call of
-   * the turn played without search, and no blast can be due on the first turn.
+   * Builds the tables of this crop of the board. The first build runs in the second call, where running late costs
+   * nothing: the first call of the turn played without search, and no blast can be due on the first turn. A crop that
+   * has to change later is small, so that build takes a little of the first call's own time.
    */
-  private void buildBoardSize(int rows, int cols) {
+  private void buildModel(Crop c) {
     building = true;
-    Geometry g = new Geometry(rows, cols);
+    Geometry g = new Geometry(c.rows, c.cols);
     Searcher s = newSearcher(g);
     searcher = s;
     geometry = g;
+    crop = c;
     building = false;
   }
 
@@ -172,7 +177,7 @@ public final class QcBot implements Algorithm {
       noteOpponentTurn(t0 - lastReturn);
     }
     int move = choose(s, t0);
-    int col = move == Tactics.NONE ? -1 : Tactics.column(move);
+    int col = move == Tactics.NONE ? -1 : Tactics.column(move) + moveOffset;
     boolean special = move != Tactics.NONE && Tactics.isSpecial(move);
     if (col < 0 || col >= s.cols || field.isColumnFull(col)) {
       col = safeColumn(field);
@@ -182,8 +187,8 @@ public final class QcBot implements Algorithm {
     if (special && !inTime && lastResult != null) {
       // too late to ask for the blast: play the best drop, not a drop in the blast's column
       int drop = searcher.lastBestDrop();
-      if (drop != Tactics.NONE && !field.isColumnFull(Tactics.column(drop))) {
-        col = Tactics.column(drop);
+      if (drop != Tactics.NONE && !field.isColumnFull(Tactics.column(drop) + moveOffset)) {
+        col = Tactics.column(drop) + moveOffset;
         special = false;
       }
     }
@@ -202,9 +207,11 @@ public final class QcBot implements Algorithm {
     long t0 = Clock.nanos();
     int rows = field.getNumberOfRows();
     int cols = field.getNumberOfColumns();
-    if (!building && rows >= 1 && cols >= 1 && rows * cols <= MAX_MODEL_CELLS && cols <= MAX_SEARCH_COLS
-        && (geometry == null || !geometry.sameSize(rows, cols))) {
-      buildBoardSize(rows, cols);
+    if (!building && rows >= 1 && cols >= 1 && (crop == null || !crop.isFor(rows, cols))) {
+      Crop c = Crop.start(rows, cols, timing.cropAbove);
+      if (c != null) {
+        buildModel(c);
+      }
     }
     Decision d = decision;
     if (d == null || d.callId() != calls || !secondCallInTime(firstCallStart, t0, limit.nanos())) {
@@ -294,11 +301,13 @@ public final class QcBot implements Algorithm {
     Board b = searchedBoard;
     searchedBoard = null;
     lastPonder = null;
-    if (timing.ponderNanos <= 0 || tracker.turn() <= timing.ponderFromTurn || b == null || b.isFull(col)
+    int modelCol = col - searchedOffset;
+    if (timing.ponderNanos <= 0 || tracker.turn() <= timing.ponderFromTurn || b == null || modelCol < 0
+        || modelCol >= b.g.cols || b.isFull(modelCol)
         || !clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
       return;
     }
-    if (b.make(col, searchedMe) || b.topRowFull()) {
+    if (b.make(modelCol, searchedMe) || b.topRowFull()) {
       return;
     }
     searcher.setStallLimit(0L);
@@ -331,8 +340,11 @@ public final class QcBot implements Algorithm {
     Snapshot s = Snapshot.read(field);
     tracker.beginTurn(s);
     limit.assumePrior();
-    if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
-      buildBoardSize(s.rows, s.cols);
+    if (crop == null || !crop.isFor(s.rows, s.cols)) {
+      Crop c = Crop.start(s.rows, s.cols, timing.cropAbove);
+      if (c != null) {
+        buildModel(c);
+      }
     }
   }
 
@@ -357,26 +369,36 @@ public final class QcBot implements Algorithm {
   private int choose(Snapshot s, long t0) {
     lastResult = null;
     searchedBoard = null;
-    if (s.rows < 1 || s.cols < 1 || s.rows * s.cols > MAX_MODEL_CELLS) {
+    moveOffset = 0;
+    if (s.rows < 1 || s.cols < 1) {
       return Tactics.NONE;
     }
     // with so few discs nothing can be lost by not searching, and a short limit may have cut the probe off once
     if (s.discs == 0 || (s.discs <= NO_SEARCH_DISCS && !limit.known())) {
-      return centreOrder(s.cols, 0);
+      moveOffset = centreOrder(s.cols, 0);
+      return 0;
     }
-    if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
+    if (building || crop == null || !crop.isFor(s.rows, s.cols)) {
       return Tactics.NONE;
+    }
+    Crop c = crop.refit(s.cells, timing.cropAbove);
+    if (c == null) {
+      return Tactics.NONE;
+    }
+    if (c != crop) {
+      buildModel(c);
     }
     // a fresh board per call: a search that outlived its call may still be walking the previous one
     Board board = new Board(geometry);
-    if (!board.load(s.cells)) {
+    if (!board.load(c.cut(s.cells))) {
       return Tactics.NONE;
     }
+    moveOffset = c.col0;
     // on an empty board the colour is unknown, but then nothing depends on it
     int me = tracker.myColour() != 0 ? tracker.myColour() : tracker.iAmFirst() ? Board.FIRST : Board.SECOND;
     int cdMe = tracker.myCooldownCounter();
     int cdOpp = tracker.opponentCooldownCounter();
-    if (s.cols <= MAX_SEARCH_COLS) {
+    if (c.cols <= MAX_SEARCH_COLS) {
       int empty = s.rows * s.cols - s.discs;
       long hard = clock.budget(t0, tracker.plyIndex(), stopNow(), lastScore, empty, limit.nanos());
       searcher.setStallLimit(limit.scaled(timing.stallLimitNanos, 50));
@@ -387,6 +409,7 @@ public final class QcBot implements Algorithm {
       if (r.move() != Tactics.NONE) {
         lastScore = r.score();
         searchedBoard = board;
+        searchedOffset = c.col0;
         searchedMe = me;
         searchedCdMe = cdMe;
         searchedCdOpp = cdOpp;

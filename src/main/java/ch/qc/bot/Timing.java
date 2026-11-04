@@ -16,11 +16,14 @@ public final class Timing {
    */
   private static final long CONSTRUCTOR_WARMUP_NANOS = 1000 * MS;
 
+  /** A board dimension above this is modelled only around the discs ({@link Crop}). */
+  private static final int CROP_ABOVE = 40;
+
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {60 * MS, 80 * MS}, 80 * MS,
-          CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS)
+          CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS, CROP_ABOVE)
       : new Timing(new int[] {10, 20, 30, 60, Integer.MAX_VALUE}, new long[] {50 * MS, 60 * MS, 70 * MS, 75 * MS, 80 * MS},
-          80 * MS, 0L, 96 * MS, 85, 100, 30, false, 55 * MS, 60 * MS);
+          80 * MS, 0L, 96 * MS, 85, 100, 30, false, 55 * MS, 60 * MS, CROP_ABOVE);
 
   /** stopNanos[i] holds for own turn indices (0-based) below untilTurn[i], the first match wins. */
   final int[] untilTurn;
@@ -50,10 +53,12 @@ public final class Timing {
    */
   final long blastStopNanos;
   final long safeFinishNanos;
+  /** See {@link Crop}. */
+  final int cropAbove;
 
   Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
       int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
-      long safeFinishNanos) {
+      long safeFinishNanos, int cropAbove) {
     this.untilTurn = untilTurn;
     this.stopNanos = stopNanos;
     this.ponderNanos = ponderNanos;
@@ -65,6 +70,7 @@ public final class Timing {
     this.probeUpward = probeUpward;
     this.blastStopNanos = blastStopNanos;
     this.safeFinishNanos = safeFinishNanos;
+    this.cropAbove = cropAbove;
   }
 
   /** Stop of the first call on this own turn (0-based). */
@@ -80,7 +86,8 @@ public final class Timing {
   /**
    * Harness only: "s=55@10/65@30/80,p=85,w=1000,g=96@85@100,up=1,b=70@75". s: first-call stop in ms, each until an own
    * turn, the last for all others. p: second-call search. w: warm-up. g=LIMIT@DECAY@WEIGHT: the stall sensor. pf=N: no
-   * second-call search on own turns below N. up=1: {@link #probeUpward}. b=STOP@FINISH: blast limits. Anything not named
+   * second-call search on own turns below N. up=1: {@link #probeUpward}. b=STOP@FINISH: blast limits. crop=N:
+   * {@link #cropAbove}. Anything not named
    * keeps the value of {@link #DEFAULT}.
    */
   public static Timing parse(String spec) {
@@ -96,6 +103,7 @@ public final class Timing {
     boolean up = d.probeUpward;
     long blastStop = d.blastStopNanos;
     long safeFinish = d.safeFinishNanos;
+    int cropAbove = d.cropAbove;
     for (String part : spec.split(",")) {
       int eq = part.indexOf('=');
       if (eq < 0) {
@@ -122,6 +130,8 @@ public final class Timing {
         int at = value.indexOf('@');
         blastStop = MS * Long.parseLong(value.substring(0, at));
         safeFinish = MS * Long.parseLong(value.substring(at + 1));
+      } else if (key.equals("crop")) {
+        cropAbove = Integer.parseInt(value);
       } else if (key.equals("pf")) {
         ponderFrom = Integer.parseInt(value);
       } else if (key.equals("g")) {
@@ -131,6 +141,6 @@ public final class Timing {
         weight = Integer.parseInt(g[2]);
       }
     }
-    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish);
+    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish, cropAbove);
   }
 }
