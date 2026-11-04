@@ -131,6 +131,77 @@ class GenericEvalTest {
     }
   }
 
+  /**
+   * Java-Python parity of generic tables: runs when -Pqc.parity=DIR names a model directory with eval.qcw and
+   * parity-ROWSxCOLS.qpv files from training/qctrain/parity.py. Every record is checked twice: on a freshly loaded
+   * board (full sum) and on a board where the last disc of a column was just dropped (the kept per-level sums).
+   */
+  @Test
+  void parityWithThePythonModel() throws Exception {
+    String dir = System.getProperty("qc.parity");
+    org.junit.jupiter.api.Assumptions.assumeTrue(dir != null, "set -Pqc.parity=DIR to run the parity test");
+    java.nio.file.Path model = java.nio.file.Path.of(dir);
+    GenericTables tables = GenericTables.fromBlob(WeightFiles.parse(java.nio.file.Files.readAllBytes(model.resolve("eval.qcw"))));
+    org.junit.jupiter.api.Assumptions.assumeTrue(tables != null, "not a generic model");
+    int shift = WeightFiles.parse(java.nio.file.Files.readAllBytes(model.resolve("eval.qcw"))).scale == 1024 ? 2 : 0;
+    int files = 0;
+    try (java.nio.file.DirectoryStream<java.nio.file.Path> list = java.nio.file.Files.newDirectoryStream(model, "parity-*.qpv")) {
+      for (java.nio.file.Path file : list) {
+        files++;
+        String name = file.getFileName().toString();
+        String[] size = name.substring("parity-".length(), name.length() - ".qpv".length()).split("x");
+        Geometry g = new Geometry(Integer.parseInt(size[0]), Integer.parseInt(size[1]));
+        GenericEval e = tables.forGeometry(g);
+        java.nio.ByteBuffer bb = java.nio.ByteBuffer.wrap(java.nio.file.Files.readAllBytes(file)).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        bb.position(4);
+        int count = bb.getInt();
+        assertEquals(g.cells, bb.getInt());
+        int[] t = new int[3];
+        for (int r = 0; r < count; r++) {
+          byte[] c = new byte[g.cells];
+          bb.get(c);
+          int stm = bb.get();
+          int cdM = bb.get();
+          int cdO = bb.get();
+          int expected = bb.getInt();
+          int t1 = Short.toUnsignedInt(bb.getShort());
+          int t2 = Short.toUnsignedInt(bb.getShort());
+          int t3 = Short.toUnsignedInt(bb.getShort());
+          bb.getFloat();
+          Board b = new Board(g);
+          assertTrue(b.load(c));
+          Features.threatIndices(b, stm, cdM, cdO, t);
+          assertEquals(t1, t[0], "t1 of record " + r);
+          assertEquals(t2, t[1], "t2 of record " + r);
+          assertEquals(t3, t[2], "t3 of record " + r);
+          assertEquals(expected >> shift, e.rawSum(b, stm, cdM, cdO), name + " full sum of record " + r);
+          // the same position reached by a drop: evaluate the parent first so the sum runs through the kept levels
+          int col = -1;
+          for (int x = 0; x < g.cols && col < 0; x++) {
+            int h = b.height(x);
+            if (h > 0 && c[x * g.rows + h - 1] == 3 - stm) {
+              col = x;
+            }
+          }
+          if (col >= 0) {
+            int h = b.height(col);
+            byte[] parent = c.clone();
+            parent[col * g.rows + h - 1] = 0;
+            Board p = new Board(g);
+            if (p.load(parent)) {
+              e.rawSum(p, stm, cdM, cdO);
+              if (!p.make(col, 3 - stm)) {
+                assertEquals(expected >> shift, e.rawSum(p, stm, cdM, cdO), name + " kept sum of record " + r);
+              }
+            }
+          }
+        }
+        System.out.printf(java.util.Locale.ROOT, "parity %s: %d records equal%n", name, count);
+      }
+    }
+    assertTrue(files > 0, "no parity files in " + dir);
+  }
+
   @Test
   void genericBlobServesEveryBoardButNotAsSized() throws Exception {
     WeightBlob blob = WeightFiles.parse(genericBlob(1, 5));
