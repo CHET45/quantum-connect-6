@@ -183,40 +183,18 @@ public final class Searcher {
     /** Collect cut and node statistics into {@link Result#stats()} (bench only). */
     public boolean trace;
     public boolean audit;
-    // ordering
-    public boolean histCell;
-    public boolean histKeep;
-    public int histMalus;
-    public boolean counterMove;
-    public boolean valOrder;
-    public int evalOrder;
-    public int etc;
-    public int iid;
-    public int asp;
-    public boolean rootNodes;
-    // extensions and selectivity
     public boolean forcedExt;
     public int lmrMode;
     public int lmrDepth = 3;
-    public int lmrDiv = 200;
-    public int lmrBase = 50;
     public int lmrTact;
     public int lmrRoot;
     public int lmrBlast;
-    public int lmrHist;
     public int lmp;
-    public int futility;
-    public int rfp;
     public int nullR;
     public int blastGenDepth = 3;
     public boolean partial;
-    public boolean pvFix = true;
-    public boolean lazyOrder = true;
     public int nodeVcf;
     public int nodeVcfNodes = 200;
-    public boolean lazyLeafBlast = true;
-    public boolean leafBlastThreat;
-    public int evalCacheBits;
     public int rootVcfMs = 10;
     public int oppVcfMs = 5;
 
@@ -225,38 +203,18 @@ public final class Searcher {
       nodeRule = o.nodeRule;
       trace = o.trace;
       audit = o.audit;
-      histCell = o.histCell;
-      histKeep = o.histKeep;
-      histMalus = o.histMalus;
-      counterMove = o.counterMove;
-      valOrder = o.valOrder;
-      evalOrder = o.evalOrder;
-      etc = o.etc;
-      iid = o.iid;
-      asp = o.asp;
-      rootNodes = o.rootNodes;
       forcedExt = o.forcedExt;
       lmrMode = o.lmrMode;
       lmrDepth = o.lmrDepth;
-      lmrDiv = o.lmrDiv;
-      lmrBase = o.lmrBase;
       lmrTact = o.lmrTact;
       lmrRoot = o.lmrRoot;
       lmrBlast = o.lmrBlast;
-      lmrHist = o.lmrHist;
       lmp = o.lmp;
-      futility = o.futility;
-      rfp = o.rfp;
       nullR = o.nullR;
       blastGenDepth = o.blastGenDepth;
       partial = o.partial;
-      pvFix = o.pvFix;
-      lazyOrder = o.lazyOrder;
       nodeVcf = o.nodeVcf;
       nodeVcfNodes = o.nodeVcfNodes;
-      lazyLeafBlast = o.lazyLeafBlast;
-      leafBlastThreat = o.leafBlastThreat;
-      evalCacheBits = o.evalCacheBits;
       rootVcfMs = o.rootVcfMs;
       oppVcfMs = o.oppVcfMs;
       return this;
@@ -319,11 +277,6 @@ public final class Searcher {
   private final int[][] gain = new int[3][];
   /** live[colour][code]: square of the colour's discs in a window without opponent discs, else 0. */
   private final int[][] live = new int[3][];
-  /** valGain[colour][code]: the hand evaluation's window value of the code for colour, move ordering only. */
-  private final int[][] valWin = new int[3][];
-  private final int[][] lmrTable = new int[32][64];
-  /** Leaf values by position; a value does not depend on the search, so it stays valid for the whole game. */
-  private final long[] evalCache;
   private volatile int token;
   /**
    * Context of the last finished call, reused by the next one so a call allocates almost nothing (the server
@@ -363,11 +316,8 @@ public final class Searcher {
     final int[][] order = new int[MAX_PLY][];
     final int[][] killers = new int[MAX_PLY][2];
     final int[][] history = new int[3][];
-    final int[][] counter = new int[3][];
     final int[] prevCell = new int[MAX_PLY + 2];
     final int[][] tact = new int[MAX_PLY][];
-    final long[] rootNodes = new long[1024];
-    final int[] rootOrder = new int[1024];
     final Board[] pool = new Board[MAX_PLY];
     final Vcf vcf;
     final Vcf leafVcf;
@@ -382,36 +332,23 @@ public final class Searcher {
       this.turnBase = turnBase;
       vcf = new Vcf(g, vcfTable, true);
       leafVcf = options.exactLeaves ? vcf : new Vcf(g, vcfTable, false);
-      history[1] = new int[g.cells];
-      history[2] = new int[g.cells];
-      counter[1] = new int[g.cells];
-      counter[2] = new int[g.cells];
-      java.util.Arrays.fill(counter[1], Tactics.NONE);
-      java.util.Arrays.fill(counter[2], Tactics.NONE);
+      history[1] = new int[g.cols];
+      history[2] = new int[g.cols];
       for (int[] k : killers) {
         k[0] = k[1] = Tactics.NONE;
       }
     }
 
     /** Puts a finished context back into the state of a new one. */
-    void reset(int token, long deadline, long maxNodes, int turnBase, boolean keep) {
+    void reset(int token, long deadline, long maxNodes, int turnBase) {
       this.token = token;
       this.deadline = deadline;
       this.maxNodes = maxNodes;
       this.turnBase = turnBase;
       nodes = 0;
       stop = false;
-      if (keep) {
-        for (int i = 0; i < history[1].length; i++) {
-          history[1][i] /= 4;
-          history[2][i] /= 4;
-        }
-      } else {
-        java.util.Arrays.fill(history[1], 0);
-        java.util.Arrays.fill(history[2], 0);
-        java.util.Arrays.fill(counter[1], Tactics.NONE);
-        java.util.Arrays.fill(counter[2], Tactics.NONE);
-      }
+      java.util.Arrays.fill(history[1], 0);
+      java.util.Arrays.fill(history[2], 0);
       for (int[] k : killers) {
         k[0] = k[1] = Tactics.NONE;
       }
@@ -482,25 +419,6 @@ public final class Searcher {
         live[colour][code] = other > 0 ? 0 : own * own;
       }
     }
-    evalCache = options.evalCacheBits > 0 ? new long[1 << options.evalCacheBits] : null;
-    int[] val = {0, 3, 13, 50, 150, 384, 0};
-    for (int colour = 1; colour <= 2; colour++) {
-      valWin[colour] = new int[t.codes];
-      for (int code = 0; code < t.codes; code++) {
-        int own = 0;
-        boolean dead = false;
-        for (int i = 0, c = code; i < t.k; i++, c /= 3) {
-          dead |= c % 3 == 3 - colour;
-          own += c % 3 == colour ? 1 : 0;
-        }
-        valWin[colour][code] = dead ? 0 : val[own];
-      }
-    }
-    for (int d = 1; d < 32; d++) {
-      for (int i = 1; i < 64; i++) {
-        lmrTable[d][i] = (int) ((options.lmrBase + 100 * Math.log(d) * Math.log(i)) / options.lmrDiv);
-      }
-    }
     centreBonus = new int[g.cols];
     for (int c = 0; c < g.cols; c++) {
       centreBonus[c] = g.cols - Math.abs(2 * c - (g.cols - 1));
@@ -560,7 +478,7 @@ public final class Searcher {
     if (x == null) {
       x = new Ctx(g, options, vcfTable, myToken, startNanos + hardNanos, maxNodes, turnIndex);
     } else {
-      x.reset(myToken, startNanos + hardNanos, maxNodes, turnIndex, options.histKeep);
+      x.reset(myToken, startNanos + hardNanos, maxNodes, turnIndex);
     }
     x.start = startNanos;
     x.lastPoll = startNanos;
@@ -623,77 +541,36 @@ public final class Searcher {
     int completed = 0;
     int lastDepth = options.maxDepth > 0 ? Math.min(options.maxDepth, MAX_DEPTH) : MAX_DEPTH;
     for (int depth = 1; depth <= lastDepth; depth++) {
-      int aspLow = -INF;
-      int aspHigh = INF;
-      if (options.asp > 0 && depth >= 3 && Math.abs(bestScore) <= MATE_BOUND) {
-        aspLow = bestScore - options.asp;
-        aspHigh = bestScore + options.asp;
-      }
-      int iterBest;
-      int iterScore;
-      while (true) {
-        iterBest = Tactics.NONE;
-        iterScore = -INF;
-        int alpha = aspLow;
-        for (int i = 0; i < n && !x.stop; i++) {
-          int m = moves[i];
-          int margin = Tactics.isSpecial(m) ? options.blastMargin : 0;
-          long before = x.nodes;
-          int score;
-          boolean reduce = options.lmrRoot > 0 && i >= options.lmrRoot && depth >= 3 && !Tactics.isSpecial(m);
-          if (reduce) {
-            score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth - (options.lmrMode >= 2 ? 2 : 1), alpha + margin, aspHigh,
-                false);
-            if (!x.stop && score > alpha + margin) {
-              score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, aspHigh, false);
-            }
-          } else {
-            score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, aspHigh, i == 0);
+      int iterBest = Tactics.NONE;
+      int iterScore = -INF;
+      int alpha = -INF;
+      for (int i = 0; i < n && !x.stop; i++) {
+        int m = moves[i];
+        int margin = Tactics.isSpecial(m) ? options.blastMargin : 0;
+        int score;
+        if (options.lmrRoot > 0 && i >= options.lmrRoot && depth >= 3 && !Tactics.isSpecial(m)) {
+          score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth - 2, alpha + margin, false);
+          if (!x.stop && score > alpha + margin) {
+            score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, false);
           }
-          if (x.stop) {
-            break;
-          }
-          x.rootNodes[i] = x.nodes - before;
-          if (Math.abs(score) <= MATE_BOUND) {
-            score -= margin;
-          }
-          scores[i] = score;
-          if (score > iterScore) {
-            iterScore = score;
-            iterBest = m;
-          }
-          if (score > alpha) {
-            alpha = score;
-          }
-          x.leadingBlast = Tactics.isSpecial(completed > 0 && iterScore <= bestScore ? best : iterBest);
-          if (alpha >= aspHigh) {
-            break;
-          }
+        } else {
+          score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, i == 0);
         }
         if (x.stop) {
           break;
         }
-        if (iterScore <= aspLow && aspLow > -INF) {
-          aspLow = -INF;
-          continue;
+        if (Math.abs(score) <= MATE_BOUND) {
+          score -= margin;
         }
-        if (iterScore >= aspHigh && aspHigh < INF) {
-          aspHigh = INF;
-          // the move that failed high goes first in the search again
-          for (int i = 0; i < n; i++) {
-            if (moves[i] == iterBest) {
-              for (int j = i; j > 0; j--) {
-                moves[j] = moves[j - 1];
-                scores[j] = scores[j - 1];
-              }
-              moves[0] = iterBest;
-              scores[0] = iterScore;
-              break;
-            }
-          }
-          continue;
+        scores[i] = score;
+        if (score > iterScore) {
+          iterScore = score;
+          iterBest = m;
         }
-        break;
+        if (score > alpha) {
+          alpha = score;
+        }
+        x.leadingBlast = Tactics.isSpecial(completed > 0 && iterScore <= bestScore ? best : iterBest);
       }
       if (x.stop) {
         if (options.partial) {
@@ -713,16 +590,7 @@ public final class Searcher {
       best = iterBest;
       bestScore = iterScore;
       completed = depth;
-      if (options.rootNodes) {
-        // the best move first, then by the work its refutation took
-        for (int i = 0; i < n; i++) {
-          long w = moves[i] == best ? 1L << 40 : x.rootNodes[i];
-          x.rootOrder[i] = (int) Math.min(w, 1 << 30);
-        }
-        sortRootByNodes(moves, scores, x.rootOrder, x.rootNodes, n);
-      } else {
       sortByScore(moves, scores, n);
-      }
       x.bestDrop = firstDrop(moves, n);
       long elapsed = Clock.nanos() - startNanos;
       if (Math.abs(bestScore) > MATE_BOUND || n == 1 || (options.ebf > 0 && elapsed * options.ebf > hardNanos)
@@ -803,7 +671,7 @@ public final class Searcher {
     return kept;
   }
 
-  private int rootChild(Ctx x, Board root, int me, int opp, int cdMe, int cdOpp, int m, int depth, int alpha, int beta,
+  private int rootChild(Ctx x, Board root, int me, int opp, int cdMe, int cdOpp, int m, int depth, int alpha,
       boolean first) {
     int c = Tactics.column(m);
     if (!Tactics.isSpecial(m)) {
@@ -811,7 +679,7 @@ public final class Searcher {
       boolean win = root.make(c, me);
       int s = win ? MATE - 1
           : root.topRowFull() ? draw(0)
-          : pvsChild(x, root, opp, cdOpp, Math.min(cdMe + 1, COOLDOWN), depth - 1, alpha, beta, 0, first);
+          : pvsChild(x, root, opp, cdOpp, Math.min(cdMe + 1, COOLDOWN), depth - 1, alpha, INF, 0, first);
       root.unmake(c);
       return s;
     }
@@ -821,7 +689,7 @@ public final class Searcher {
       return MATE - 1;
     }
     x.prevCell[0] = -1;
-    return pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, beta, 0, first);
+    return pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, INF, 0, first);
   }
 
   /** Searches a child at ply + 1 with a null window first unless it is the first move. Returns our score. */
@@ -829,9 +697,9 @@ public final class Searcher {
       boolean first) {
     if (first) {
       // the first child of a null-window node is an ordinary null-window node, not a PV node
-      return -search(x, b, stm, cdStm, cdOpp, depth, -beta, -alpha, ply + 1, !options.pvFix || beta - alpha > 1);
+      return -search(x, b, stm, cdStm, cdOpp, depth, -beta, -alpha, ply + 1, beta - alpha > 1);
     }
-    if (options.pvFix && depth <= 0 && beta - alpha > 1) {
+    if (depth <= 0 && beta - alpha > 1) {
       // a leaf returns the same value for any window
       return -search(x, b, stm, cdStm, cdOpp, depth, -beta, -alpha, ply + 1, true);
     }
@@ -870,8 +738,8 @@ public final class Searcher {
       }
     }
     boolean ready = cdStm >= COOLDOWN;
-    boolean leafBlast = options.blastWinMinDepth <= 0 && options.lazyLeafBlast;
-    if (ready && (leafBlast ? depth >= 1 : depth >= options.blastWinMinDepth) && b.anyBlastWins()) {
+    boolean leafBlast = options.blastWinMinDepth <= 0;
+    if (ready && depth >= Math.max(1, options.blastWinMinDepth) && b.anyBlastWins()) {
       return MATE - ply - 1;
     }
     if (oppThreats >= 2 && !ready) {
@@ -897,34 +765,9 @@ public final class Searcher {
         if (options.trace) {
           x.stats[11]++;
         }
-        if (leafBlast) {
-          // the scan can only raise the value, so a leaf already at beta needs none
-          int v = eval.evaluate(b, stm, cdStm, cdOpp);
-          if (ready) {
-            return v < beta && b.anyBlastWins() ? MATE - ply - 1 : v;
-          }
-          if (options.leafBlastThreat && cdOpp >= COOLDOWN && v > alpha && ply < MAX_PLY - 2 && b.anyBlastWins()) {
-            // the opponent wins by a blast next turn unless this side has an answer: look one ply further
-            depth = 1;
-          } else {
-            return v;
-          }
-        } else
-        if (evalCache != null) {
-          long k = key(b, stm, cdStm, cdOpp, x.turnBase + ply);
-          int idx = (int) k & (evalCache.length - 1);
-          long e = evalCache[idx];
-          if ((e >>> 16) == (k >>> 16)) {
-            if (options.trace) {
-              x.stats[56]++;
-            }
-            return (int) (e & 0xFFFF) - 32768;
-          }
-          int v = eval.evaluate(b, stm, cdStm, cdOpp);
-          evalCache[idx] = (k & ~0xFFFFL) | (v + 32768L);
-          return v;
-        }
-        else return eval.evaluate(b, stm, cdStm, cdOpp);
+        int v = eval.evaluate(b, stm, cdStm, cdOpp);
+        // the scan can only raise the value, so a leaf already at beta needs none
+        return leafBlast && ready && v < beta && b.anyBlastWins() ? MATE - ply - 1 : v;
       } else {
         if (leafBlast && ready && b.anyBlastWins()) {
           return MATE - ply - 1;
@@ -974,37 +817,20 @@ public final class Searcher {
         return v;
       }
     }
-    int staticEval = -INF;
-    if (!pv && !forced && oppThreats == 0 && Math.abs(beta) < MATE_BOUND) {
-      boolean needEval = (options.rfp > 0 && depth <= 3) || (options.futility > 0 && depth <= 2)
-          || (options.nullR > 0 && depth >= 3);
-      if (needEval) {
-        staticEval = eval.evaluate(b, stm, cdStm, cdOpp);
-        x.nodes++;
-        if (options.rfp > 0 && depth <= 3 && staticEval - options.rfp * depth >= beta) {
-          return staticEval;
+    if (options.nullR > 0 && !pv && !forced && oppThreats == 0 && depth >= 3 && cdOpp < COOLDOWN
+        && Math.abs(beta) < MATE_BOUND) {
+      int staticEval = eval.evaluate(b, stm, cdStm, cdOpp);
+      x.nodes++;
+      if (staticEval >= beta) {
+        // a pass: the opponent moves, nothing else changes
+        x.prevCell[ply] = -1;
+        int v = -search(x, b, opp, cdOpp, cdStm, depth - 1 - options.nullR, -beta, -beta + 1, ply + 1, false);
+        if (x.stop) {
+          return 0;
         }
-        if (options.nullR > 0 && depth >= 3 && staticEval >= beta && cdOpp < COOLDOWN) {
-          // a pass: the opponent moves, nothing else changes
-          x.prevCell[ply] = -1;
-          int v = -search(x, b, opp, cdOpp, cdStm, depth - 1 - options.nullR, -beta, -beta + 1, ply + 1, false);
-          if (x.stop) {
-            return 0;
-          }
-          if (v >= beta) {
-            return Math.abs(v) > MATE_BOUND ? beta : v;
-          }
+        if (v >= beta) {
+          return Math.abs(v) > MATE_BOUND ? beta : v;
         }
-      }
-    }
-    if (ttMove == Tactics.NONE && options.iid > 0 && depth >= options.iid && !forced) {
-      search(x, b, stm, cdStm, cdOpp, depth - 2, alpha, beta, ply, pv);
-      if (x.stop) {
-        return 0;
-      }
-      long e2 = tt.probe(key);
-      if (e2 != 0) {
-        ttMove = TranspositionTable.move(e2);
       }
     }
 
@@ -1031,49 +857,19 @@ public final class Searcher {
     if (n == 0) {
       return oppThreats >= 2 ? -(MATE - ply - 2) : draw(ply);
     }
-    if (options.etc > 0 && depth >= options.etc && !pv && !forced) {
-      long baseHash = key(b, opp, cdOpp, Math.min(cdStm + 1, COOLDOWN), x.turnBase + ply + 1) ^ b.hash();
-      long[] zob = g.zobrist[stm];
-      for (int i = 0; i < n; i++) {
-        int m = list[i];
-        if (Tactics.isSpecial(m)) {
-          continue;
-        }
-        int c = Tactics.column(m);
-        long e2 = tt.probe(baseHash ^ b.hash() ^ zob[g.index(c, b.height(c))]);
-        if (e2 != 0 && TranspositionTable.depth(e2) >= depth - 1) {
-          int bound2 = TranspositionTable.bound(e2);
-          if (bound2 != TranspositionTable.LOWER) {
-            int s2 = -fromTT(TranspositionTable.score(e2), ply + 1);
-            if (s2 >= beta) {
-              tt.store(key, depth, toTT(s2, ply), TranspositionTable.LOWER, m);
-              return s2;
-            }
-          }
-        }
-      }
-    }
     int[] kill = x.killers[ply];
     int[] hist = x.history[stm];
     int prevCell = ply > 0 ? x.prevCell[ply - 1] : -1;
-    int cmove = options.counterMove && prevCell >= 0 ? x.counter[stm][prevCell] : Tactics.NONE;
-    boolean evalOrder = options.evalOrder > 0 && depth >= options.evalOrder && !forced;
     // the TT move and the killers need no scores: most cuts come on them, so the others are scored only when reached
-    int front = 0;
-    if (options.lazyOrder) {
-      front = moveToFront(list, n, front, ttMove);
-      if (kill[0] != ttMove) {
-        front = moveToFront(list, n, front, kill[0]);
-      }
-      if (kill[1] != ttMove) {
-        front = moveToFront(list, n, front, kill[1]);
-      }
-      if (cmove != ttMove && cmove != kill[0] && cmove != kill[1]) {
-        front = moveToFront(list, n, front, cmove);
-      }
-      for (int i = 0; i < front; i++) {
-        tactic[i] = 0;
-      }
+    int front = moveToFront(list, n, 0, ttMove);
+    if (kill[0] != ttMove) {
+      front = moveToFront(list, n, front, kill[0]);
+    }
+    if (kill[1] != ttMove) {
+      front = moveToFront(list, n, front, kill[1]);
+    }
+    for (int i = 0; i < front; i++) {
+      tactic[i] = 0;
     }
 
     if (options.trace) {
@@ -1090,40 +886,22 @@ public final class Searcher {
     for (int i = 0; i < n; i++) {
       if (i == front) {
         for (int k = i; k < n; k++) {
-      int m = list[k];
-      int c = Tactics.column(m);
-      if (m == ttMove) {
-        score[k] = 1 << 30;
-      } else if (Tactics.isSpecial(m)) {
-        score[k] = -(1 << 28) + centreBonus[c];
-      } else if (m == kill[0]) {
-        score[k] = 1 << 27;
-      } else if (m == kill[1]) {
-        score[k] = 1 << 26;
-      } else if (m == cmove) {
-        score[k] = 1 << 25;
-      } else {
-        int cell = g.index(c, b.height(c));
-        int s = hist[options.histCell ? cell : c] + centreBonus[c];
-        if (evalOrder) {
-          boolean win = b.make(c, stm);
-          s += win ? 1 << 20 : -eval.evaluate(b, opp, cdOpp, Math.min(cdStm + 1, COOLDOWN));
-          b.unmake(c);
-          x.nodes++;
-        } else {
-          s += options.valOrder ? potentialVal(b, c, stm) : 4 * potential(b, c, stm);
+          int m = list[k];
+          int c = Tactics.column(m);
+          if (Tactics.isSpecial(m)) {
+            score[k] = -(1 << 28) + centreBonus[c];
+            tactic[k] = 0;
+          } else {
+            int cell = g.index(c, b.height(c));
+            int s = hist[c] + centreBonus[c] + 4 * potential(b, c, stm);
+            if (b.height(c) + 1 < g.rows && b.threats(opp, cell + 1) > 0) {
+              s -= 1 << 24; // the reply above would complete the opponent's line
+            }
+            score[k] = s;
+            tactic[k] = options.lmrTact > 0 && (depth >= options.lmrDepth || options.lmp > 0)
+                && isTactical(b, c, stm, prevCell) ? 1 : 0;
+          }
         }
-        if (b.height(c) + 1 < g.rows && b.threats(opp, cell + 1) > 0) {
-          s -= 1 << 24; // the reply above would complete the opponent's line
-        }
-        score[k] = s;
-      }
-      if (options.lmrTact > 0 && !Tactics.isSpecial(m) && (depth >= options.lmrDepth || options.lmp > 0)) {
-        tactic[k] = isTactical(b, c, stm, prevCell) ? 1 : 0;
-      } else {
-        tactic[k] = 0;
-      }
-    }
       }
       if (i >= front) {
         int bi = i;
@@ -1143,20 +921,11 @@ public final class Searcher {
         tactic[i] = tmp;
       }
       int m = list[i];
-
       int c = Tactics.column(m);
       int s;
       if (options.trace) {
         x.stats[10]++;
         x.stats[9] += Tactics.isSpecial(m) ? 1 : 0;
-        if (depth == 1 && i >= 3) {
-          x.stats[50]++;
-          x.stats[51] += pv ? 1 : 0;
-          x.stats[52] += forced ? 1 : 0;
-          x.stats[53] += oppThreats > 0 ? 1 : 0;
-          x.stats[54] += Tactics.isSpecial(m) ? 1 : 0;
-          x.stats[55] += best <= -MATE_BOUND ? 1 : 0;
-        }
       }
       boolean quietLate = !pv && !forced && oppThreats == 0 && i > 0 && tactic[i] == 0 && !Tactics.isSpecial(m)
           && best > -MATE_BOUND;
@@ -1165,13 +934,6 @@ public final class Searcher {
           x.stats[12]++;
         }
         break;
-      }
-      if (quietLate && staticEval > -INF && options.futility > 0 && depth <= 2
-          && staticEval + options.futility * depth <= alpha) {
-        if (best < staticEval + options.futility * depth) {
-          best = staticEval + options.futility * depth;
-        }
-        continue;
       }
       if (!Tactics.isSpecial(m)) {
         int cell = g.index(c, b.height(c));
@@ -1183,20 +945,9 @@ public final class Searcher {
         if (oppThreats == 0 && !win) {
           if (options.lmrMode == 0) {
             red = lmr == 0 || i < lmr || depth < 3 ? 0 : i >= 2 * lmr && depth >= 5 ? 2 : 1;
-          } else if (options.lmrMode == 1) {
-            if (i >= lmr && depth >= options.lmrDepth && tactic[i] == 0) {
-              red = lmrTable[Math.min(depth, 31)][Math.min(i, 63)];
-              if (pv) {
-                red--;
-              }
-              red = Math.max(0, Math.min(red, depth - 1));
-            }
           } else if (i >= (pv ? 2 * lmr : lmr) && depth >= options.lmrDepth && tactic[i] == 0) {
             // an even reduction keeps the side to move at the leaves, and with it the evaluation's parity swing
             red = options.lmrMode == 3 && i >= 3 * lmr && depth >= options.lmrDepth + 2 ? 4 : 2;
-            if (options.lmrHist > 0 && hist[options.histCell ? cell : c] >= options.lmrHist * depth * depth) {
-              red = 0;
-            }
           }
         }
         if (win) {
@@ -1259,21 +1010,7 @@ public final class Searcher {
                 kill[1] = kill[0];
                 kill[0] = m;
               }
-              int bonus = depth * depth;
-              int cell = options.histCell ? g.index(c, b.height(c)) : c;
-              hist[cell] += bonus;
-              if (options.histMalus > 0) {
-                for (int j = 0; j < i; j++) {
-                  int mj = list[j];
-                  if (!Tactics.isSpecial(mj)) {
-                    int cj = Tactics.column(mj);
-                    hist[options.histCell ? g.index(cj, b.height(cj)) : cj] -= bonus / options.histMalus;
-                  }
-                }
-              }
-              if (options.counterMove && prevCell >= 0) {
-                x.counter[stm][prevCell] = m;
-              }
+              hist[c] += depth * depth;
             }
             break;
           }
@@ -1422,20 +1159,6 @@ public final class Searcher {
     return front;
   }
 
-  /** As {@link #potential} with the hand evaluation's window values, for ordering by the likely evaluation change. */
-  private int potentialVal(Board b, int c, int stm) {
-    int[] mine = valWin[stm];
-    int[] theirs = valWin[3 - stm];
-    int i = g.index(c, b.height(c));
-    int s = 0;
-    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
-      int old = b.windowCode(g.cellWin[j]);
-      int nw = old + stm * t.pow3[g.cellPos[j]];
-      s += mine[nw] - mine[old] + theirs[old] - theirs[nw];
-    }
-    return s;
-  }
-
   /**
    * A drop that must not be reduced: it makes a new threat of the mover, takes a window with four opponent discs, or
    * opens the cell above when that is a threat of the mover.
@@ -1464,27 +1187,6 @@ public final class Searcher {
 
   private static int fromTT(int s, int ply) {
     return s > MATE_BOUND ? s - ply : s < -MATE_BOUND ? s + ply : s;
-  }
-
-  private static void sortRootByNodes(int[] moves, int[] scores, int[] key, long[] nodes, int n) {
-    for (int i = 1; i < n; i++) {
-      int m = moves[i];
-      int s = scores[i];
-      int k = key[i];
-      long w = nodes[i];
-      int j = i - 1;
-      while (j >= 0 && key[j] < k) {
-        moves[j + 1] = moves[j];
-        scores[j + 1] = scores[j];
-        key[j + 1] = key[j];
-        nodes[j + 1] = nodes[j];
-        j--;
-      }
-      moves[j + 1] = m;
-      scores[j + 1] = s;
-      key[j + 1] = k;
-      nodes[j + 1] = w;
-    }
   }
 
   private static void sortByScore(int[] moves, int[] scores, int n) {

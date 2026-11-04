@@ -244,14 +244,6 @@ public final class SearchBench {
       for (int i = 1; i < 12; i++) {
         sb.append(' ').append(st[35 + i]);
       }
-      sb.append("   dbg:");
-      for (int i = 12; i < 13; i++) {
-        sb.append(' ').append(st[6 + i]);
-      }
-      sb.append(" |");
-      for (int i = 50; i < 57; i++) {
-        sb.append(' ').append(st[6 + i]);
-      }
       System.out.println(sb);
       if (st[6 + 100] > 0) {
         String[] names = {"same col", "next col", "2 cols", "own 4+", "own 3", "opp 4+", "opp 3", "own thr above", "after blast",

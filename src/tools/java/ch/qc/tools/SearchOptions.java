@@ -55,25 +55,14 @@ public final class SearchOptions {
   private static void setInt(Options o, String name, int v) {
     switch (name) {
       case "maxDepth" -> o.maxDepth = v;
-      case "histMalus" -> o.histMalus = v;
-      case "evalOrder" -> o.evalOrder = v;
-      case "etc" -> o.etc = v;
-      case "iid" -> o.iid = v;
-      case "asp" -> o.asp = v;
-      case "evalCacheBits" -> o.evalCacheBits = v;
       case "nodeVcf" -> o.nodeVcf = v;
       case "nodeVcfNodes" -> o.nodeVcfNodes = v;
       case "lmrMode" -> o.lmrMode = v;
       case "lmrDepth" -> o.lmrDepth = v;
-      case "lmrDiv" -> o.lmrDiv = v;
-      case "lmrBase" -> o.lmrBase = v;
       case "lmrRoot" -> o.lmrRoot = v;
       case "lmrTact" -> o.lmrTact = v;
       case "lmrBlast" -> o.lmrBlast = v;
-      case "lmrHist" -> o.lmrHist = v;
       case "lmp" -> o.lmp = v;
-      case "futility" -> o.futility = v;
-      case "rfp" -> o.rfp = v;
       case "nullR" -> o.nullR = v;
       case "blastGenDepth" -> o.blastGenDepth = v;
       case "rootVcfMs" -> o.rootVcfMs = v;
@@ -85,16 +74,7 @@ public final class SearchOptions {
   private static void setBool(Options o, String name, boolean on) {
     switch (name) {
       case "nodeRule" -> o.nodeRule = on;
-      case "pvFix" -> o.pvFix = on;
       case "audit" -> o.audit = on;
-      case "lazyOrder" -> o.lazyOrder = on;
-      case "lazyLeafBlast" -> o.lazyLeafBlast = on;
-      case "leafBlastThreat" -> o.leafBlastThreat = on;
-      case "histCell" -> o.histCell = on;
-      case "histKeep" -> o.histKeep = on;
-      case "counterMove" -> o.counterMove = on;
-      case "valOrder" -> o.valOrder = on;
-      case "rootNodes" -> o.rootNodes = on;
       case "forcedExt" -> o.forcedExt = on;
       case "partial" -> o.partial = on;
       default -> throw new IllegalArgumentException("unknown search option " + name);
