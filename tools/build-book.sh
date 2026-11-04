@@ -34,7 +34,7 @@ CP="$RUN/main;$RUN/tools;libs/core-2.0-SNAPSHOT.jar"
   --out "$OUT" "$@" 2>&1 | grep --line-buffered -v "Picked up" &
 if [ "$THREADS" -gt 2 ]; then
   sleep 3
-  for P in $(powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | Where-Object { \$_.CommandLine -match 'BookBuilder' -and \$_.CommandLine -match [regex]::Escape('$RUN') } | ForEach-Object { \$_.ProcessId }" | tr -d ''); do
+  for P in $(powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | Where-Object { \$_.CommandLine -match 'BookBuilder' -and \$_.CommandLine -match [regex]::Escape('$RUN') } | ForEach-Object { \$_.ProcessId }" | tr -d '\r'); do
     powershell -NoProfile -Command "(Get-Process -Id $P).PriorityClass='Idle'" || true
     echo "java process $P set to Idle priority"
   done
