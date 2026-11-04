@@ -58,6 +58,16 @@ class BookTest {
   }
 
   @Test
+  void anotherBoardSizeNeverGetsAColumn() throws IOException {
+    Geometry g = new Geometry(15, 11);
+    Book book = Book.fromBytes(blob(g, 20, new Board(g), 5));
+    assertEquals(5, book.column(new Board(g), 0, Board.FIRST, 0));
+    for (int[] size : new int[][] {{6, 7}, {8, 12}, {11, 15}, {15, 22}, {25, 25}}) {
+      assertEquals(-1, book.column(new Board(new Geometry(size[0], size[1])), 0, Board.FIRST, 0));
+    }
+  }
+
+  @Test
   void refusesWhenTheTurnsDoNotAddUp() throws IOException {
     Geometry g = new Geometry(15, 11);
     Board position = board(g, 3, 7);

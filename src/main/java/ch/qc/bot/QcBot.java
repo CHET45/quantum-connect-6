@@ -41,8 +41,8 @@ public final class QcBot implements Algorithm {
   static final long SECOND_CALL_LATE_NANOS = 90_000_000L;
   /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
   static final int MAX_MODEL_CELLS = 4096;
-  /** Search behind a book move ({@link Book}). */
-  static final long BOOK_HARD_NANOS = 30_000_000L;
+  /** Search behind a book move ({@link Book}), as a share of the stop of this call. */
+  static final int BOOK_STOP_PERCENT = 40;
   /** Search is limited to boards whose column index fits the transposition-table move field. */
   static final int MAX_SEARCH_COLS = 255;
   /** Board sizes seen on the server: their tables are built in the constructor, outside any timed call. */
@@ -301,10 +301,11 @@ public final class QcBot implements Algorithm {
     if (s.cols <= MAX_SEARCH_COLS) {
       int empty = s.rows * s.cols - s.discs;
       long hard = clock.budget(t0, tracker.plyIndex(), stopNow(firstCall), lastScore, empty);
-      // a book move gets a short search only: a proven result overrides it, and it warms the JIT and fills the table
+      // a book move gets a short search only: a proven result overrides it, and it warms the JIT and fills the table;
+      // a board size without a table never gets a column, so nothing here changes for it
       int bookColumn = book.column(board, tracker.plyIndex(), me, cdOpp);
       if (bookColumn >= 0) {
-        hard = Math.min(hard, BOOK_HARD_NANOS);
+        hard = hard / 100 * BOOK_STOP_PERCENT;
       }
       searcher.setStallLimit(timing.stallLimitNanos);
       searcher.setBlastStop(BLAST_STOP_NANOS);
