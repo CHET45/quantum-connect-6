@@ -1,13 +1,13 @@
 package ch.qc.bot;
 
 /**
- * The bot's only clock. Uploaded bots may not touch java.lang.System, so time comes from java.util.Date
- * (millisecond resolution), scaled to nanoseconds so the search budgets keep their units.
+ * The bot's only clock. Since 2026-11-04 the organisers allow System.nanoTime, so time is read from it: nanosecond
+ * resolution and no allocation per poll. This is the only class that may touch java.lang.System.
  */
 public final class Clock {
   private Clock() {}
 
   public static long nanos() {
-    return new java.util.Date().getTime() * 1_000_000L;
+    return System.nanoTime();
   }
 }

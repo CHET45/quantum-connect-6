@@ -11,6 +11,7 @@ import java.lang.classfile.MethodModel;
 import java.lang.classfile.Opcode;
 import java.lang.classfile.constantpool.ClassEntry;
 import java.lang.classfile.constantpool.PoolEntry;
+import java.lang.classfile.constantpool.MemberRefEntry;
 import java.lang.classfile.constantpool.Utf8Entry;
 import java.lang.classfile.instruction.ExceptionCatch;
 import java.nio.file.Files;
@@ -32,6 +33,8 @@ class UploadRulesTest {
       "java/lang/Object", "java/lang/Math", "java/lang/Integer", "java/lang/Long", "java/lang/Short",
       "java/lang/String", "java/lang/StringBuilder", "java/util/Arrays", "java/util/Random",
       "java/util/SplittableRandom", "java/util/Date", "java/util/List");
+  /** The one class allowed to call System.nanoTime (organisers, 2026-11-04); no other System member is allowed. */
+  private static final String CLOCK = "ch/qc/bot/Clock";
   private static final List<String> FORBIDDEN_TEXT = List.of("java/io", "java/nio", "java/net", "java/lang/reflect",
       "java/lang/invoke", "java/lang/runtime", "java/lang/System", "java/lang/Runtime", "java/lang/Thread",
       "java/lang/Class", "java/util/zip", "java/util/concurrent", "Exception", "Throwable", "java/lang/Error");
@@ -53,12 +56,15 @@ class UploadRulesTest {
         if (e instanceof ClassEntry c) {
           String n = c.asInternalName().replaceAll("^\\[+L?|;$", "");
           if ((n.startsWith("java/") || n.startsWith("javax/") || n.startsWith("jdk/") || n.startsWith("sun/"))
-              && !ALLOWED_JDK.contains(n)) {
+              && !ALLOWED_JDK.contains(n) && !(CLOCK.equals(name) && "java/lang/System".equals(n))) {
             problems.add(name + " references " + n);
           }
+        } else if (e instanceof MemberRefEntry r && "java/lang/System".equals(r.owner().asInternalName())
+            && !"nanoTime".equals(r.nameAndType().name().stringValue())) {
+          problems.add(name + " uses System." + r.nameAndType().name().stringValue() + ", only nanoTime is allowed");
         } else if (e instanceof Utf8Entry u) {
           for (String f : FORBIDDEN_TEXT) {
-            if (u.stringValue().contains(f)) {
+            if (u.stringValue().contains(f) && !(CLOCK.equals(name) && "java/lang/System".equals(f))) {
               problems.add(name + " constant mentions " + f + ": " + abbreviate(u.stringValue()));
             }
           }
