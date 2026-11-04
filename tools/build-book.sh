@@ -11,8 +11,8 @@
 # OUT      book file. weights/book.qcb is what `gradlew jar` embeds; OUT.txt is a readable listing.
 #
 # It compiles first, then runs without Gradle. The JVM takes 64 MB of table per thread plus the evaluation.
-# Positions already analysed with the same weights and search code are reused from OUT's book-cache directory,
-# so a run that is cut short can simply be started again; add --fresh to ignore them.
+# Positions already analysed with the same weights and search code are reused from build/book-cache, so a run that
+# is cut short can simply be started again; add --fresh to ignore them.
 set -e
 if [ $# -lt 4 ]; then
   sed -n 2,15p "$0"

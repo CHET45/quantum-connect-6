@@ -57,8 +57,8 @@ import java.util.zip.CRC32;
  * --deep-ms N       long search per candidate, converted to a node count at the start (default 700)
  * --scan-ms N       short search per legal drop (default 30)
  * --k N             candidates searched long where we move (default 2)
- * --cache DIR       per-position analysis cache, reused only for the same weights and search classes (default: next to
- *                   FILE); --fresh ignores what is there
+ * --cache DIR       per-position analysis cache, reused only for the same weights and search classes (default
+ *                   build/book-cache); --fresh ignores what is there
  * </pre>
  */
 public final class BookBuilder {
@@ -268,7 +268,7 @@ public final class BookBuilder {
       }
     }
     if (cacheDir == null) {
-      cacheDir = out.toAbsolutePath().getParent().resolve("book-cache");
+      cacheDir = Path.of("build", "book-cache");
     }
     Files.createDirectories(cacheDir);
     int[][] sizeList = MatchMain.parseSizes(sizes);
