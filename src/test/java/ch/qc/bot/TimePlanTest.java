@@ -81,7 +81,7 @@ class TimePlanTest {
 
   @Test
   void secondCallSearchesThePositionAfterOurMove() {
-    QcBot bot = new QcBot("s=20,f=20,p=15,pf=0");
+    QcBot bot = new QcBot("s=20,p=15,pf=0");
     Algorithm other = new RandomBot();
     QuantumField f = FieldFactory.create(15, 11, bot, other);
     FieldFactory.play(f, bot.accelerateQuark(f), bot.useSpecialMove(f));
@@ -98,7 +98,7 @@ class TimePlanTest {
 
   @Test
   void secondCallSearchesAfterAFirstCallThatUsedItsWholeStop() {
-    QcBot bot = new QcBot("s=" + QcBot.SAFE_FINISH_NANOS / MS + "@1/" + (QcBot.SAFE_FINISH_NANOS / MS + 5) + ",p=5,pf=0");
+    QcBot bot = new QcBot("s=" + (QcBot.SAFE_FINISH_NANOS / MS + 5) + ",p=5,pf=0");
     QuantumField f = FieldFactory.create(15, 11, bot, new RandomBot());
     FieldFactory.play(f, bot.accelerateQuark(f), bot.useSpecialMove(f));
     FieldFactory.play(f, 5, false);
@@ -112,7 +112,7 @@ class TimePlanTest {
 
   @Test
   void noSecondCallSearchWhenSwitchedOff() {
-    QcBot bot = new QcBot("s=20,f=20,p=0");
+    QcBot bot = new QcBot("s=20,p=0");
     QuantumField f = FieldFactory.create(15, 11, bot, new RandomBot());
     FieldFactory.play(f, bot.accelerateQuark(f), bot.useSpecialMove(f));
     FieldFactory.play(f, 5, false);
@@ -121,12 +121,12 @@ class TimePlanTest {
     assertNull(bot.lastPonder());
   }
 
-  /** A size without prepared tables: the first call plays without search, the second builds, then search runs. */
+  /** Any size: the first call plays without search, the second builds, then search runs. */
   @Test
-  void unpreparedSizesBuildInTheSecondCall() {
+  void everySizeBuildsInTheSecondCall() {
     for (int[] size : new int[][] {{1, 1}, {1, 12}, {12, 1}, {3, 3}, {5, 5}, {6, 6}, {7, 9}, {10, 10}, {12, 16},
-        {20, 20}, {25, 25}, {40, 40}}) {
-      QcBot bot = new QcBot("s=20,f=20,p=10");
+        {8, 12}, {15, 11}, {15, 22}, {20, 20}, {25, 25}, {40, 40}}) {
+      QcBot bot = new QcBot("s=20,p=10");
       Algorithm other = new RandomBot();
       QuantumField f = FieldFactory.create(size[0], size[1], bot, other);
       long t0 = System.nanoTime();
@@ -134,7 +134,7 @@ class TimePlanTest {
       long took = (System.nanoTime() - t0) / 1_000_000L;
       String ctx = size[0] + "x" + size[1];
       assertTrue(col >= 0 && col < size[1] && !f.isColumnFull(col), ctx + " column " + col);
-      assertNull(bot.lastResult(), ctx + ": the first call must not search on an unprepared size");
+      assertNull(bot.lastResult(), ctx + ": the first call must not search");
       assertTrue(took < 50, ctx + ": first call took " + took + " ms");
       assertFalse(bot.useSpecialMove(f), ctx);
       FieldFactory.play(f, col, false);
@@ -154,7 +154,7 @@ class TimePlanTest {
 
   @Test
   void centreOnTheEmptyBoardWithoutSearch() {
-    QcBot bot = new QcBot("s=20,f=20,c=1");
+    QcBot bot = new QcBot("s=20");
     QuantumField f = FieldFactory.create(15, 11, bot, new RandomBot());
     assertEquals(5, bot.accelerateQuark(f));
     assertNull(bot.lastResult());
@@ -164,7 +164,7 @@ class TimePlanTest {
   @Test
   void warmUpFinishesInItsTimeAndLeavesTheBotWorking() {
     long t0 = System.nanoTime();
-    QcBot bot = new QcBot("s=20,f=20,w=200");
+    QcBot bot = new QcBot("s=20,w=200");
     long took = (System.nanoTime() - t0) / 1_000_000L;
     assertTrue(took < 5_000, "constructor took " + took + " ms");
     QuantumField f = FieldFactory.create(8, 12, bot, new RandomBot());
@@ -189,9 +189,10 @@ class TimePlanTest {
 
   @Test
   void secondCallThatStartsLateNeverAsksForABlast() {
-    assertTrue(QcBot.secondCallInTime(1_000 * MS, 1_089 * MS));
-    assertFalse(QcBot.secondCallInTime(1_000 * MS, 1_090 * MS));
-    assertFalse(QcBot.secondCallInTime(1_000 * MS, 1_100 * MS));
+    long limit = CallLimit.PRIOR_NANOS;
+    assertTrue(QcBot.secondCallInTime(1_000 * MS, 1_089 * MS, limit));
+    assertFalse(QcBot.secondCallInTime(1_000 * MS, 1_090 * MS, limit));
+    assertFalse(QcBot.secondCallInTime(1_000 * MS, 1_100 * MS, limit));
     assertTrue(QcBot.SAFE_FINISH_NANOS < QcBot.SECOND_CALL_LATE_NANOS);
     assertTrue(QcBot.BLAST_STOP_NANOS < QcBot.SAFE_FINISH_NANOS);
   }
@@ -206,7 +207,7 @@ class TimePlanTest {
     int prompt = 0;
     int late = 0;
     for (int game = 0; game < 400 && (prompt < 3 || late < 3); game++) {
-      QcBot bot = new QcBot("s=4,f=4,p=0");
+      QcBot bot = new QcBot("s=4,p=0");
       QuantumField f = FieldFactory.create(8, 12, bot, new RandomBot());
       for (int ply = 0; ply < 70 && FieldFactory.status(f) == ExperimentStatus.INCOMPLETE; ply++) {
         int col = rnd.nextInt(12);
@@ -234,6 +235,66 @@ class TimePlanTest {
       }
     }
     assertTrue(prompt >= 3 && late >= 3, "blasts seen: prompt " + prompt + ", late " + late);
+  }
+
+  @Test
+  void budgetsAtTheLimitOf100MsAreTheirOwnValues() {
+    for (long ms : new long[] {25, 70, 75, 80, 85, 90, 96}) {
+      assertEquals(ms * MS, CallLimit.scaled(ms * MS, 25, CallLimit.PRIOR_NANOS));
+    }
+  }
+
+  @Test
+  void budgetsKeepAnAbsoluteDistanceFromTheLimit() {
+    // 80 ms at 100 is 20 ms from the limit
+    assertEquals(30 * MS, CallLimit.scaled(80 * MS, 25, 50 * MS));
+    assertEquals(180 * MS, CallLimit.scaled(80 * MS, 25, 200 * MS));
+    // short limits: the floor; long limits: the distance grows slowly
+    assertEquals(25 * MS / 4, CallLimit.scaled(80 * MS, 25, 25 * MS));
+    assertEquals(475 * MS, CallLimit.scaled(80 * MS, 25, 500 * MS));
+    assertEquals(950 * MS, CallLimit.scaled(80 * MS, 25, 1000 * MS));
+  }
+
+  @Test
+  void aMeasurementIsRoundedDown() {
+    assertEquals(100 * MS, CallLimit.round(100 * MS));
+    assertEquals(100 * MS, CallLimit.round(125 * MS));
+    assertEquals(25 * MS, CallLimit.round(26 * MS));
+    assertEquals(50 * MS, CallLimit.round(53 * MS));
+    assertEquals(500 * MS, CallLimit.round(530 * MS));
+    assertEquals(149 * MS / 10 * 9, CallLimit.round(149 * MS));
+  }
+
+  /** The engine's timer, a late second call: the field changes while the bot is in its second call. */
+  @Test
+  void theProbeReadsTheLimitFromTheField() throws Exception {
+    QcBot bot = new QcBot("s=20,p=0");
+    QuantumField f = FieldFactory.create(15, 11, bot, new RandomBot());
+    int col = bot.accelerateQuark(f);
+    Thread engine = new Thread(() -> {
+      try {
+        Thread.sleep(50);
+      } catch (InterruptedException e) {
+        return;
+      }
+      FieldFactory.play(f, col, false);
+    });
+    engine.start();
+    assertFalse(bot.useSpecialMove(f));
+    engine.join();
+    assertEquals(50 * MS, bot.callLimitNanos());
+  }
+
+  @Test
+  void noProbeResultMeansThePrior() {
+    QcBot bot = new QcBot("s=20,p=0");
+    QuantumField f = FieldFactory.create(15, 11, bot, new RandomBot());
+    bot.accelerateQuark(f);
+    long t0 = System.nanoTime();
+    assertFalse(bot.useSpecialMove(f));
+    long took = (System.nanoTime() - t0) / 1_000_000L;
+    assertEquals(CallLimit.PRIOR_NANOS, bot.callLimitNanos());
+    assertTrue(took >= 80 && took < 100, "the probe took " + took + " ms");
   }
 
   private static int discs(QuantumField f) {
