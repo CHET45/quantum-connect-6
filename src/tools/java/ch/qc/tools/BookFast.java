@@ -53,11 +53,11 @@ public final class BookFast {
       if (!l.startsWith(size + " ")) {
         continue;
       }
-      String[] p = l.trim().split(" p[4].split("[|]");
+      String[] p = l.trim().split(" ");
       if (p.length < 6) {
         continue;
       }
-      String[] names = p[4].split("[|]");\|");
+      String[] names = p[4].split("[|]");
       for (int side = 1; side <= 2; side++) {
         String name = names[side - 1];
         if (!name.contains(target) || name.contains("beater")) {
@@ -140,7 +140,7 @@ public final class BookFast {
     String weights = "hand";
     String weightsB = null;
     String target = null;
-    Path lines = Path.of("suites/book-lines.txtp[4].split("[|]");
+    Path lines = Path.of("suites/book-lines.txt");
     long nodes = 60_000;
     double jitter = 0.3;
     int pairs = 100;
@@ -168,7 +168,7 @@ public final class BookFast {
     // "none" plays both sides without a book: the baseline against a different opponent
     Book bookA = bookFile.toString().equals("none") ? null : Book.fromBytes(Files.readAllBytes(bookFile));
     Book bookB = bookFileB == null ? null : Book.fromBytes(Files.readAllBytes(bookFileB));
-    String[] rc = size.split("xp[4].split("[|]");
+    String[] rc = size.split("x");
     Geometry g = new Geometry(Integer.parseInt(rc[0]), Integer.parseInt(rc[1]));
     Evaluator eval = Evaluators.factory(weights).apply(g);
     Evaluator evalB = weightsB == null ? eval : Evaluators.factory(weightsB).apply(g);
