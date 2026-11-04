@@ -34,6 +34,8 @@ def main():
                 results[p[1]]["seconds"] += float(p[8]) if len(p) > 8 else 0
                 results[p[1]]["crash"] += int(p[9]) if len(p) > 9 else 0
                 results[p[1]]["crashA"] += int(p[12]) if len(p) > 12 else 0
+                results[p[1]]["blastA"] += int(p[13]) if len(p) > 13 else 0
+                results[p[1]]["blastB"] += int(p[14]) if len(p) > 14 else 0
                 if len(p) > 11:
                     limits[p[1]][(p[10], p[11])] += 1
                 continue
@@ -81,7 +83,7 @@ def main():
         n = c["A"] + c["B"] + c["-"]
         score = (c["A"] + 0.5 * c["-"]) / max(1, n)
         print(f"games {label}: {n}, A won {c['A']}, B won {c['B']}, drawn {c['-']} (past 30 s: {c['time']}), A scores "
-              f"{100 * score:.1f}%, mean game {c['seconds'] / max(1, n):.1f} s, engine crash path {c['crash']} (A {c['crashA']})")
+              f"{100 * score:.1f}%, mean game {c['seconds'] / max(1, n):.1f} s, engine crash path {c['crash']} (A {c['crashA']}), blasts A {c['blastA']} B {c['blastB']}")
         if limits[label]:
             print("  limit believed by (A, B): " + ", ".join(f"{k}: {v}" for k, v in limits[label].most_common(6)))
     for label, c in sorted(ticks.items()):

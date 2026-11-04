@@ -44,6 +44,8 @@ public final class QcBot implements Algorithm {
   static final int MAX_SEARCH_COLS = 255;
   /** The stall sensor never takes the first-call stop below this share of the limit. */
   static final int MIN_STOP_PERCENT = 25;
+  /** Before the limit is known no search runs with this many discs or fewer. */
+  private static final int NO_SEARCH_DISCS = 3;
   /** A search before the limit is known: only harness games with scripted openings get there. */
   static final long UNPROBED_STOP_NANOS = 20_000_000L;
   /** The probe of the first turn ends here: on a limit of 100 ms a late thread start cannot turn this into a timeout. */
@@ -331,7 +333,8 @@ public final class QcBot implements Algorithm {
     if (s.rows < 1 || s.cols < 1 || s.rows * s.cols > MAX_MODEL_CELLS) {
       return Tactics.NONE;
     }
-    if (s.discs == 0 || (s.discs == 1 && !limit.known())) {
+    // with so few discs nothing can be lost by not searching, and a short limit may have cut the probe off once
+    if (s.discs == 0 || (s.discs <= NO_SEARCH_DISCS && !limit.known())) {
       return centreOrder(s.cols, 0);
     }
     if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {

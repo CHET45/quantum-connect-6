@@ -208,6 +208,8 @@ public final class ServerSim {
         boolean onTime = false;
         int crashes = 0;
         int crashesA = 0;
+        int blastsA = 0;
+        int blastsB = 0;
         while (ToolsFields.status(field) == ExperimentStatus.INCOMPLETE && iter < maxPlies) {
           if (System.nanoTime() - gameStart > clockSeconds * 1_000_000_000L) {
             onTime = true;
@@ -282,15 +284,22 @@ public final class ServerSim {
           boolean honoured = sp && counter[toMove] >= 10 && col >= 0;
           ToolsFields.play(field, col, honoured);
           counter[toMove] = honoured ? 1 : counter[toMove] + 1;
+          if (honoured) {
+            if ((toMove == 1) == aFirst) {
+              blastsA++;
+            } else {
+              blastsB++;
+            }
+          }
           toMove = 3 - toMove;
           iter++;
         }
         ExperimentStatus st = ToolsFields.status(field);
         // after a win the engine leaves the winner's turn passed: the side now to move lost
         String winner = st == ExperimentStatus.COLLAPSED && !onTime ? ((toMove == 1) == aFirst ? "B" : "A") : "-";
-        w.printf(Locale.ROOT, "game,%s,%dx%d,%d,%s,%s,%d,%s,%.1f,%d,%d,%d,%d%n", label, rows, cols, g, aFirst ? "A" : "B", winner, iter,
+        w.printf(Locale.ROOT, "game,%s,%dx%d,%d,%s,%s,%d,%s,%.1f,%d,%d,%d,%d,%d,%d%n", label, rows, cols, g, aFirst ? "A" : "B", winner, iter,
             onTime ? "TIME" : st.toString(), (System.nanoTime() - gameStart) / 1e9, crashes,
-            limitOf(aFirst ? first : second), limitOf(aFirst ? second : first), crashesA);
+            limitOf(aFirst ? first : second), limitOf(aFirst ? second : first), crashesA, blastsA, blastsB);
         w.flush();
       }
       synchronized (lateness) {

@@ -180,7 +180,7 @@ public final class FastMatch {
             int aColour = aFirst ? 1 : 2;
             int score2 = o.winner() == 0 ? 1 : o.winner() == aColour ? 2 : 0;
             r[game] = new MatchMain.Result(pair, game, id, g.rows, g.cols, aFirst, score2, o.reason(), o.plies(),
-                0, 0, 0, 0, 0, 0);
+                0, 0, 0, 0, 0, 0, 0, 0);
           }
           return r;
         });
