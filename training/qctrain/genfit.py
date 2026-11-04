@@ -3,10 +3,10 @@
 python -m qctrain.genfit NAME [--warm MODEL] [--k-std 1.8] [fit_generic options...]
 
 It walks gen*/, hand0/, sized-*/ and the older hand-labelled directories, makes one set per (board size, label source) and
-runs fit_generic through the GPU lock. Hold-out sizes come from current.json and are never used. A set's share of the
-batches: the size's share (seen sizes 2, all others 1, less for a size with few records) split between its sources, the
-newest generation getting twice the weight of the older ones together. Nothing here feeds the size into the blob: K and
-the per-set output scale exist only during the fit.
+runs fit_generic through the fit lock. Hold-out sizes come from current.json and are never used. A set's share of the
+batches: the size's share (seen sizes 2, all others 1, less for a size with few records) split between its sources by
+record count, a record of the newest generation counting 2, of an older one 1, a hand-labelled one 0.3. Nothing here feeds
+the size into the blob: K and the per-set output scale exist only during the fit.
 """
 import argparse
 import glob
@@ -98,16 +98,10 @@ def main():
         n = sum(counts.values())
         total += n
         share = (2.0 if size in SEEN else 1.0) * min(1.0, math.sqrt(n / 60000))
-        # the newest label source gets 2/3 of the size's share; the rest split by record count
         newest = max((k for k in sources if isinstance(k, int)), default=None)
-        if newest is None:
-            newest = max(sources, key=lambda k: counts[k])
-        older = {k: c for k, c in counts.items() if k != newest}
+        weight = {k: c * (0.3 if k == "hand" else 2.0 if k == newest else 1.0) for k, c in counts.items()}
         for source, dirs in sources.items():
-            if source == newest:
-                part = share * (2 / 3 if older else 1.0)
-            else:
-                part = share * (1 / 3) * counts[source] / max(1, sum(older.values()))
+            part = share * weight[source] / sum(weight.values())
             k = ""
             # the older label sets keep the scale they were shown to work with; all others use --k-std
             if source == "hand":
