@@ -32,6 +32,8 @@ import java.util.jar.JarFile;
  * --out FILE --label L         CSV per call, appended
  * --affinity HEXMASK           restrict this process to these logical CPUs at the start
  * --load N                     busy threads (other work in the container)
+ * --cfs PYTHON,SCRIPT,QUOTA,CPU imitate a container CPU limit of QUOTA ms per 100 ms (src/tools/python/cfsthrottle.py),
+ *                              the throttler spinning on logical CPU number CPU
  * --reuse                      keep one class loader per jar: hot code, for comparison
  * --maxPlies N                 stop a game after N plies (default 1000)
  * </pre>
@@ -111,6 +113,7 @@ public final class ServerSim {
     int load = 0;
     boolean reuse = false;
     int maxPlies = 1000;
+    String cfs = null;
     for (int i = 0; i < a.length; i++) {
       switch (a[i]) {
         case "--a" -> sa = a[++i];
@@ -124,6 +127,7 @@ public final class ServerSim {
         case "--load" -> load = Integer.parseInt(a[++i]);
         case "--reuse" -> reuse = true;
         case "--maxPlies" -> maxPlies = Integer.parseInt(a[++i]);
+        case "--cfs" -> cfs = a[++i];
         default -> throw new IllegalArgumentException("unknown argument " + a[i]);
       }
     }
@@ -132,6 +136,11 @@ public final class ServerSim {
       long pid = ProcessHandle.current().pid();
       new ProcessBuilder("powershell", "-NoProfile", "-Command",
           "(Get-Process -Id " + pid + ").ProcessorAffinity=" + mask).inheritIO().start().waitFor();
+    }
+    if (cfs != null) {
+      String[] c = cfs.split(",");
+      new ProcessBuilder(c[0], "-I", c[1], Long.toString(ProcessHandle.current().pid()), c[2], "100", c[3])
+          .redirectErrorStream(true).redirectOutput(ProcessBuilder.Redirect.appendTo(new java.io.File(out + ".cfs"))).start();
     }
     for (int i = 0; i < load; i++) {
       Thread t = new Thread(() -> {
