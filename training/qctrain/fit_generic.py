@@ -23,7 +23,51 @@ import torch
 from . import data, export, fit, model as model_mod, spec as spec_mod
 
 
-def load_set(arg, ks, lam, device):
+def spearman(a, b):
+    """Rank correlation of two 1-d numpy arrays (no tie correction, the values are nearly all distinct)."""
+    if len(a) < 3:
+        return float("nan")
+    ra = np.argsort(np.argsort(a)).astype(np.float64)
+    rb = np.argsort(np.argsort(b)).astype(np.float64)
+    return float(np.corrcoef(ra, rb)[0, 1])
+
+
+def family_spec(spec, family):
+    """The spec with the window classes of a candidate family (see the Java class GenericSpec for family 0).
+
+    class = group * bands + band, group 0 horizontal, 1 vertical, 2 diagonal, so the first third of the classes stay
+    horizontal. Canonical codes stay those of family 0, which is why the old class is read off the old feat_map.
+    0: band = row of the lowest cell, capped at 5.
+    1: band = family 0 band * 3 + cells to the nearest side wall, capped at 2.
+    2: band = row of the lowest cell up to 4, then 5 or 6 by the parity of that row.
+    3: as 1 with the parity split of 2.
+    """
+    if family == 0:
+        return spec
+    codes = spec.codes
+    old = spec.feat_map.reshape(spec.windows, codes)
+    old_class = old[:, 0] // codes
+    canon = old - old_class[:, None] * codes
+    cols = spec.win_cells // spec.rows
+    rows = spec.win_cells % spec.rows
+    group = old_class // 6
+    lowest = rows.min(1)
+    edge = np.minimum(np.minimum(cols.min(1), spec.cols - 1 - cols.max(1)), 2)
+    capped = np.minimum(lowest, 5)
+    parity = np.where(lowest < 5, lowest, 5 + (lowest & 1))
+    if family == 1:
+        band, bands = capped * 3 + edge, 18
+    elif family == 2:
+        band, bands = parity, 7
+    elif family == 3:
+        band, bands = parity * 3 + edge, 21
+    else:
+        raise SystemExit(f"unknown family {family}")
+    classes = group * bands + band
+    return dataclasses.replace(spec, classes=3 * bands, feat_map=(classes[:, None] * codes + canon).reshape(-1))
+
+
+def load_set(arg, ks, lam, device, cap=0):
     spec_path, dirs = arg.split(":", 1)
     with open(spec_path, encoding="utf-8") as f:
         raw = json.load(f)
@@ -32,6 +76,13 @@ def load_set(arg, ks, lam, device):
     spec = spec_mod.load(spec_path)
     generic_hash = int(raw["genericHash"], 16)
     recs, keys, meta = data.read_dirs(dirs.split(","))
+    if cap and len(recs) > cap:
+        # whole games, so the held-out split stays clean
+        uniq = np.unique(keys)
+        hashed = np.array([zlib.crc32(int(k).to_bytes(8, "little") + b"cap") for k in uniq], dtype=np.int64)
+        keep = uniq[hashed % 1000 < 1000 * cap / len(recs)]
+        m = np.isin(keys, keep)
+        recs, keys = recs[m], keys[m]
     if meta["spec_hash"] != spec.spec_hash or (meta["rows"], meta["cols"]) != (spec.rows, spec.cols):
         raise SystemExit(f"{dirs}: data and spec {spec_path} disagree")
     games = np.unique(keys)
@@ -47,7 +98,19 @@ def load_set(arg, ks, lam, device):
     train = fit.to_device(recs[~is_val], spec, y[~is_val], device)
     val = fit.to_device(recs[is_val], spec, y[is_val], device)
     print(f"{size}: {len(recs)} records, {train['y'].shape[0]} train, {val['y'].shape[0]} validation", flush=True)
-    return {"size": size, "spec": spec, "hash": generic_hash, "k": k, "train": train, "val": val, "dirs": dirs}
+    return {"size": size, "spec": spec, "hash": generic_hash, "k": k, "train": train, "val": val, "dirs": dirs,
+            "val_value": recs["value"][is_val].astype(np.float64), "val_stage": recs["stage"][is_val].copy(),
+            "val_proven": recs["proven"][is_val].copy()}
+
+
+def evaluate_scaled(s, tau):
+    """Validation BCE and logits with the size's output scale."""
+    v, q = fit.evaluate(s["model"], s["val"])
+    if tau.item() == 0.0:
+        return v, q
+    q = q * tau.exp()
+    bce = torch.nn.functional.binary_cross_entropy_with_logits(q, s["val"]["y"]).item()
+    return bce, q
 
 
 def main():
@@ -66,11 +129,17 @@ def main():
     ap.add_argument("--warm", default=None, help="theta.pt of an earlier generic model")
     ap.add_argument("--no-stage", action="store_true", help="one window table for all game stages")
     ap.add_argument("--scale", type=int, default=1024, help="units per logit in the blob, 256 or 1024")
+    ap.add_argument("--balance", action="store_true", help="every size gets the same number of batches per epoch")
+    ap.add_argument("--temp", action="store_true", help="learn one output scale per size; the tables stay unscaled")
+    ap.add_argument("--cap", type=int, default=0, help="at most about this many records per size (whole games)")
+    ap.add_argument("--mask-empty", action="store_true", help="the all-empty window code contributes exactly zero")
+    ap.add_argument("--sym", type=float, default=None, help="colour-even share of the window tables, 0 = antisymmetric")
+    ap.add_argument("--family", type=int, default=0, help="window class family, see family_spec")
     args = ap.parse_args()
     torch.manual_seed(1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ks = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in args.k}
-    sets = [load_set(a, ks, args.lam, device) for a in args.set]
+    sets = [load_set(a, ks, args.lam, device, args.cap) for a in args.set]
     if len({s["hash"] for s in sets}) != 1:
         raise SystemExit("the specs belong to different generic families")
     for s in sets:
@@ -78,7 +147,8 @@ def main():
             s["spec"] = dataclasses.replace(s["spec"], stages=1)
             for part in ("train", "val"):
                 s[part]["stage"].zero_()
-        s["model"] = model_mod.Model(s["spec"], device)
+        s["spec"] = family_spec(s["spec"], args.family)
+        s["model"] = model_mod.Model(s["spec"], device, args.sym)
     sizes = {s["model"].layout.size for s in sets}
     if len(sizes) != 1:
         raise SystemExit(f"layouts differ: {sizes}")
@@ -90,12 +160,28 @@ def main():
     lay = sets[0]["model"].layout
     base_slice = slice(lay.base, lay.stage)
     delta_slice = slice(lay.stage, lay.t1)
-    opt = torch.optim.Adam([theta], lr=args.lr)
+    empty_mask = None
+    if args.mask_empty:
+        codes = sets[0]["spec"].codes
+        empty_mask = torch.zeros(lay.size, dtype=torch.bool, device=device)
+        for block, count in ((lay.base, 1), (lay.stage, sets[0]["spec"].stages), (lay.cd, sets[0]["spec"].cd_contexts)):
+            empty_mask[torch.arange(block, block + count * lay.p, codes, device=device)] = True
+        theta.data[empty_mask] = 0.0
+    tau = torch.nn.Parameter(torch.zeros(len(sets), device=device))
+    params = [{"params": [theta]}]
+    if args.temp:
+        params.append({"params": [tau]})
+    opt = torch.optim.Adam(params, lr=args.lr)
     n_total = sum(s["train"]["y"].shape[0] for s in sets)
-    steps_per_epoch = sum(math.ceil(s["train"]["y"].shape[0] / args.batch) for s in sets)
+    batches = [math.ceil(s["train"]["y"].shape[0] / args.batch) for s in sets]
+    steps_per_epoch = sum(batches)
+    if args.balance:
+        per_size = steps_per_epoch // len(sets)
+        batches = [per_size] * len(sets)
+        steps_per_epoch = per_size * len(sets)
     gamma = (args.lr_end / args.lr) ** (1.0 / (args.epochs * steps_per_epoch))
     sched = torch.optim.lr_scheduler.ExponentialLR(opt, gamma)
-    best = (float("inf"), None, 0)
+    best = (float("inf"), None, 0, None)
     history = []
     t0 = time.time()
     rng = np.random.default_rng(1)
@@ -103,19 +189,22 @@ def main():
         plan = []
         for i, s in enumerate(sets):
             n = s["train"]["y"].shape[0]
-            perm = torch.randperm(n, device=device)
-            plan += [(i, perm[j:j + args.batch]) for j in range(0, n, args.batch)]
+            need = batches[i] * args.batch
+            perm = torch.cat([torch.randperm(n, device=device) for _ in range(max(1, math.ceil(need / n)))])[:need]
+            plan += [(i, perm[j:j + args.batch]) for j in range(0, need, args.batch)]
         order = rng.permutation(len(plan))
         total = 0.0
         for o in order:
             i, sel = plan[o]
             s = sets[i]
-            q = fit.forward(s["model"], s["train"], sel)
+            q = fit.forward(s["model"], s["train"], sel) * tau[i].exp()
             loss = torch.nn.functional.binary_cross_entropy_with_logits(q, s["train"]["y"][sel])
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
             with torch.no_grad():
+                if empty_mask is not None:
+                    theta[empty_mask] = 0.0
                 lr = opt.param_groups[0]["lr"]
                 theta[base_slice] *= 1 - lr * args.wd_base
                 theta[delta_slice] *= 1 - lr * args.wd_delta
@@ -124,25 +213,32 @@ def main():
             total += loss.item() * sel.shape[0]
         vals = {}
         weighted = 0.0
-        for s in sets:
-            v, _ = fit.evaluate(s["model"], s["val"])
+        for i, s in enumerate(sets):
+            v, _ = evaluate_scaled(s, tau[i])
             vals[s["size"]] = v
-            weighted += v * s["val"]["y"].shape[0]
-        weighted /= sum(s["val"]["y"].shape[0] for s in sets)
+            weighted += v * (1.0 if args.balance else s["val"]["y"].shape[0])
+        weighted /= len(sets) if args.balance else sum(s["val"]["y"].shape[0] for s in sets)
         history.append({"epoch": epoch, "train": total / n_total, "val": vals, "val_mean": weighted})
         print(f"epoch {epoch:2d}: train {total / n_total:.5f} val {weighted:.5f} "
               + " ".join(f"{k} {v:.5f}" for k, v in vals.items()) + f" {time.time() - t0:.0f}s", flush=True)
         if weighted < best[0] - 1e-6:
-            best = (weighted, theta.detach().clone(), epoch)
+            best = (weighted, theta.detach().clone(), epoch, tau.detach().clone())
         elif epoch - best[2] >= args.patience:
             break
     theta.data.copy_(best[1])
+    tau.data.copy_(best[3])
     report = {"lam": args.lam, "best_epoch": best[2], "val_bce": best[0], "stages": sets[0]["spec"].stages,
               "history": history, "generic_hash": hex(sets[0]["hash"]), "sets": []}
-    for s in sets:
-        v, qv = fit.evaluate(s["model"], s["val"])
-        entry = {"size": s["size"], "data": s["dirs"], "k": s["k"], "val_bce": v,
+    for i, s in enumerate(sets):
+        v, qv = evaluate_scaled(s, tau[i])
+        entry = {"size": s["size"], "data": s["dirs"], "k": s["k"], "val_bce": v, "temp": math.exp(tau[i].item()),
                  "constant_bce": fit.bce_of_constant(s["val"]["y"]), "records": int(s["train"]["y"].shape[0])}
+        qn = qv.detach().cpu().numpy()
+        unproven = s["val_proven"] == 0
+        entry["spearman_value"] = spearman(qn[unproven], s["val_value"][unproven])
+        entry["spearman_by_stage"] = {int(st): spearman(qn[unproven & (s["val_stage"] == st)],
+                                                       s["val_value"][unproven & (s["val_stage"] == st)])
+                                      for st in np.unique(s["val_stage"])}
         pv = s["val"]["proven"] != 0
         if pv.any():
             entry["proven_sign_accuracy"] = ((qv[pv] > 0) == (s["val"]["proven"][pv] > 0)).float().mean().item()

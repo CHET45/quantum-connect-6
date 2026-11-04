@@ -19,7 +19,7 @@ import java.util.List;
  * same CRC-32 split), so a learned table is not judged on the positions it was fitted to.
  *
  * <pre>
- * EvalCheck SHARD_DIR [--weights eval.qcw ...] [--count N] [--val]
+ * EvalCheck SHARD_DIR [--weights eval.qcw ...] [--count N] [--val] [--rows R --cols C]
  * </pre>
  */
 public final class EvalCheck {
@@ -28,15 +28,19 @@ public final class EvalCheck {
     List<String> weights = new ArrayList<>();
     int count = 200_000;
     boolean valOnly = false;
+    int rows = 8;
+    int cols = 12;
     for (int i = 1; i < args.length; i++) {
       switch (args[i]) {
         case "--weights" -> weights.add(args[++i]);
         case "--count" -> count = Integer.parseInt(args[++i]);
         case "--val" -> valOnly = true;
+        case "--rows" -> rows = Integer.parseInt(args[++i]);
+        case "--cols" -> cols = Integer.parseInt(args[++i]);
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
-    Geometry g = new Geometry(8, 12);
+    Geometry g = new Geometry(rows, cols);
     int cellBytes = (g.cells + 3) / 4;
     int size = Qcp.recordSize(g.cells);
     List<Evaluator> evals = new ArrayList<>();
@@ -47,7 +51,7 @@ public final class EvalCheck {
       evals.add(WeightFiles.load(Path.of(w), g));
       names.add(w);
     }
-    List<double[]> cols = new ArrayList<>(); // per record: value, z, eval_0, eval_1, ...
+    List<double[]> table = new ArrayList<>(); // per record: value, z, eval_0, eval_1, ...
     try (var files = Files.list(dir)) {
       List<Path> shards = files.filter(p -> p.getFileName().toString().matches("shard-.*[.]qcp")).sorted().toList();
       for (int si = 0; si < shards.size(); si++) {
@@ -91,18 +95,18 @@ public final class EvalCheck {
           for (int e = 0; e < evals.size(); e++) {
             row[2 + e] = evals.get(e).evaluate(b, stm, cdM, cdO);
           }
-          cols.add(row);
+          table.add(row);
         }
       }
     }
-    int n = cols.size();
-    double[] v = column(cols, 0);
-    double[] z = column(cols, 1);
+    int n = table.size();
+    double[] v = column(table, 0);
+    double[] z = column(table, 1);
     System.out.printf("%d unproven records%n", n);
     System.out.printf(java.util.Locale.ROOT, "  %-40s spearman(value) %.4f  AUC(win vs loss) %.4f%n", "search value",
         1.0, auc(v, z));
     for (int e = 0; e < evals.size(); e++) {
-      double[] x = column(cols, 2 + e);
+      double[] x = column(table, 2 + e);
       System.out.printf(java.util.Locale.ROOT, "  %-40s spearman(value) %.4f  AUC(win vs loss) %.4f%n", names.get(e),
           spearman(x, v), auc(x, z));
     }

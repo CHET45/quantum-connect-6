@@ -28,6 +28,11 @@ import java.util.concurrent.Executors;
  * --openings FILE         opening pool (default suites/openings-ROWSxCOLS.txt)
  * --rows R --cols C       board size (default 8x12)
  * --pairs N --sprt E0,E1 --threads N --seed S --out FILE   as in MatchMain
+ * --forfeitA P            A loses each own turn with probability P (what a lost turn costs)
+ * --forfeitTurns N        only A's own turns below N can be lost (default all)
+ * --ponderA N              after each move A searches the position after it for N nodes (the bot's second call)
+ * --verifyA M              on turns with A's blast ready, those N nodes instead compare the drop and the blast in the
+ *                          chosen column: M = 1 may only cancel a blast, M = 2 may also start one
  * </pre>
  */
 public final class FastMatch {
@@ -38,6 +43,60 @@ public final class FastMatch {
     Searcher s = new Searcher(g, eval, new TranspositionTable(18), options, new Vcf.Table(16));
     return (Board b, int me, int cdMe, int cdOpp, int turn) ->
         s.run(b, me, cdMe, cdOpp, turn, ch.qc.bot.Clock.nanos(), Long.MAX_VALUE / 4, nodes).move();
+  }
+
+  /**
+   * A search configuration that also spends a second budget after its move: on the position after it (filling the
+   * table for the next turn), or, with verify set, comparing the drop and the blast in the chosen column.
+   */
+  static FastGame.Engine pondering(Geometry g, Searcher.Options options, Evaluator eval, long nodes, long ponder,
+      int verify) {
+    Searcher s = new Searcher(g, eval, new TranspositionTable(18), options, new Vcf.Table(16));
+    Board after = new Board(g);
+    long far = Long.MAX_VALUE / 4;
+    return (Board b, int me, int cdMe, int cdOpp, int turn) -> {
+      int m = s.run(b, me, cdMe, cdOpp, turn, ch.qc.bot.Clock.nanos(), far, nodes).move();
+      if (m == ch.qc.bot.search.Tactics.NONE) {
+        return m;
+      }
+      int c = ch.qc.bot.search.Tactics.column(m);
+      boolean special = ch.qc.bot.search.Tactics.isSpecial(m);
+      int opp = 3 - me;
+      int next = Math.min(cdMe + 1, 10);
+      if (verify > 0 && cdMe >= 10 && !b.isFull(c) && (special || verify == 2)) {
+        after.copyFrom(b);
+        if (after.make(c, me)) {
+          return c;
+        }
+        int normal = -s.run(after, opp, cdOpp, next, turn + 1, ch.qc.bot.Clock.nanos(), far, ponder / 2).score();
+        after.copyFrom(b);
+        if (after.blast(c)) {
+          return m | ch.qc.bot.search.Tactics.SPECIAL;
+        }
+        int blast = -s.run(after, opp, cdOpp, 1, turn + 1, ch.qc.bot.Clock.nanos(), far, ponder / 2).score();
+        return blast >= normal ? c | ch.qc.bot.search.Tactics.SPECIAL : c;
+      }
+      if (ponder > 0 && !special && !b.isFull(c)) {
+        after.copyFrom(b);
+        if (!after.make(c, me) && !after.topRowFull()) {
+          s.run(after, opp, cdOpp, next, turn + 1, ch.qc.bot.Clock.nanos(), far, ponder);
+        }
+      }
+      return m;
+    };
+  }
+
+  /** The engine, but each own turn below the limit is lost with probability p (move NONE: an invalid column). */
+  static FastGame.Engine forfeiting(FastGame.Engine e, double p, int turns, java.util.SplittableRandom rnd) {
+    if (p <= 0) {
+      return e;
+    }
+    int[] own = new int[1];
+    return (Board b, int me, int cdMe, int cdOpp, int turn) -> {
+      int t = own[0]++;
+      int m = e.move(b, me, cdMe, cdOpp, turn);
+      return t < turns && rnd.nextDouble() < p ? ch.qc.bot.search.Tactics.NONE : m;
+    };
   }
 
   public static void main(String[] args) throws Exception {
@@ -52,6 +111,10 @@ public final class FastMatch {
     int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
     long seed = 1;
     String out = null;
+    double forfeit = 0;
+    int forfeitTurns = Integer.MAX_VALUE;
+    long ponderA = 0;
+    int verifyA = 0;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--a" -> a = args[++i];
@@ -68,6 +131,10 @@ public final class FastMatch {
         case "--threads" -> threads = Integer.parseInt(args[++i]);
         case "--seed" -> seed = Long.parseLong(args[++i]);
         case "--out" -> out = args[++i];
+        case "--forfeitA" -> forfeit = Double.parseDouble(args[++i]);
+        case "--forfeitTurns" -> forfeitTurns = Integer.parseInt(args[++i]);
+        case "--ponderA" -> ponderA = Long.parseLong(args[++i]);
+        case "--verifyA" -> verifyA = Integer.parseInt(args[++i]);
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
@@ -93,6 +160,10 @@ public final class FastMatch {
       CompletionService<MatchMain.Result[]> done = new ExecutorCompletionService<>(ex);
       final long n = nodes;
       final long sd = seed;
+      final double fp = forfeit;
+      final int ft = forfeitTurns;
+      final long pa = ponderA;
+      final int va = verifyA;
       for (int p = 0; p < pairs; p++) {
         int pair = p;
         done.submit(() -> {
@@ -101,7 +172,9 @@ public final class FastMatch {
           MatchMain.Result[] r = new MatchMain.Result[2];
           for (int game = 0; game < 2; game++) {
             boolean aFirst = game == 0;
-            FastGame.Engine ea = engine(g, oa, fa.apply(g), n);
+            FastGame.Engine ea = pa > 0 ? pondering(g, oa, fa.apply(g), n, pa, va)
+                : forfeiting(engine(g, oa, fa.apply(g), n), fp, ft,
+                    new java.util.SplittableRandom(sd * 1_000_003L + 2L * pair + game));
             FastGame.Engine eb = engine(g, ob, fb.apply(g), n);
             FastGame.Outcome o = FastGame.play(g, line, aFirst ? ea : eb, aFirst ? eb : ea, null);
             int aColour = aFirst ? 1 : 2;
