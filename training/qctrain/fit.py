@@ -71,7 +71,7 @@ def forward(m, d, sel):
 
 
 @torch.no_grad()
-def evaluate(m, d, batch=65536):
+def evaluate(m, d, batch=16384):
     n = d["y"].shape[0]
     loss = 0.0
     qs = []
