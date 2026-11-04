@@ -91,6 +91,10 @@ def main():
         if not sources:
             continue
         counts = {k: records(v) for k, v in sources.items()}
+        sources = {k: v for k, v in sources.items() if counts[k] > 0}
+        counts = {k: c for k, c in counts.items() if c > 0}
+        if not sources:
+            continue
         n = sum(counts.values())
         total += n
         share = (2.0 if size in SEEN else 1.0) * min(1.0, math.sqrt(n / 60000))
@@ -116,7 +120,9 @@ def main():
         return 0
     cmd = [sys.executable, "-m", "qctrain.fit_generic"]
     for size, source, dirs, k, part, c in sets:
-        cmd += ["--set", f"spec/generic-{size}.json:{','.join(dirs)}:{k}:{part:.4f}"]
+        # relative paths: a drive letter's colon would split the argument
+        rel = ",".join(os.path.relpath(d, train_dir).replace(os.sep, "/") for d in dirs)
+        cmd += ["--set", f"spec/generic-{size}.json:{rel}:{k}:{part:.4f}"]
     cmd += ["--k-std", str(args.k_std), "--balance", "--temp", "--wd-base", "1", "--wd-delta", "10", "--lr", "1e-3",
             "--lr-end", "1e-5", "--epochs", "20", "--patience", "6", "--out", os.path.join(ROOT, "models", args.name)] + rest
     log = os.path.join(ROOT, "logs", args.name + ".log")
