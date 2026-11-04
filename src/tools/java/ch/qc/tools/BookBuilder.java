@@ -67,12 +67,16 @@ public final class BookBuilder {
    * move, and beating it says a lot; with n games it is damped by n + 2.
    */
   private static final int RECORD_WEIGHT = 256;
+  /** Score units per doubling of the number of times strong bots played a move. */
+  private static final int KNOWN_WEIGHT = 2;
   /** An alternative of ours is followed while within this much of the best. */
   private static final int OUR_MARGIN = 51;
   /** A reply nobody strong played is followed only with rank below this and within this much of the best. */
   private static final int OPP_RANKS = 3;
   private static final int OPP_MARGIN = 128;
   private static final int SCORE_UNIT = 26;
+  private static final int SHIFT_CLIP = 800;
+  private static final int SHIFT_MIN_CASES = 20;
   private static final double COST_CHOSEN = 0.1;
   /** A reply strong bots played: often, or once or twice. */
   private static final double COST_SERVER = 0.1;
@@ -132,10 +136,16 @@ public final class BookBuilder {
       return r == null ? 0 : r[0];
     }
 
+    /** In score units: the record net of ratings, and a little for being known at all, which decides near-equal moves. */
     int bonus(int col) {
       int[] r = byCol.get(col);
+      if (r == null) {
+        return 0;
+      }
       double[] d = surprise.get(col);
-      return r == null || d == null ? 0 : (int) Math.round(RECORD_WEIGHT * d[0] / (r[1] + r[2] + 2));
+      double record = d == null ? 0 : RECORD_WEIGHT * d[0] / (r[1] + r[2] + 2);
+      double known = r[0] <= 0 ? 0 : KNOWN_WEIGHT * Math.log(1 + r[0]) / Math.log(2);
+      return (int) Math.round(record + known);
     }
   }
 
@@ -188,6 +198,12 @@ public final class BookBuilder {
     long deepNodes;
     long scanNodes;
     int k;
+    /**
+     * What one more ply of expansion does on average to a move's score, in the mover's view. A search favours one
+     * side at its horizon, so a backed-up score and a plain search score of a sibling differ by this much for no
+     * reason in the position (up to 75 units on 15x22). It is taken out at every backup.
+     */
+    int levelShift;
     int expanded;
     int cachedUsed;
     PrintWriter cacheOut;
@@ -287,6 +303,9 @@ public final class BookBuilder {
       System.out.printf(Locale.ROOT, "%s: %d analysed (%d from the cache), %d entries, per ply %s%n", name, run.expanded,
           run.cachedUsed, entries(run).size(), Arrays.toString(perPly));
       printMainLines(run);
+      double[] shift = levelShift(run);
+      System.out.printf(Locale.ROOT, "%s: one more ply changes a move's score by %+.1f on average (%d cases)%n", name, shift[0],
+          (int) shift[1]);
       writeBook(out, runs);
     }
     System.out.printf(Locale.ROOT, "done in %.1f min, book %s, %d bytes%n", (System.nanoTime() - start) / 6e10, out,
@@ -438,6 +457,15 @@ public final class BookBuilder {
     long lastWrite = System.nanoTime();
     int rounds = 0;
     try {
+      // everything reachable that the cache holds comes first and is free
+      boolean restored = true;
+      while (restored) {
+        restored = false;
+        for (Node n : frontier(run)) {
+          restored |= restore(run, n);
+        }
+        backup(run);
+      }
       while (System.nanoTime() < deadline) {
         List<Node> frontier = frontier(run);
         if (frontier.isEmpty()) {
@@ -690,7 +718,7 @@ public final class BookBuilder {
     if (n.childKey[i] != 0) {
       Node c = run.nodes.get(n.childKey[i]);
       if (c != null && c.analysed) {
-        return -c.value;
+        return Math.abs(c.value) > MATE_BOUND ? -c.value : -c.value - run.levelShift;
       }
     }
     return n.scores[i];
@@ -706,6 +734,7 @@ public final class BookBuilder {
 
   /** Minimax over the analysed nodes, deepest first, and our choice at each. */
   private static void backup(SizeRun run) {
+    run.levelShift = (int) Math.round(levelShift(run)[0]);
     List<Node> all = new ArrayList<>();
     for (Node n : run.nodes.values()) {
       if (n.analysed) {
@@ -833,6 +862,35 @@ public final class BookBuilder {
       }
     }
     return list;
+  }
+
+  /** {mean change of a long-searched move's score from a search of its child to the best move of the child, cases}. */
+  private static double[] levelShift(SizeRun run) {
+    double sum = 0;
+    int cases = 0;
+    for (Node n : run.nodes.values()) {
+      if (!n.analysed) {
+        continue;
+      }
+      for (int i = 0; i < n.cols.length; i++) {
+        if (n.childKey[i] == 0 || !n.deep[i] || Math.abs(n.scores[i]) > SHIFT_CLIP) {
+          continue;
+        }
+        Node c = run.nodes.get(n.childKey[i]);
+        if (c == null || !c.analysed) {
+          continue;
+        }
+        int r = -Searcher.MATE;
+        for (int j = 0; j < c.cols.length; j++) {
+          r = Math.max(r, c.scores[j]);
+        }
+        if (Math.abs(r) <= SHIFT_CLIP) {
+          sum += -r - n.scores[i];
+          cases++;
+        }
+      }
+    }
+    return new double[] {cases < SHIFT_MIN_CASES ? 0 : sum / cases, cases};
   }
 
   private static void printMainLines(SizeRun run) {
