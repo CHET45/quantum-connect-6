@@ -28,8 +28,6 @@ public final class Searcher {
   private static final int EBF = 3;
   /** blastWinMinDepth that keeps the winning-blast scan at every node. */
   private static final int ALL_DEPTHS = -1000;
-  /** The clock is read every 64 nodes at most: each reading allocates (see {@link ch.qc.bot.Clock}). */
-  private static final int CLOCK_MASK = 63;
 
   /** Search outcome; vcfNodes and vcfProofs count the threat-search work of this call. */
   public static final class Result {
@@ -808,7 +806,7 @@ public final class Searcher {
 
   /** Checks the limits; returns true (and sets the stop flag) once the search must end. */
   private boolean poll(Ctx x) {
-    if ((x.nodes & CLOCK_MASK) == 0) {
+    if ((x.nodes & g.clockMask) == 0) {
       long now = Clock.nanos();
       long gap = now - x.lastPoll;
       x.lastPoll = now;
