@@ -11,7 +11,9 @@ public final class Board {
   public static final byte SECOND = 2;
   /** Keys of remembered window sums are below this; see {@link #rememberSum}. */
   public static final int SUM_KEYS = 32;
-  private static final int SUM_SLOTS = 16 * SUM_KEYS;
+  private static final int SUM_SLOTS = 8 * SUM_KEYS;
+  /** The drop stack holds at most this many drops, so a board's memory does not grow with its size; see {@link #make}. */
+  private static final int MAX_LEVELS = 128;
 
   public final Geometry g;
   private final Tables t;
@@ -45,12 +47,14 @@ public final class Board {
   /**
    * The drop stack: level 0 is the position as last set (load, copy, blast), each drop made since is one level.
    * levelCell[l]: the dropped cell; levelLog[l]: where logCode holds the old code of each window through that cell;
-   * levelTag[l]: unique for this drop, so remembered sums need no clearing when the level is taken back.
+   * levelTag[l]: unique for this drop, so remembered sums need no clearing when the level is taken back. A search
+   * never gets near MAX_LEVELS; a long game on one board restarts the stack from the position there.
    */
   private final int[] levelCell;
   private final int[] levelLog;
   private final long[] levelTag;
   private final short[] logCode;
+  private final int maxLevel;
   private int level;
   private long lastTag;
   /** Window sums of one evaluation, per (level, key); allocated when an evaluation first asks. */
@@ -76,10 +80,11 @@ public final class Board {
     thr = new byte[3][g.cells];
     colThreats = new int[g.cols];
     threatCols = new long[(g.cols + 63) >> 6];
-    levelCell = new int[g.cells + 2];
-    levelLog = new int[g.cells + 2];
-    levelTag = new long[g.cells + 2];
-    logCode = new short[g.cellWin.length];
+    maxLevel = Math.min(g.cells, MAX_LEVELS);
+    levelCell = new int[maxLevel + 2];
+    levelLog = new int[maxLevel + 2];
+    levelTag = new long[maxLevel + 2];
+    logCode = new short[Math.min(g.cellWin.length, (maxLevel + 1) * 4 * g.k)];
     resetLevels();
   }
 
@@ -214,6 +219,9 @@ public final class Board {
     int[] wins = cellWin;
     int[] pow = cellPow;
     int end = cellStart[i + 1];
+    if (level == maxLevel) {
+      resetLevels();
+    }
     int l = ++level;
     levelCell[l] = i;
     levelTag[l] = ++lastTag;

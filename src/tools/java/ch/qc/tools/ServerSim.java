@@ -35,6 +35,8 @@ import java.util.jar.JarFile;
  * --cfs PYTHON,SCRIPT,QUOTA,CPU imitate a container CPU limit of QUOTA ms per 100 ms (src/tools/python/cfsthrottle.py),
  *                              the throttler spinning on logical CPU number CPU
  * --reuse                      keep one class loader per jar: hot code, for comparison
+ * --limit MS                   the engine's call limit (default 100)
+ * --clock S                    the shared game clock, past it a game is a draw (default 30)
  * --maxPlies N                 stop a game after N plies (default 1000)
  * </pre>
  * Run with -XX:ActiveProcessorCount=K and a heap the server plausibly has. Tick lateness of the monitor is written
@@ -114,6 +116,8 @@ public final class ServerSim {
     boolean reuse = false;
     int maxPlies = 1000;
     String cfs = null;
+    long limit = 100;
+    long clockSeconds = 30;
     for (int i = 0; i < a.length; i++) {
       switch (a[i]) {
         case "--a" -> sa = a[++i];
@@ -128,6 +132,8 @@ public final class ServerSim {
         case "--reuse" -> reuse = true;
         case "--maxPlies" -> maxPlies = Integer.parseInt(a[++i]);
         case "--cfs" -> cfs = a[++i];
+        case "--limit" -> limit = Long.parseLong(a[++i]);
+        case "--clock" -> clockSeconds = Long.parseLong(a[++i]);
         default -> throw new IllegalArgumentException("unknown argument " + a[i]);
       }
     }
@@ -201,8 +207,11 @@ public final class ServerSim {
         long gameStart = System.nanoTime();
         boolean onTime = false;
         int crashes = 0;
+        int crashesA = 0;
+        int blastsA = 0;
+        int blastsB = 0;
         while (ToolsFields.status(field) == ExperimentStatus.INCOMPLETE && iter < maxPlies) {
-          if (System.nanoTime() - gameStart > 30_000_000_000L) {
+          if (System.nanoTime() - gameStart > clockSeconds * 1_000_000_000L) {
             onTime = true;
             break;
           }
@@ -217,7 +226,7 @@ public final class ServerSim {
               int c = bot.accelerateQuark(field);
               in.set(System.nanoTime() - s);
               return c;
-            }, 100);
+            }, limit);
           } catch (RuntimeException e) {
             to = true;
           }
@@ -232,7 +241,7 @@ public final class ServerSim {
               boolean b = bot.useSpecialMove(field);
               spIn.set(System.nanoTime() - s);
               return b;
-            }, 100);
+            }, limit);
           } catch (RuntimeException e) {
             spTo = true;
           }
@@ -268,18 +277,29 @@ public final class ServerSim {
               (isA ? ctorA : ctorB) / 1_000_000L, ponderNodes);
           own[toMove]++;
           // the real engine crashes here: a special it would honour on a column of -1
-          crashes += sp && counter[toMove] >= 10 && col < 0 ? 1 : 0;
+          if (sp && counter[toMove] >= 10 && col < 0) {
+            crashes++;
+            crashesA += (toMove == 1) == aFirst ? 1 : 0;
+          }
           boolean honoured = sp && counter[toMove] >= 10 && col >= 0;
           ToolsFields.play(field, col, honoured);
           counter[toMove] = honoured ? 1 : counter[toMove] + 1;
+          if (honoured) {
+            if ((toMove == 1) == aFirst) {
+              blastsA++;
+            } else {
+              blastsB++;
+            }
+          }
           toMove = 3 - toMove;
           iter++;
         }
         ExperimentStatus st = ToolsFields.status(field);
         // after a win the engine leaves the winner's turn passed: the side now to move lost
         String winner = st == ExperimentStatus.COLLAPSED && !onTime ? ((toMove == 1) == aFirst ? "B" : "A") : "-";
-        w.printf(Locale.ROOT, "game,%s,%dx%d,%d,%s,%s,%d,%s,%.1f,%d%n", label, rows, cols, g, aFirst ? "A" : "B", winner, iter,
-            onTime ? "TIME" : st.toString(), (System.nanoTime() - gameStart) / 1e9, crashes);
+        w.printf(Locale.ROOT, "game,%s,%dx%d,%d,%s,%s,%d,%s,%.1f,%d,%d,%d,%d,%d,%d%n", label, rows, cols, g, aFirst ? "A" : "B", winner, iter,
+            onTime ? "TIME" : st.toString(), (System.nanoTime() - gameStart) / 1e9, crashes,
+            limitOf(aFirst ? first : second), limitOf(aFirst ? second : first), crashesA, blastsA, blastsB);
         w.flush();
       }
       synchronized (lateness) {
@@ -298,6 +318,15 @@ public final class ServerSim {
       return bot.getClass().getMethod("lastResult");
     } catch (NoSuchMethodException e) {
       return null;
+    }
+  }
+
+  /** The limit in ms a bot believes in, -1 if it has no such idea. */
+  private static long limitOf(Algorithm bot) throws ReflectiveOperationException {
+    try {
+      return (Long) bot.getClass().getMethod("callLimitNanos").invoke(bot) / 1_000_000L;
+    } catch (NoSuchMethodException e) {
+      return -1;
     }
   }
 
