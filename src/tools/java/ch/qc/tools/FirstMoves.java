@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
  * </pre>
  *
  * --sizes 6x7,7x9,... --mode first|reply|rule --rule NAME --k K --weights FILE --nodes N --games N --threads N --out FILE
+ * --offsets 0,-2,s (these arms only: offsets from the centre, s = the search's own choice) --seed S (other games)
  */
 public final class FirstMoves {
   private FirstMoves() {}
@@ -48,6 +49,8 @@ public final class FirstMoves {
     int games = 100;
     int threads = 2;
     int maxOffset = 4;
+    String offsets = null;
+    long seedOffset = 0;
     Path out = null;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
@@ -60,6 +63,8 @@ public final class FirstMoves {
         case "--games" -> games = Integer.parseInt(args[++i]);
         case "--threads" -> threads = Integer.parseInt(args[++i]);
         case "--max-offset" -> maxOffset = Integer.parseInt(args[++i]);
+        case "--offsets" -> offsets = args[++i];
+        case "--seed" -> seedOffset = Long.parseLong(args[++i]);
         case "--out" -> out = Path.of(args[++i]);
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
@@ -74,7 +79,7 @@ public final class FirstMoves {
         if (mode.equals("rule")) {
           ruleArm(g, eval, rule, k, nodes, games, pool, w);
         } else {
-          arms(g, eval, mode.equals("reply"), nodes, games, maxOffset, pool, w);
+          arms(g, eval, mode.equals("reply"), nodes, games, maxOffset, offsets, seedOffset, pool, w);
         }
       }
     } finally {
@@ -85,8 +90,8 @@ public final class FirstMoves {
     }
   }
 
-  private static void arms(Geometry g, Evaluator eval, boolean reply, long nodes, int games, int maxOffset, ExecutorService pool,
-      PrintWriter w) throws Exception {
+  private static void arms(Geometry g, Evaluator eval, boolean reply, long nodes, int games, int maxOffset, String offsets,
+      long seedOffset, ExecutorService pool, PrintWriter w) throws Exception {
     int centre = (g.cols - 1) / 2;
     int side = reply ? 2 : 1;
     StringBuilder line = new StringBuilder(String.format(Locale.ROOT, "%dx%d %s", g.rows, g.cols, reply ? "reply" : "first"));
@@ -97,22 +102,37 @@ public final class FirstMoves {
     Searcher plain = new Searcher(g, eval, new TranspositionTable(18), Searcher.Options.DEFAULT, new Vcf.Table(16));
     int searched = Tactics.column(plain.run(start, side, 0, reply ? 1 : 0, reply ? 1 : 0, ch.qc.bot.Clock.nanos(), NO_TIME_LIMIT, nodes).move());
     line.append(" | search plays col ").append(searched).append(", centre ").append(centre);
-    for (int offset = -maxOffset; offset <= maxOffset; offset++) {
+    List<Integer> list = new ArrayList<>();
+    if (offsets == null) {
+      for (int offset = -maxOffset; offset <= maxOffset; offset++) {
+        list.add(offset);
+      }
+    } else {
+      for (String o : offsets.split(",")) {
+        // "s" is the search's own choice from this position
+        list.add(o.equals("s") ? searched - centre : Integer.parseInt(o));
+      }
+    }
+    for (int offset : list) {
       int col = centre + offset;
       if (col < 0 || col >= g.cols) {
         continue;
+      }
+      if (offsets != null && (!reply || g.cols % 2 == 1)) {
+        col = Math.min(col, g.cols - 1 - col);
       }
       // the mirror of a column is the same position (after F in the centre only if the centre is on the axis)
       if ((!reply || g.cols % 2 == 1) && col > g.cols - 1 - col) {
         continue;
       }
       int[] opening = reply ? new int[] {centre, col} : new int[] {col};
-      double[] r = rollout(g, eval, opening, side, nodes, games, pool, (g.rows * 1009L + g.cols) * 31 + col + (reply ? 7 : 0));
+      double[] r = rollout(g, eval, opening, side, nodes, games, pool,
+          (g.rows * 1009L + g.cols) * 31 + col + (reply ? 7 : 0) + 1_000_000L * seedOffset);
       String cell = String.format(Locale.ROOT, "col %d: %.1f%%", col, r[0]);
       line.append(" | ").append(cell);
       if (w != null) {
         w.printf(Locale.ROOT, "{\"size\":\"%dx%d\",\"mode\":\"%s\",\"col\":%d,\"centre\":%d,\"searched\":" + searched
-                + ",\"games\":%d,\"score\":%.2f,\"draws\":%d,\"nodes\":%d}%n",
+                + ",\"seed\":" + seedOffset + ",\"games\":%d,\"score\":%.2f,\"draws\":%d,\"nodes\":%d}%n",
             g.rows, g.cols, reply ? "reply" : "first", col, centre, games, r[0], (int) r[1], nodes);
         w.flush();
       }

@@ -36,7 +36,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * --book FILE --size 15x11 --weights SPEC (a .qcw file or "hand") --nodes N --jitter 0.3 --pairs N --threads N
  * --seed S --out FILE --b-book FILE (a book for B as well, to compare two books) --b-weights SPEC (another evaluation
  * for B); --book none plays A without a book, the baseline against such a B; --b-imitates NAME B plays what that bot
- * played on the server (suites/book-lines.txt, or --lines FILE) wherever it has been in the position, and searches elsewhere
+ * played on the server (suites/book-lines.txt, or --lines FILE) wherever it has been in the position, and searches elsewhere;
+ * --centre both open in the centre without a search, as the bot does
  * </pre>
  */
 public final class BookFast {
@@ -82,6 +83,12 @@ public final class BookFast {
       }
     }
     return moves;
+  }
+
+  /** As the bot with Timing.centreOnEmpty: the centre on an empty board without a search. */
+  static FastGame.Engine openingInTheCentre(FastGame.Engine engine, Geometry g) {
+    return (Board b, int me, int cdMe, int cdOpp, int turn) ->
+        b.discs() == 0 ? (g.cols - 1) / 2 : engine.move(b, me, cdMe, cdOpp, turn);
   }
 
   /** The named bot's move while the position is one it was seen in (chosen by how often it played each), else the engine. */
@@ -140,6 +147,7 @@ public final class BookFast {
     String weights = "hand";
     String weightsB = null;
     String target = null;
+    boolean centre = false;
     Path lines = Path.of("suites/book-lines.txt");
     long nodes = 60_000;
     double jitter = 0.3;
@@ -155,6 +163,7 @@ public final class BookFast {
         case "--weights" -> weights = args[++i];
         case "--b-weights" -> weightsB = args[++i];
         case "--b-imitates" -> target = args[++i];
+        case "--centre" -> centre = true;
         case "--lines" -> lines = Path.of(args[++i]);
         case "--nodes" -> nodes = Long.parseLong(args[++i]);
         case "--jitter" -> jitter = Double.parseDouble(args[++i]);
@@ -191,8 +200,9 @@ public final class BookFast {
       long sd = seed;
       for (int p = 0; p < pairs; p++) {
         int pair = p;
-        done.submit(() -> new String[] {game(g, eval, evalB, n, j, sd, pair, true, bookA, bookB, hits, imitate, imitated),
-            game(g, eval, evalB, n, j, sd, pair, false, bookA, bookB, hits, imitate, imitated)});
+        boolean mid = centre;
+        done.submit(() -> new String[] {game(g, eval, evalB, n, j, sd, pair, true, bookA, bookB, hits, imitate, imitated, mid),
+            game(g, eval, evalB, n, j, sd, pair, false, bookA, bookB, hits, imitate, imitated, mid)});
       }
       for (int p = 0; p < pairs; p++) {
         for (String line : done.take().get()) {
@@ -218,12 +228,17 @@ public final class BookFast {
   }
 
   private static String game(Geometry g, Evaluator eval, Evaluator evalB, long nodes, double jitter, long seed, int pair,
-      boolean aFirst, Book bookA, Book bookB, AtomicLong hits, Map<Long, Map<Integer, int[]>> imitate, AtomicLong imitated) {
+      boolean aFirst, Book bookA, Book bookB, AtomicLong hits, Map<Long, Map<Integer, int[]>> imitate, AtomicLong imitated,
+      boolean centre) {
     long s = seed * 1_000_003L + pair * 2L + (aFirst ? 0 : 1);
     FastGame.Engine a = engine(g, eval, nodes, jitter, s, bookA, hits);
     FastGame.Engine b = engine(g, evalB, nodes, jitter, s ^ 0x5DEECE66DL, bookB, new AtomicLong());
     if (imitate != null) {
       b = imitating(b, g, imitate, s, imitated);
+    }
+    if (centre) {
+      a = openingInTheCentre(a, g);
+      b = openingInTheCentre(b, g);
     }
     StringBuilder moves = new StringBuilder();
     int[] plies = new int[1];
