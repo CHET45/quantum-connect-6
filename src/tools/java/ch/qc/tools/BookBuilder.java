@@ -49,6 +49,8 @@ import java.util.zip.CRC32;
  * --threads T       worker threads (default 2)
  * --out FILE        book blob (default weights/book.qcb); FILE.txt gets the human-readable listing
  * --lines FILE      server lines from tools/make-book-lines.py (default suites/book-lines.txt)
+ * --self-lines LIST comma list of lines from tools/games-to-lines.py: our own engine's games. Their record joins the
+ *                   bonus, and replies seen there at least three times are expanded early.
  * --sizes LIST      board sizes in build order (default 15x11,8x12,15x22)
  * --share LIST      share of the time per size (default 0.5,0.25,0.25)
  * --max-ply LIST    deepest position with an entry per size (default 30,24,24)
@@ -67,6 +69,8 @@ public final class BookBuilder {
    * move, and beating it says a lot; with n games it is damped by n + 2.
    */
   private static final int RECORD_WEIGHT = 256;
+  /** Games of our own engine are plentiful and say less about the real opponents, so their record is damped harder. */
+  private static final int SELF_PRIOR = 20;
   /** Score units per doubling of the number of times strong bots played a move. */
   private static final int KNOWN_WEIGHT = 2;
   /** An alternative of ours is followed while within this much of the best. */
@@ -122,6 +126,8 @@ public final class BookBuilder {
   static final class Seen {
     final Map<Integer, int[]> byCol = new HashMap<>();
     final Map<Integer, double[]> surprise = new HashMap<>();
+    /** Games of our own engine through a move: count and the mover's score minus the mean for that side. */
+    final Map<Integer, double[]> self = new HashMap<>();
 
     int[] at(int col) {
       return byCol.computeIfAbsent(col, c -> new int[3]);
@@ -131,6 +137,17 @@ public final class BookBuilder {
       surprise.computeIfAbsent(col, c -> new double[1])[0] += delta;
     }
 
+    void addSelf(int col, double delta) {
+      double[] r = self.computeIfAbsent(col, c -> new double[2]);
+      r[0]++;
+      r[1] += delta;
+    }
+
+    int selfGames(int col) {
+      double[] r = self.get(col);
+      return r == null ? 0 : (int) r[0];
+    }
+
     int plays(int col) {
       int[] r = byCol.get(col);
       return r == null ? 0 : r[0];
@@ -138,14 +155,16 @@ public final class BookBuilder {
 
     /** In score units: the record net of ratings, and a little for being known at all, which decides near-equal moves. */
     int bonus(int col) {
+      double[] own = self.get(col);
+      double learned = own == null ? 0 : RECORD_WEIGHT * own[1] / (own[0] + SELF_PRIOR);
       int[] r = byCol.get(col);
       if (r == null) {
-        return 0;
+        return (int) Math.round(learned);
       }
       double[] d = surprise.get(col);
       double record = d == null ? 0 : RECORD_WEIGHT * d[0] / (r[1] + r[2] + 2);
       double known = r[0] <= 0 ? 0 : KNOWN_WEIGHT * Math.log(1 + r[0]) / Math.log(2);
-      return (int) Math.round(record + known);
+      return (int) Math.round(record + known + learned);
     }
   }
 
@@ -220,6 +239,7 @@ public final class BookBuilder {
     int threads = 2;
     Path out = Path.of("weights/book.qcb");
     Path lines = Path.of("suites/book-lines.txt");
+    String selfLines = "";
     String sizes = "15x11,8x12,15x22";
     String share = "0.5,0.25,0.25";
     String maxPly = "30,24,24";
@@ -235,6 +255,7 @@ public final class BookBuilder {
         case "--threads" -> threads = Integer.parseInt(args[++i]);
         case "--out" -> out = Path.of(args[++i]);
         case "--lines" -> lines = Path.of(args[++i]);
+        case "--self-lines" -> selfLines = args[++i];
         case "--sizes" -> sizes = args[++i];
         case "--share" -> share = args[++i];
         case "--max-ply" -> maxPly = args[++i];
@@ -294,6 +315,11 @@ public final class BookBuilder {
       System.out.printf(Locale.ROOT, "%s: %d knodes/s, long search %d knodes, short %d knodes%n", name, nps / 1000,
           run.deepNodes / 1000, run.scanNodes / 1000);
       readLines(lines, run);
+      for (String f : selfLines.split(",")) {
+        if (!f.isBlank()) {
+          readSelfLines(Path.of(f.trim()), run);
+        }
+      }
       build(run, eval, threads, System.nanoTime() + slice, out, runs);
       run.cacheOut.close();
       int[] perPly = new int[run.maxPly + 1];
@@ -432,6 +458,41 @@ public final class BookBuilder {
       }
     }
     System.out.printf(Locale.ROOT, "%s: %d server games, %d positions%n", size, games, run.seen.size());
+  }
+
+  private static void readSelfLines(Path file, SizeRun run) throws IOException {
+    Geometry g = run.g;
+    String size = g.rows + "x" + g.cols;
+    Board b = new Board(g);
+    int games = 0;
+    for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+      if (line.startsWith("#") || !line.startsWith(size + " ")) {
+        continue;
+      }
+      String[] p = line.trim().split(" ");
+      if (p.length < 7) {
+        continue;
+      }
+      double scoreF = p[3].equals("F") ? 1 : p[3].equals("S") ? 0 : 0.5;
+      double meanF = Double.parseDouble(p[6]);
+      b.clear();
+      int stm = 1;
+      games++;
+      for (int i = 0; i < p[5].length() && i <= run.maxPly; i++) {
+        int col = Character.digit(p[5].charAt(i), 36);
+        if (col < 0 || col >= g.cols || b.isFull(col)) {
+          break;
+        }
+        Canon c = canon(b);
+        double delta = stm == 1 ? scoreF - meanF : meanF - scoreF;
+        run.seen.computeIfAbsent(c.key, x -> new Seen()).addSelf(canonCol(col, c, g.cols), delta);
+        if (b.make(col, stm)) {
+          break;
+        }
+        stm = 3 - stm;
+      }
+    }
+    System.out.printf(Locale.ROOT, "%s: %d games of our own engine from %s%n", size, games, file);
   }
 
   private static Node node(SizeRun run, Board b, int ply) {
@@ -656,7 +717,7 @@ public final class BookBuilder {
         top = Math.max(top, scores[i]);
       }
       for (int i = 0; i < m; i++) {
-        if (!deep[i] && seen.plays(cols[i]) > 0 && scores[i] >= top - OUR_MARGIN) {
+        if (!deep[i] && (seen.plays(cols[i]) > 0 || seen.selfGames(cols[i]) >= 3) && scores[i] >= top - OUR_MARGIN) {
           if (Math.abs(scores[i]) <= MATE_BOUND) {
             scores[i] = childScore(w, g, b, cols[i], stm, cdStm, cdOther, n.ply, run.deepNodes);
           }
@@ -843,6 +904,8 @@ public final class BookBuilder {
         }
       } else if (seen != null && seen.plays(n.cols[i]) > 0) {
         step = seen.plays(n.cols[i]) >= 3 ? COST_SERVER : COST_SERVER_RARE;
+      } else if (seen != null && seen.selfGames(n.cols[i]) >= 3) {
+        step = COST_SERVER_RARE;
       } else if (r == 0) {
         step = COST_OPP_BEST;
       } else if (r < OPP_RANKS && n.value - v[i] <= OPP_MARGIN) {
