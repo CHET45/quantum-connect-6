@@ -86,7 +86,16 @@ class WeightsTest {
 
   @Test
   void embeddedWeightsCoverTheDefaultBoard() {
-    assertTrue(Weights.forGeometry(G) != null, "weights/eval.qcw is not embedded or does not load");
+    assertTrue(Weights.forGeometry(G) != null, "no weights/eval*.qcw is embedded, or none loads");
+    // the jar must serve any board from its tables, with or without a sized table for a particular board
+    for (int[] size : new int[][] {{8, 12}, {15, 11}, {15, 22}, {6, 7}, {7, 9}, {12, 16}, {9, 20}, {20, 9}, {25, 25}, {30, 9},
+        {5, 14}, {40, 40}}) {
+      Geometry g = new Geometry(size[0], size[1]);
+      assertTrue(Weights.forGeometry(g) != null, size[0] + "x" + size[1] + " has no learned tables");
+    }
+    // deleting weights/eval.qcw is the switch that drops the sized 8x12 table: that board then uses the generic tables
+    boolean sized = new java.io.File("weights/eval.qcw").exists();
+    assertTrue(sized ? Weights.forGeometry(G) instanceof LearnedEval : Weights.forGeometry(G) instanceof GenericEval);
   }
 
   @Test
@@ -137,6 +146,8 @@ class WeightsTest {
     String dir = System.getProperty("qc.parity");
     assumeTrue(dir != null, "set -Pqc.parity=DIR to run the parity test");
     Path model = Path.of(dir);
+    assumeTrue(!WeightFiles.parse(Files.readAllBytes(model.resolve("eval.qcw"))).generic(),
+        "a generic model: GenericEvalTest has its parity test");
     LearnedEval e = (LearnedEval) WeightFiles.load(model.resolve("eval.qcw"), G);
     ByteBuffer bb = ByteBuffer.wrap(Files.readAllBytes(model.resolve("parity-8x12.qpv")))
         .order(ByteOrder.LITTLE_ENDIAN);
