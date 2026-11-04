@@ -35,7 +35,11 @@ import java.util.regex.Pattern;
  * <pre>
  * ServerEval FILE.jsonl [--weights NAME=eval.qcw ...] [--strong REGEX] [--min-plies 16] [--nodes N] [--stride S]
  *     [--sizes 15x11,8x12] [--dump DIR --dump-weights W --dump-nodes N [--dump-holdout 5]]
+ *     [--agree REGEX --nodes N]
  * </pre>
+ *
+ * <p>With --agree only the moves of bots matching REGEX are looked at, and for each evaluation the share of those
+ * moves that a fixed-node search with it plays too (column and blast flag) is printed per board size.
  *
  * <p>With --dump every position of the selected games goes to DIR/ROWSxCOLS/shard-00.qcp, labelled with a fixed-node
  * search of --dump-weights ("hand" for the hand tables) and the real result; games whose hash modulo --dump-holdout is
@@ -60,6 +64,7 @@ public final class ServerEval {
     String dumpWeights = "hand";
     long dumpNodes = 4000;
     int holdout = 0;
+    String agree = null;
     for (int i = 1; i < args.length; i++) {
       switch (args[i]) {
         case "--weights" -> weightArgs.add(args[++i]);
@@ -72,6 +77,7 @@ public final class ServerEval {
         case "--dump-weights" -> dumpWeights = args[++i];
         case "--dump-nodes" -> dumpNodes = Long.parseLong(args[++i]);
         case "--dump-holdout" -> holdout = Integer.parseInt(args[++i]);
+        case "--agree" -> agree = args[++i];
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
@@ -96,6 +102,10 @@ public final class ServerEval {
           && (only == null || only.contains(g.rows() + "x" + g.cols()))) {
         games.add(g);
       }
+    }
+    if (agree != null) {
+      agreement(games, factories, Pattern.compile(agree), nodes == 0 ? 2000 : nodes, stride, minPlies);
+      return;
     }
     Dumper dumper = dump == null ? null : new Dumper(Path.of(dump), Evaluators.factory(dumpWeights), dumpNodes);
     // cell key: size|group|phase|evaluator
@@ -169,6 +179,81 @@ public final class ServerEval {
       }
       double[] r = measure(e.getValue());
       System.out.printf(Locale.ROOT, "  %-16s AUC %.4f  sign right %.3f%n", k[3], r[0], r[1]);
+    }
+  }
+
+  /** Share of the moves of the named bots that a search with each evaluation plays too, per size. */
+  private static void agreement(List<ServerGames.Game> games,
+      Map<String, java.util.function.Function<Geometry, Evaluator>> factories, Pattern names, long nodes, int stride,
+      int minPlies) {
+    Map<String, long[]> tally = new TreeMap<>();
+    for (ServerGames.Game game : games) {
+      Geometry geo = ServerGames.geometry(game.rows(), game.cols());
+      ServerGames.Replay check = ServerGames.replay(geo, game, false);
+      boolean[] marked = {false, names.matcher(game.name()[0]).find(), names.matcher(game.name()[1]).find()};
+      if (check.problem != null || check.plies < minPlies || !(marked[1] || marked[2])) {
+        continue;
+      }
+      String size = game.rows() + "x" + game.cols();
+      for (Map.Entry<String, java.util.function.Function<Geometry, Evaluator>> e : factories.entrySet()) {
+        Searcher engine = new Searcher(geo, e.getValue().apply(geo), new TranspositionTable(18), Searcher.Options.DEFAULT, new Vcf.Table(16));
+        long[] t = tally.computeIfAbsent(size + " " + e.getKey(), x -> new long[2]);
+        replayMoves(geo, game, check.plies, (b, stm, cdS, cdO, ply, turn, col, blast) -> {
+          if (!marked[stm] || ply % stride != 0 || ply < 4) {
+            return;
+          }
+          Board view = new Board(geo);
+          view.copyFrom(b);
+          int move = engine.run(view, stm, cdS, cdO, turn, ch.qc.bot.Clock.nanos(), Long.MAX_VALUE / 4, nodes).move();
+          t[1]++;
+          boolean special = ch.qc.bot.search.Tactics.isSpecial(move) && cdS >= COOLDOWN;
+          if (ch.qc.bot.search.Tactics.column(move) == col && special == blast) {
+            t[0]++;
+          }
+        });
+      }
+    }
+    tally.forEach((k, v) -> System.out.printf(Locale.ROOT, "%-30s agrees with %d of %d moves (%.1f%%)%n", k, v[0], v[1], 100.0 * v[0] / Math.max(1, v[1])));
+  }
+
+  private interface MoveVisitor {
+    void at(Board b, int stm, int cdStm, int cdOpp, int ply, int turn, int col, boolean blast);
+  }
+
+  /** As {@link #replay} with the move played from each position. */
+  private static void replayMoves(Geometry g, ServerGames.Game game, int total, MoveVisitor v) {
+    Board b = new Board(g);
+    int[] counter = new int[3];
+    String s = game.moves();
+    int expected = 1;
+    int turn = 0;
+    int ply = 0;
+    int i = 0;
+    while (i < s.length()) {
+      int side = s.charAt(i) == 'F' ? 1 : 2;
+      int col = Character.digit(s.charAt(i + 1), 36);
+      boolean star = i + 2 < s.length() && s.charAt(i + 2) == '*';
+      i += star ? 3 : 2;
+      if (side != expected) {
+        counter[expected]++;
+        turn++;
+        expected = side;
+      }
+      v.at(b, side, counter[side], counter[3 - side], ply, turn, col, star);
+      boolean win;
+      if (star) {
+        win = b.blast(col);
+        counter[side] = 0;
+      } else {
+        win = b.make(col, side);
+      }
+      counter[side]++;
+      turn++;
+      ply++;
+      expected = 3 - side;
+      if (win || ply >= total) {
+        return;
+      }
     }
   }
 
