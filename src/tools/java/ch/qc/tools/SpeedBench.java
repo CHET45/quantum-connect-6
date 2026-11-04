@@ -144,7 +144,26 @@ public final class SpeedBench {
     return out;
   }
 
+  /** Counts evaluations (bench option --eval count:NAME); slows the run. */
+  private static final class Counting implements Evaluator {
+    private final Evaluator inner;
+    long calls;
+
+    Counting(Evaluator inner) {
+      this.inner = inner;
+    }
+
+    @Override
+    public int evaluate(Board b, int stm, int cdStm, int cdOpp) {
+      calls++;
+      return inner.evaluate(b, stm, cdStm, cdOpp);
+    }
+  }
+
   private static Evaluator evaluator(Geometry g, String name) throws Exception {
+    if (name.startsWith("count:")) {
+      return new Counting(evaluator(g, name.substring(6)));
+    }
     if (name.equals("bot")) {
       Evaluator e = Weights.forGeometry(g);
       return e != null ? e : new HandEval(g);
@@ -242,6 +261,9 @@ public final class SpeedBench {
       tagText.append(String.format(Locale.ROOT, " %s=%.0f", t.getKey(), knps(t.getValue()[0], t.getValue()[1])));
     }
     long vcfBestSum = Arrays.stream(vcfBest).sum();
+    if (e instanceof Counting c) {
+      System.out.printf(Locale.ROOT, "evaluations per node %.3f%n", c.calls / (double) (totalNodes * (warm + rounds)));
+    }
     System.out.printf(Locale.ROOT,
         "%-6s %s pos=%d nodes=%d knps best=%.0f median=%.0f | vcf nodes=%d kn/s best=%.0f median=%.0f | sig %016x %016x%n"
             + "       by tag:%s%n",
