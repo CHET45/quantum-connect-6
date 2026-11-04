@@ -547,10 +547,7 @@ public final class Searcher {
     int opp = 3 - stm;
     int oppThreats = 0;
     int threatCol = -1;
-    for (int c = 0; c < g.cols; c++) {
-      if (b.columnThreats(c) == 0) {
-        continue; // a full column has no threat cell either
-      }
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
       int cell = g.index(c, b.height(c));
       if (b.threats(stm, cell) > 0) {
         return MATE - ply - 1;
@@ -561,7 +558,7 @@ public final class Searcher {
       }
     }
     boolean ready = cdStm >= COOLDOWN;
-    if (ready && depth >= options.blastWinMinDepth && blastWins(b)) {
+    if (ready && depth >= options.blastWinMinDepth && b.anyBlastWins()) {
       return MATE - ply - 1;
     }
     if (oppThreats >= 2 && !ready) {
@@ -737,15 +734,6 @@ public final class Searcher {
       return 0;
     }
     return options.exactLeaves ? MATE - ply - (2 * LEAF_VCF_MOVES + 1) : TENTATIVE_WIN;
-  }
-
-  private boolean blastWins(Board b) {
-    for (int c = 0; c < g.cols; c++) {
-      if (b.blastWins(c)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   /** Checks the limits; returns true (and sets the stop flag) once the search must end. */

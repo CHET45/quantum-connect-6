@@ -60,10 +60,7 @@ public final class HandEval extends WindowSumEval {
     int par0 = 0;
     int par1 = 0;
     int empty = g.cells - b.discs();
-    for (int c = 0; c < g.cols; c++) {
-      if (b.columnThreats(c) == 0) {
-        continue;
-      }
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
       int h = b.height(c);
       boolean latent0 = false;
       boolean latent1 = false;

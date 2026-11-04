@@ -214,7 +214,7 @@ public final class Vcf {
         defWins = true;
       }
     }
-    if (threats == 0 || defWins || (defReady && blastWins(b))) {
+    if (threats == 0 || defWins || (defReady && b.anyBlastWins())) {
       return false;
     }
     return defender(b, a, nextCdA, cdD, d - 1, vply + 1, threats, threatCol);
@@ -251,15 +251,6 @@ public final class Vcf {
       }
     }
     return true;
-  }
-
-  private boolean blastWins(Board b) {
-    for (int c = 0; c < g.cols; c++) {
-      if (b.blastWins(c)) {
-        return true;
-      }
-    }
-    return false;
   }
 
   private void store(long key, int idx, int result, int d, int move) {

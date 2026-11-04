@@ -38,6 +38,7 @@ class BoardDifferentialTest {
         positions++;
         assertArrayEquals(n.cells(), b.cells(), ctx + " cells at step " + step);
         assertTrue(b.consistent(), ctx + " incremental state at step " + step);
+        boolean anyBlastWon = false;
         for (int c = 0; c < cols; c++) {
           assertEquals(heightOf(n, c), b.height(c), ctx + " height of column " + c);
           if (b.isFull(c)) {
@@ -46,6 +47,7 @@ class BoardDifferentialTest {
           child.copyFrom(b);
           blastsChecked++;
           boolean blastWon = child.blast(c);
+          anyBlastWon |= blastWon;
           assertEquals(blastWon, b.blastWins(c), ctx + " blast win test in column " + c);
           if (blastWon) {
             blastWins++;
@@ -55,6 +57,15 @@ class BoardDifferentialTest {
             prefilterPassed++;
           }
         }
+        assertEquals(anyBlastWon, b.anyBlastWins(), ctx + " blast win test over all columns");
+        int nextThreat = b.nextThreatColumn(0);
+        for (int c = 0; c < cols; c++) {
+          if (b.columnThreats(c) > 0) {
+            assertEquals(c, nextThreat, ctx + " next column with threats");
+            nextThreat = b.nextThreatColumn(c + 1);
+          }
+        }
+        assertEquals(-1, nextThreat, ctx + " no column with threats left");
         int probe = rnd.nextInt(cols);
         child.copyFrom(b);
         boolean childWin = child.blast(probe);
