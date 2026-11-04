@@ -40,6 +40,12 @@ public final class Searcher {
     private final long vcfNodes;
     private final long vcfProofs;
     private final long blastRefutations;
+    private long[] stats;
+
+    /** Bench statistics when Options.trace is set, else null. */
+    public long[] stats() {
+      return stats;
+    }
 
     public Result(int move, int score, int depth, long nodes, long nanos, long vcfNodes, long vcfProofs,
         long blastRefutations) {
@@ -96,12 +102,15 @@ public final class Searcher {
    * draw scores from that colour's view). ebf: no new iteration starts past 1/ebf of the hard stop, 0 uses the whole
    * budget (fixed-node runs keep the node rule). blastWinMinDepth: the winning-blast scan, costly at leaves on large
    * boards, runs only with at least this much depth left. blastMargin (1/256 logit): a non-winning root blast must
-   * beat the other moves by this much. lmrFrom: quiet drops from this index in the move order on, with no threat to
-   * answer and at least 3 plies left, are searched one ply shallower (two from twice that index with at least 5 plies
-   * left) and again in full if they beat alpha; 0 turns this off.
+   * beat the other moves by this much. lmrFrom: drops from this index in the move order on (twice that at PV nodes),
+   * with no threat to answer and at least lmrDepth plies left, are searched two plies shallower and again in full if
+   * they beat alpha; 0 turns this off. Two plies, because one would land on the other side to move at the leaves, and
+   * the evaluation swings between odd and even depths. lmrTact: 0 reduces any such drop, 1 keeps drops into a window
+   * holding at least 4 discs of one colour at full depth, 2 also drops in the column of the last move, 3 also windows
+   * holding 3 discs (an audit of wrongly reduced moves found these 2 to 6 times more often than others).
    */
   public static final class Options {
-    public static final Options DEFAULT = new Options(true, true, false, true, false, 0, 0, 1, 0, 0);
+    public static final Options DEFAULT = new Options(true, true, false, true, false, 0, 0, 1, 0, 2);
     public static final Options NONE = new Options(false, false, false, true, false);
 
     public final boolean rootVcf;
@@ -141,41 +150,115 @@ public final class Searcher {
     public Options withSwitches(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves,
         boolean razor) {
       return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, blastWinMinDepth,
-          blastMargin, lmrFrom);
+          blastMargin, lmrFrom).tunedLike(this);
     }
 
     public Options withContempt(int v) {
       return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, v, ebf, blastWinMinDepth, blastMargin,
-          lmrFrom);
+          lmrFrom).tunedLike(this);
     }
 
     public Options withEbf(int v) {
       return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, v, blastWinMinDepth, blastMargin,
-          lmrFrom);
+          lmrFrom).tunedLike(this);
     }
 
     public Options withBlastWinMinDepth(int v) {
-      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, v, blastMargin, lmrFrom);
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, v, blastMargin, lmrFrom)
+          .tunedLike(this);
     }
 
     public Options withBlastMargin(int v) {
-      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, blastWinMinDepth, v, lmrFrom);
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, blastWinMinDepth, v, lmrFrom)
+          .tunedLike(this);
     }
 
     public Options withLmrFrom(int v) {
       return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, blastWinMinDepth, blastMargin,
-          v);
+          v).tunedLike(this);
+    }
+
+    /** Fixed-depth runs of the bench; 0 means no limit. */
+    public int maxDepth;
+    /** Fixed-node runs stop starting iterations at a third of the budget; false uses the whole budget like the clock. */
+    public boolean nodeRule = true;
+    /** Collect cut and node statistics into {@link Result#stats()} (bench only). */
+    public boolean trace;
+    public boolean audit;
+    public boolean forcedExt;
+    public int lmrDepth = 3;
+    public int lmrTact = 2;
+    public int lmrRoot;
+    public int lmrBlast;
+    public int lmp;
+    public int nullR;
+    public int blastGenDepth = 3;
+    public boolean partial;
+    public int nodeVcf;
+    public int nodeVcfNodes = 200;
+    /** The root threat searches get at most 1/rootVcfShare and 1/oppVcfShare of the budget of the call. */
+    public int rootVcfShare = 8;
+    public int oppVcfShare = 16;
+
+    private Options tunedLike(Options o) {
+      maxDepth = o.maxDepth;
+      nodeRule = o.nodeRule;
+      trace = o.trace;
+      audit = o.audit;
+      forcedExt = o.forcedExt;
+      lmrDepth = o.lmrDepth;
+      lmrTact = o.lmrTact;
+      lmrRoot = o.lmrRoot;
+      lmrBlast = o.lmrBlast;
+      lmp = o.lmp;
+      nullR = o.nullR;
+      blastGenDepth = o.blastGenDepth;
+      partial = o.partial;
+      nodeVcf = o.nodeVcf;
+      nodeVcfNodes = o.nodeVcfNodes;
+      rootVcfShare = o.rootVcfShare;
+      oppVcfShare = o.oppVcfShare;
+      return this;
+    }
+
+    public Options copy() {
+      return new Options(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, contempt, ebf, blastWinMinDepth, blastMargin,
+          lmrFrom).tunedLike(this);
+    }
+
+    public Options withMaxDepth(int v) {
+      Options o = copy();
+      o.maxDepth = v;
+      return o;
+    }
+
+    public Options withNodeRule(boolean v) {
+      Options o = copy();
+      o.nodeRule = v;
+      return o;
+    }
+
+    public Options withTrace(boolean v) {
+      Options o = copy();
+      o.trace = v;
+      return o;
     }
   }
 
   private static final int ROOT_VCF_MOVES = 12;
-  private static final long ROOT_VCF_NODES = 20_000;
-  private static final long ROOT_VCF_NANOS = 10_000_000L;
   private static final int OPP_VCF_MOVES = 8;
-  private static final long OPP_VCF_NODES = 8_000;
-  private static final long OPP_VCF_NANOS = 5_000_000L;
-  private static final long OPP_VCF_REPLY_NODES = 1_500;
+  /**
+   * The root threat searches scale with the budget of the call, so they take the same share of any time limit: nodes per
+   * millisecond of budget (20,000, 8,000 and 1,500 at 80 ms), and the time shares in {@link Options}. A fixed-node run
+   * counts 2,000 nodes as a millisecond, about what the search visits.
+   */
+  private static final long ROOT_VCF_NODES_PER_MS = 250;
+  private static final long OPP_VCF_NODES_PER_MS = 100;
+  private static final long OPP_VCF_REPLY_NODES_PER_MS = 19;
+  private static final long NODES_PER_MS = 2_000;
+  private static final long MAX_BUDGET_MS = 1_000_000;
   private static final int LEAF_VCF_MOVES = 3;
+  private static final int NODE_VCF_MOVES = 10;
   private static final long LEAF_VCF_NODES = 100;
   private static final int TENTATIVE_WIN = 5_000;
   /** Leaf and razor VCF only on boards up to this many cells; above it a leaf proof costs too much time. */
@@ -202,6 +285,8 @@ public final class Searcher {
    * colour has none (a window then lost to the opponent). The empty cell's position does not matter.
    */
   private final int[][] gain = new int[3][];
+  /** live[colour][code]: square of the colour's discs in a window without opponent discs, else 0. */
+  private final int[][] live = new int[3][];
   private volatile int token;
   /**
    * Context of the last finished call, reused by the next one so a call allocates almost nothing (the server
@@ -241,9 +326,13 @@ public final class Searcher {
     final int[][] order = new int[MAX_PLY][];
     final int[][] killers = new int[MAX_PLY][2];
     final int[][] history = new int[3][];
+    final int[] prevCell = new int[MAX_PLY + 2];
+    final int[][] tact = new int[MAX_PLY][];
     final Board[] pool = new Board[MAX_PLY];
     final Vcf vcf;
     final Vcf leafVcf;
+    /** Bench counters. */
+    final long[] stats = new long[256];
 
     Ctx(Geometry g, Options options, Vcf.Table vcfTable, int token, long deadline, long maxNodes, int turnBase) {
       this.g = g;
@@ -273,6 +362,7 @@ public final class Searcher {
       for (int[] k : killers) {
         k[0] = k[1] = Tactics.NONE;
       }
+      java.util.Arrays.fill(stats, 0);
       vcf.resetStats();
       leafVcf.resetStats();
     }
@@ -281,6 +371,7 @@ public final class Searcher {
       if (moves[ply] == null) {
         moves[ply] = new int[2 * g.cols];
         order[ply] = new int[2 * g.cols];
+        tact[ply] = new int[2 * g.cols];
       }
       return moves[ply];
     }
@@ -327,6 +418,7 @@ public final class Searcher {
     }
     for (int colour = 1; colour <= 2; colour++) {
       gain[colour] = new int[t.codes];
+      live[colour] = new int[t.codes];
       for (int code = 0; code < t.codes; code++) {
         int own = 0;
         int other = 0;
@@ -335,6 +427,7 @@ public final class Searcher {
           other += c % 3 == 3 - colour ? 1 : 0;
         }
         gain[colour][code] = (other == 0 ? 2 * own + 1 : 0) + (own == 0 ? other * other : 0);
+        live[colour][code] = other > 0 ? 0 : own * own;
       }
     }
     centreBonus = new int[g.cols];
@@ -441,30 +534,40 @@ public final class Searcher {
     x.bestDrop = firstDrop(moves, n);
 
     long hardDeadline = startNanos + hardNanos;
+    long budgetMs = Math.max(1, Math.min(Math.min(hardNanos / 1_000_000L, maxNodes / NODES_PER_MS), MAX_BUDGET_MS));
     if (options.rootVcf) {
       int m = x.vcf.attack(root, me, cdMe, cdOpp, ROOT_VCF_MOVES, turnIndex,
-          Math.min(hardDeadline, Clock.nanos() + ROOT_VCF_NANOS), ROOT_VCF_NODES);
+          Math.min(hardDeadline, Clock.nanos() + hardNanos / options.rootVcfShare), budgetMs * ROOT_VCF_NODES_PER_MS);
       if (m != Tactics.NONE) {
         return result(x, m, MATE_BOUND + 1, 0, startNanos);
       }
     }
     if (options.opponentVcf && n > 1) {
       n = dropMovesLosingToVcf(x, root, me, cdMe, cdOpp, turnIndex, moves, scores, n,
-          Math.min(hardDeadline, Clock.nanos() + OPP_VCF_NANOS));
+          Math.min(hardDeadline, Clock.nanos() + hardNanos / options.oppVcfShare), budgetMs);
     }
 
     x.lastPoll = Clock.nanos();
     int best = moves[0];
     int bestScore = -INF;
     int completed = 0;
-    for (int depth = 1; depth <= MAX_DEPTH; depth++) {
+    int lastDepth = options.maxDepth > 0 ? Math.min(options.maxDepth, MAX_DEPTH) : MAX_DEPTH;
+    for (int depth = 1; depth <= lastDepth; depth++) {
       int iterBest = Tactics.NONE;
       int iterScore = -INF;
       int alpha = -INF;
       for (int i = 0; i < n && !x.stop; i++) {
         int m = moves[i];
         int margin = Tactics.isSpecial(m) ? options.blastMargin : 0;
-        int score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, i == 0);
+        int score;
+        if (options.lmrRoot > 0 && i >= options.lmrRoot && depth >= 3 && !Tactics.isSpecial(m)) {
+          score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth - 2, alpha + margin, false);
+          if (!x.stop && score > alpha + margin) {
+            score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, false);
+          }
+        } else {
+          score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, i == 0);
+        }
         if (x.stop) {
           break;
         }
@@ -482,6 +585,13 @@ public final class Searcher {
         x.leadingBlast = Tactics.isSpecial(completed > 0 && iterScore <= bestScore ? best : iterBest);
       }
       if (x.stop) {
+        if (options.partial) {
+          // the first move finished, so anything that beat it in this iteration has a fresh, comparable score
+          if (iterBest != Tactics.NONE && completed > 0) {
+            best = iterBest;
+            bestScore = iterScore;
+          }
+        } else
         // a move that beat the previous best with a completed score is still trustworthy
         if (iterBest != Tactics.NONE && iterBest != best && iterScore > bestScore && completed > 0) {
           best = iterBest;
@@ -496,7 +606,7 @@ public final class Searcher {
       x.bestDrop = firstDrop(moves, n);
       long elapsed = Clock.nanos() - startNanos;
       if (Math.abs(bestScore) > MATE_BOUND || n == 1 || (options.ebf > 0 && elapsed * options.ebf > hardNanos)
-          || x.nodes * EBF > maxNodes) {
+          || (options.nodeRule && x.nodes * EBF > maxNodes)) {
         break;
       }
     }
@@ -518,6 +628,9 @@ public final class Searcher {
     long vp = x.vcf.proofs + (two ? x.leafVcf.proofs : 0);
     long br = x.vcf.blastRefutations + (two ? x.leafVcf.blastRefutations : 0);
     Result r = new Result(move, score, depth, x.nodes, Clock.nanos() - startNanos, vn, vp, br);
+    if (options.trace) {
+      r.stats = x.stats.clone();
+    }
     lastMaxGap = x.maxGap;
     lastBestDrop = x.bestDrop;
     idle = x;
@@ -529,9 +642,10 @@ public final class Searcher {
    * found (moves stay in their order). Returns the new move count; all moves are kept if none stops it.
    */
   private int dropMovesLosingToVcf(Ctx x, Board root, int me, int cdMe, int cdOpp, int turnIndex, int[] moves,
-      int[] scores, int n, long deadline) {
+      int[] scores, int n, long deadline, long budgetMs) {
     int opp = 3 - me;
-    if (x.vcf.attack(root, opp, cdOpp, cdMe, OPP_VCF_MOVES, turnIndex + 1, deadline, OPP_VCF_NODES) == Tactics.NONE) {
+    if (x.vcf.attack(root, opp, cdOpp, cdMe, OPP_VCF_MOVES, turnIndex + 1, deadline, budgetMs * OPP_VCF_NODES_PER_MS)
+        == Tactics.NONE) {
       return n;
     }
     int kept = 0;
@@ -549,8 +663,8 @@ public final class Searcher {
         child.make(c, me);
         cdNext = Math.min(cdMe + 1, COOLDOWN);
       }
-      if (x.vcf.attack(child, opp, cdOpp, cdNext, OPP_VCF_MOVES, turnIndex + 1, deadline, OPP_VCF_REPLY_NODES)
-          == Tactics.NONE) {
+      if (x.vcf.attack(child, opp, cdOpp, cdNext, OPP_VCF_MOVES, turnIndex + 1, deadline,
+          budgetMs * OPP_VCF_REPLY_NODES_PER_MS) == Tactics.NONE) {
         keep[kept++] = i;
       }
     }
@@ -574,6 +688,7 @@ public final class Searcher {
       boolean first) {
     int c = Tactics.column(m);
     if (!Tactics.isSpecial(m)) {
+      x.prevCell[0] = g.index(c, root.height(c));
       boolean win = root.make(c, me);
       int s = win ? MATE - 1
           : root.topRowFull() ? draw(0)
@@ -586,6 +701,7 @@ public final class Searcher {
     if (child.blast(c)) {
       return MATE - 1;
     }
+    x.prevCell[0] = -1;
     return pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, INF, 0, first);
   }
 
@@ -593,6 +709,11 @@ public final class Searcher {
   private int pvsChild(Ctx x, Board b, int stm, int cdStm, int cdOpp, int depth, int alpha, int beta, int ply,
       boolean first) {
     if (first) {
+      // the first child of a null-window node is an ordinary null-window node, not a PV node
+      return -search(x, b, stm, cdStm, cdOpp, depth, -beta, -alpha, ply + 1, beta - alpha > 1);
+    }
+    if (depth <= 0 && beta - alpha > 1) {
+      // a leaf returns the same value for any window
       return -search(x, b, stm, cdStm, cdOpp, depth, -beta, -alpha, ply + 1, true);
     }
     int s = -search(x, b, stm, cdStm, cdOpp, depth, -alpha - 1, -alpha, ply + 1, false);
@@ -630,7 +751,8 @@ public final class Searcher {
       }
     }
     boolean ready = cdStm >= COOLDOWN;
-    if (ready && depth >= options.blastWinMinDepth && b.anyBlastWins()) {
+    boolean leafBlast = options.blastWinMinDepth <= 0;
+    if (ready && depth >= Math.max(1, options.blastWinMinDepth) && b.anyBlastWins()) {
       return MATE - ply - 1;
     }
     if (oppThreats >= 2 && !ready) {
@@ -653,9 +775,20 @@ public final class Searcher {
             return v;
           }
         }
-        return eval.evaluate(b, stm, cdStm, cdOpp);
+        if (options.trace) {
+          x.stats[11]++;
+        }
+        int v = eval.evaluate(b, stm, cdStm, cdOpp);
+        // the scan can only raise the value, so a leaf already at beta needs none
+        return leafBlast && ready && v < beta && b.anyBlastWins() ? MATE - ply - 1 : v;
+      } else {
+        if (leafBlast && ready && b.anyBlastWins()) {
+          return MATE - ply - 1;
+        }
+        depth = 1;
       }
-      depth = 1;
+    } else if (forced && options.forcedExt) {
+      depth++;
     }
     if (options.razor && !pv && !forced && depth <= 2) {
       int ev = eval.evaluate(b, stm, cdStm, cdOpp);
@@ -675,13 +808,48 @@ public final class Searcher {
         int bound = TranspositionTable.bound(e);
         if (bound == TranspositionTable.EXACT || (bound == TranspositionTable.LOWER && s >= beta)
             || (bound == TranspositionTable.UPPER && s <= alpha)) {
+          if (options.trace) {
+            x.stats[7]++;
+          }
           return s;
+        }
+      }
+    }
+
+    if (options.nodeVcf > 0 && depth >= options.nodeVcf && oppThreats == 0 && beta > -MATE_BOUND) {
+      // a threat search costs a few dozen nodes on most positions and looks far past the horizon of this node
+      long before = x.vcf.nodes;
+      int proof = x.vcf.attack(b, stm, cdStm, cdOpp, NODE_VCF_MOVES, x.turnBase + ply, x.deadline, options.nodeVcfNodes);
+      x.nodes += x.vcf.nodes - before;
+      if (proof != Tactics.NONE) {
+        int v = MATE - ply - (2 * NODE_VCF_MOVES + 1);
+        if (options.trace) {
+          x.stats[57]++;
+        }
+        tt.store(key, depth, toTT(v, ply), TranspositionTable.LOWER, proof);
+        return v;
+      }
+    }
+    if (options.nullR > 0 && !pv && !forced && oppThreats == 0 && depth >= 3 && cdOpp < COOLDOWN
+        && Math.abs(beta) < MATE_BOUND) {
+      int staticEval = eval.evaluate(b, stm, cdStm, cdOpp);
+      x.nodes++;
+      if (staticEval >= beta) {
+        // a pass: the opponent moves, nothing else changes
+        x.prevCell[ply] = -1;
+        int v = -search(x, b, opp, cdOpp, cdStm, depth - 1 - options.nullR, -beta, -beta + 1, ply + 1, false);
+        if (x.stop) {
+          return 0;
+        }
+        if (v >= beta) {
+          return Math.abs(v) > MATE_BOUND ? beta : v;
         }
       }
     }
 
     int[] list = x.moves(ply);
     int[] score = x.order[ply];
+    int[] tactic = x.tact[ply];
     int n = 0;
     if (forced) {
       list[n++] = threatCol;
@@ -692,7 +860,7 @@ public final class Searcher {
         }
       }
     }
-    if (ready && (depth >= 3 || oppThreats > 0)) {
+    if (ready && (depth >= options.blastGenDepth || oppThreats > 0)) {
       for (int c = 0; c < g.cols; c++) {
         if (!b.isFull(c)) {
           list[n++] = c | Tactics.SPECIAL;
@@ -704,51 +872,90 @@ public final class Searcher {
     }
     int[] kill = x.killers[ply];
     int[] hist = x.history[stm];
-    for (int i = 0; i < n; i++) {
-      int m = list[i];
-      int c = Tactics.column(m);
-      if (m == ttMove) {
-        score[i] = 1 << 30;
-      } else if (Tactics.isSpecial(m)) {
-        score[i] = -(1 << 28) + centreBonus[c];
-      } else if (m == kill[0]) {
-        score[i] = 1 << 27;
-      } else if (m == kill[1]) {
-        score[i] = 1 << 26;
-      } else {
-        int s = hist[c] + 4 * potential(b, c, stm) + centreBonus[c];
-        int above = g.index(c, b.height(c)) + 1;
-        if (b.height(c) + 1 < g.rows && b.threats(opp, above) > 0) {
-          s -= 1 << 24; // the reply above would complete the opponent's line
-        }
-        score[i] = s;
-      }
+    int prevCell = ply > 0 ? x.prevCell[ply - 1] : -1;
+    // the TT move and the killers need no scores: most cuts come on them, so the others are scored only when reached
+    int front = moveToFront(list, n, 0, ttMove);
+    if (kill[0] != ttMove) {
+      front = moveToFront(list, n, front, kill[0]);
+    }
+    if (kill[1] != ttMove) {
+      front = moveToFront(list, n, front, kill[1]);
+    }
+    for (int i = 0; i < front; i++) {
+      tactic[i] = 0;
     }
 
+    if (options.trace) {
+      long[] st = x.stats;
+      st[0]++;
+      st[6] += ttMove != Tactics.NONE ? 1 : 0;
+      st[8] += forced ? 1 : 0;
+      st[29 + Math.max(0, Math.min(depth, 11))]++;
+    }
     int best = -INF;
     int bestMove = Tactics.NONE;
     int origAlpha = alpha;
     int nextCdOpp = Math.min(cdStm + 1, COOLDOWN);
     for (int i = 0; i < n; i++) {
-      int bi = i;
-      for (int j = i + 1; j < n; j++) {
-        if (score[j] > score[bi]) {
-          bi = j;
+      if (i == front) {
+        for (int k = i; k < n; k++) {
+          int m = list[k];
+          int c = Tactics.column(m);
+          if (Tactics.isSpecial(m)) {
+            score[k] = -(1 << 28) + centreBonus[c];
+            tactic[k] = 0;
+          } else {
+            int cell = g.index(c, b.height(c));
+            int s = hist[c] + centreBonus[c] + 4 * potential(b, c, stm);
+            if (b.height(c) + 1 < g.rows && b.threats(opp, cell + 1) > 0) {
+              s -= 1 << 24; // the reply above would complete the opponent's line
+            }
+            score[k] = s;
+            tactic[k] = options.lmrTact > 0 && (depth >= options.lmrDepth || options.lmp > 0)
+                && isTactical(b, c, stm, prevCell) ? 1 : 0;
+          }
         }
       }
-      int m = list[bi];
-      list[bi] = list[i];
-      list[i] = m;
-      int tmp = score[bi];
-      score[bi] = score[i];
-      score[i] = tmp;
-
+      if (i >= front) {
+        int bi = i;
+        for (int j = i + 1; j < n; j++) {
+          if (score[j] > score[bi]) {
+            bi = j;
+          }
+        }
+        int mv = list[bi];
+        list[bi] = list[i];
+        list[i] = mv;
+        int tmp = score[bi];
+        score[bi] = score[i];
+        score[i] = tmp;
+        tmp = tactic[bi];
+        tactic[bi] = tactic[i];
+        tactic[i] = tmp;
+      }
+      int m = list[i];
       int c = Tactics.column(m);
       int s;
+      if (options.trace) {
+        x.stats[10]++;
+        x.stats[9] += Tactics.isSpecial(m) ? 1 : 0;
+      }
+      boolean quietLate = !pv && !forced && oppThreats == 0 && i > 0 && tactic[i] == 0 && !Tactics.isSpecial(m)
+          && best > -MATE_BOUND;
+      if (quietLate && options.lmp > 0 && depth <= 2 && i >= options.lmp * depth) {
+        if (options.trace) {
+          x.stats[12]++;
+        }
+        break;
+      }
       if (!Tactics.isSpecial(m)) {
+        int cell = g.index(c, b.height(c));
+        x.prevCell[ply] = cell;
+        int feat = options.audit ? auditFeatures(b, c, cell, stm, prevCell, x) : 0;
         boolean win = b.make(c, stm);
         int lmr = options.lmrFrom;
-        int red = lmr == 0 || i < lmr || depth < 3 || oppThreats > 0 ? 0 : i >= 2 * lmr && depth >= 5 ? 2 : 1;
+        int red = lmr > 0 && oppThreats == 0 && !win && i >= (pv ? 2 * lmr : lmr) && depth >= options.lmrDepth
+            && tactic[i] == 0 ? 2 : 0;
         if (win) {
           s = MATE - ply - 1;
         } else if (b.topRowFull()) {
@@ -756,7 +963,19 @@ public final class Searcher {
         } else if (red > 0) {
           s = -search(x, b, opp, cdOpp, nextCdOpp, depth - 1 - red, -alpha - 1, -alpha, ply + 1, false);
           if (!x.stop && s > alpha) {
+            if (options.audit) {
+              auditCount(x, feat, 2, depth, i);
+            }
             s = pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, false);
+            if (options.audit && s > alpha) {
+              auditCount(x, feat, 3, depth, i);
+            }
+          } else if (options.audit && !x.stop) {
+            auditCount(x, feat, 0, depth, i);
+            int full = -search(x, b, opp, cdOpp, nextCdOpp, depth - 1, -alpha - 1, -alpha, ply + 1, false);
+            if (!x.stop && full > alpha) {
+              auditCount(x, feat, 1, depth, i);
+            }
           }
         } else {
           s = pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, i == 0);
@@ -765,7 +984,17 @@ public final class Searcher {
       } else {
         Board child = x.pool(ply);
         child.copyFrom(b);
-        s = child.blast(c) ? MATE - ply - 1 : pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, beta, ply, i == 0);
+        x.prevCell[ply] = -1;
+        if (child.blast(c)) {
+          s = MATE - ply - 1;
+        } else if (options.lmrBlast > 0 && oppThreats == 0 && i > 0 && depth - 1 - options.lmrBlast >= 0) {
+          s = -search(x, child, opp, cdOpp, 1, depth - 1 - options.lmrBlast, -alpha - 1, -alpha, ply + 1, false);
+          if (!x.stop && s > alpha) {
+            s = pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, beta, ply, false);
+          }
+        } else {
+          s = pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, beta, ply, i == 0);
+        }
       }
       if (x.stop) {
         return 0;
@@ -776,6 +1005,12 @@ public final class Searcher {
         if (s > alpha) {
           alpha = s;
           if (alpha >= beta) {
+            if (options.trace) {
+              x.stats[1]++;
+              x.stats[4] += i == 0 ? 1 : 0;
+              x.stats[5] += i;
+              x.stats[14 + Math.min(i, 11)]++;
+            }
             if (!Tactics.isSpecial(m)) {
               if (kill[0] != m) {
                 kill[1] = kill[0];
@@ -790,6 +1025,10 @@ public final class Searcher {
     }
     int bound = best <= origAlpha ? TranspositionTable.UPPER : best >= beta ? TranspositionTable.LOWER
         : TranspositionTable.EXACT;
+    if (options.trace) {
+      x.stats[2] += bound == TranspositionTable.UPPER ? 1 : 0;
+      x.stats[3] += bound == TranspositionTable.EXACT ? 1 : 0;
+    }
     tt.store(key, depth, toTT(best, ply), bound, bestMove);
     return best;
   }
@@ -855,6 +1094,97 @@ public final class Searcher {
       s += value[b.windowCode(wins[j])];
     }
     return s;
+  }
+
+  /**
+   * Bench only: bit features of a drop for the LMR audit. 0 same column as the last move, 1 next column, 2 two columns
+   * away, 3 own window with 4+, 4 own window with 3, 5 opponent window with 4+, 6 opponent window with 3, 7 the cell
+   * above is an own threat, 8 the last move was a blast, 9 positive history, 10 potential at or above 40.
+   */
+  private int auditFeatures(Board b, int c, int cell, int stm, int prevCell, Ctx x) {
+    int f = 0;
+    if (prevCell < 0) {
+      f |= 1 << 8;
+    } else {
+      int d = Math.abs(prevCell / g.rows - c);
+      f |= d == 0 ? 1 : d == 1 ? 2 : d == 2 ? 4 : 0;
+    }
+    int[] mine = live[stm];
+    int[] theirs = live[3 - stm];
+    for (int j = g.cellStart[cell]; j < g.cellStart[cell + 1]; j++) {
+      int old = b.windowCode(g.cellWin[j]);
+      if (mine[old] >= 16) {
+        f |= 1 << 3;
+      } else if (mine[old] == 9) {
+        f |= 1 << 4;
+      }
+      if (theirs[old] >= 16) {
+        f |= 1 << 5;
+      } else if (theirs[old] == 9) {
+        f |= 1 << 6;
+      }
+    }
+    if (b.height(c) + 1 < g.rows && b.threats(stm, cell + 1) > 0) {
+      f |= 1 << 7;
+    }
+    if (x.history[stm][c] > 0) {
+      f |= 1 << 9;
+    }
+    if (potential(b, c, stm) >= 40) {
+      f |= 1 << 10;
+    }
+    return f;
+  }
+
+  /** kind: 0 reduced and stayed low, 1 of those, full depth beat alpha, 2 reduced beat alpha, 3 full confirmed. */
+  private static void auditCount(Ctx x, int feat, int kind, int depth, int index) {
+    x.stats[100 + kind]++;
+    x.stats[208 + 4 * (Math.min(depth, 9) - 3) + kind]++;
+    x.stats[236 + 4 * Math.min(index / 3, 3) + kind]++;
+    for (int i = 0; i < 11; i++) {
+      if ((feat & (1 << i)) != 0) {
+        x.stats[104 + 4 * i + kind]++;
+      } else {
+        x.stats[160 + 4 * i + kind]++;
+      }
+    }
+  }
+
+  /** If m is in list[front..n), swaps it to index front and returns front + 1; otherwise returns front. */
+  private static int moveToFront(int[] list, int n, int front, int m) {
+    if (m == Tactics.NONE) {
+      return front;
+    }
+    for (int j = front; j < n; j++) {
+      if (list[j] == m) {
+        list[j] = list[front];
+        list[front] = m;
+        return front + 1;
+      }
+    }
+    return front;
+  }
+
+  /**
+   * A drop that must not be reduced: it makes a new threat of the mover, takes a window with four opponent discs, or
+   * opens the cell above when that is a threat of the mover.
+   */
+  private boolean isTactical(Board b, int c, int stm, int prevCell) {
+    int cell = g.index(c, b.height(c));
+    int level = options.lmrTact;
+    if (level >= 2 && prevCell >= 0 && prevCell / g.rows == c) {
+      return true;
+    }
+    int limit = level >= 3 ? 9 : 16;
+    int[] mine = live[stm];
+    int[] theirs = live[3 - stm];
+    for (int j = g.cellStart[cell]; j < g.cellStart[cell + 1]; j++) {
+      int old = b.windowCode(g.cellWin[j]);
+      if (mine[old] >= limit || theirs[old] >= limit) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static int toTT(int s, int ply) {
