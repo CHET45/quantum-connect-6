@@ -14,7 +14,7 @@ import ch.qc.bot.rules.Geometry;
  * "win" into a strong hint; its results use separate table keys so they never pass for proofs.
  *
  * <p>One instance per search context (the board pool is not shared); the result table is shared and lockless.
- * The clock is read every 64 nodes: each reading allocates (see {@link ch.qc.bot.Clock}), and the server counts
+ * The clock is read every {@link Geometry#clockMask} + 1 nodes: each reading allocates (see {@link ch.qc.bot.Clock}), and the server counts
  * the heap a bot fills.
  */
 public final class Vcf {
@@ -23,7 +23,6 @@ public final class Vcf {
   private static final int MAX_VPLY = 64;
   private static final int WIN = 1;
   private static final int FAIL = 2;
-  private static final int CLOCK_MASK = 63;
 
   /** Shared result table of (key ^ data, data); data = result | depth << 2 | (move + 1) << 8. */
   public static final class Table {
@@ -103,7 +102,7 @@ public final class Vcf {
   }
 
   private boolean attacker(Board b, int a, int cdA, int cdD, int d, int vply) {
-    if (aborted || ++nodes > nodeLimit || ((nodes & CLOCK_MASK) == 0 && ch.qc.bot.Clock.nanos() > deadline)) {
+    if (aborted || ++nodes > nodeLimit || ((nodes & g.clockMask) == 0 && ch.qc.bot.Clock.nanos() > deadline)) {
       aborted = true;
       return false;
     }
@@ -113,10 +112,7 @@ public final class Vcf {
     int def = 3 - a;
     int defThreats = 0;
     int defCol = -1;
-    for (int c = 0; c < g.cols; c++) {
-      if (b.isFull(c)) {
-        continue;
-      }
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
       int cell = g.index(c, b.height(c));
       if (b.threats(a, cell) > 0) {
         if (vply == 0) {
@@ -201,10 +197,7 @@ public final class Vcf {
     int threats = 0;
     int threatCol = -1;
     boolean defWins = false;
-    for (int x = 0; x < g.cols; x++) {
-      if (b.isFull(x)) {
-        continue;
-      }
+    for (int x = b.nextThreatColumn(0); x >= 0; x = b.nextThreatColumn(x + 1)) {
       int cell = g.index(x, b.height(x));
       if (b.threats(a, cell) > 0) {
         threats++;

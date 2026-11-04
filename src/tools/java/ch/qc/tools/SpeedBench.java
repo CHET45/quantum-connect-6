@@ -34,7 +34,11 @@ import java.util.SplittableRandom;
  * run:     [--positions suites/bench-positions.txt] [--sizes 8x12,15x11,15x22] [--nodes 40000] [--warm 3] [--rounds 5]
  *          [--eval bot|hand|FILE.qcw] [--sig FILE] [--vcf-only]
  * cold:    --cold --sizes 15x22 --nodes 4000 --seconds 3   one first pass in this JVM, time per position
+ * build:   --build --sizes 40x40 [--after-bot] [--eval NAME]  time and bytes to build the tables of a size, twice
+ * latency: --limit 25 --calls 500 --sizes 40x40 [--after-bot] [--eval NAME]  searches with that stop as in play (root VCF on, table
+ *          kept): by call number the nodes, the overrun past the stop, the longest gap between clock polls
  * extract: --extract OUT [--per-tag 6] [--unseen 12x16,20x20,10x10,7x9] matches.jsonl ...
+ *          --fill OUT --unseen 40x40,...   tall random boards with both blasts ready, the worst case for a node's cost
  * </pre>
  */
 public final class SpeedBench {
@@ -86,6 +90,11 @@ public final class SpeedBench {
     String extract = null;
     int perTag = 6;
     String unseen = "12x16,20x20,10x10,7x9";
+    String fill = null;
+    boolean build = false;
+    boolean afterBot = false;
+    double limit = 0;
+    int calls = 300;
     List<String> files = new ArrayList<>();
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
@@ -102,12 +111,28 @@ public final class SpeedBench {
         case "--extract" -> extract = args[++i];
         case "--per-tag" -> perTag = Integer.parseInt(args[++i]);
         case "--unseen" -> unseen = args[++i];
+        case "--fill" -> fill = args[++i];
+        case "--build" -> build = true;
+        case "--after-bot" -> afterBot = true;
+        case "--limit" -> limit = Double.parseDouble(args[++i]);
+        case "--calls" -> calls = Integer.parseInt(args[++i]);
         default -> files.add(args[i]);
       }
     }
     if (extract != null) {
       extract(Path.of(extract), files, perTag, unseen);
       return;
+    }
+    if (fill != null) {
+      fillPositions(Path.of(fill), unseen);
+      return;
+    }
+    if (build) {
+      buildTimes(sizes, evalName, afterBot);
+      return;
+    }
+    if (afterBot && limit > 0) {
+      new ch.qc.bot.QcBot(); // its warm-up runs, so the first calls below are those of a size it did not prepare
     }
     Map<String, List<Pos>> bySize = load(Path.of(positions));
     PrintWriter w = sig == null ? null : new PrintWriter(Files.newBufferedWriter(Path.of(sig), StandardCharsets.UTF_8));
@@ -119,7 +144,9 @@ public final class SpeedBench {
         }
         Geometry g = new Geometry(list.get(0).rows, list.get(0).cols);
         Evaluator e = evaluator(g, evalName);
-        if (cold) {
+        if (limit > 0) {
+          latency(size.trim(), g, e, list, limit, calls);
+        } else if (cold) {
           cold(g, e, list, nodes, seconds);
         } else {
           hot(size.trim(), g, e, list, nodes, warm, rounds, w, vcfOnly);
@@ -304,6 +331,96 @@ public final class SpeedBench {
     System.out.print(sb);
   }
 
+  private static long allocated() {
+    return ((com.sun.management.ThreadMXBean) java.lang.management.ManagementFactory.getThreadMXBean())
+        .getCurrentThreadAllocatedBytes();
+  }
+
+  /** What a board size without prepared tables costs: each step in ms and kB, cold on the first pass, then again. */
+  private static void buildTimes(String sizes, String evalName, boolean afterBot) throws Exception {
+    if (afterBot) {
+      new ch.qc.bot.QcBot();
+    }
+    for (int pass = 0; pass < 2; pass++) {
+      for (String size : sizes.split(",")) {
+        String[] rc = size.trim().split("x");
+        int rows = Integer.parseInt(rc[0]);
+        int cols = Integer.parseInt(rc[1]);
+        long a0 = allocated();
+        long t0 = System.nanoTime();
+        Geometry g = new Geometry(rows, cols);
+        long t1 = System.nanoTime();
+        long a1 = allocated();
+        Evaluator e = evaluator(g, evalName);
+        long t2 = System.nanoTime();
+        long a2 = allocated();
+        TranspositionTable tt = new TranspositionTable(10);
+        Vcf.Table vt = new Vcf.Table(10);
+        long t3 = System.nanoTime();
+        long a3 = allocated();
+        Searcher s = new Searcher(g, e, tt, Searcher.Options.DEFAULT, vt);
+        long t4 = System.nanoTime();
+        long a4 = allocated();
+        Board b = new Board(g);
+        long t5 = System.nanoTime();
+        long a5 = allocated();
+        b.load(new byte[g.cells]);
+        long t6 = System.nanoTime();
+        System.out.printf(Locale.ROOT,
+            "pass %d %-8s windows %5d  ms: geometry %.2f eval %.2f searcher %.2f board %.2f load %.2f total %.2f"
+                + "  kB: geometry %d eval %d searcher %d board %d  (%s)%n",
+            pass, size.trim(), g.windows, (t1 - t0) / 1e6, (t2 - t1) / 1e6, (t4 - t3) / 1e6, (t5 - t4) / 1e6,
+            (t6 - t5) / 1e6, (t6 - t0 - (t3 - t2)) / 1e6, (a1 - a0) / 1024, (a2 - a1) / 1024, (a4 - a3) / 1024,
+            (a5 - a4) / 1024, e.getClass().getSimpleName());
+        if (s.hashCode() == 0) {
+          System.out.println();
+        }
+      }
+    }
+  }
+
+  /** Searches as in play at a fixed stop: nodes, overrun past the stop and longest poll gap, by call number. */
+  private static void latency(String size, Geometry g, Evaluator e, List<Pos> list, double limitMs, int calls) {
+    long hard = (long) (limitMs * 1e6);
+    Searcher s = new Searcher(g, e, new TranspositionTable(18), Searcher.Options.DEFAULT, new Vcf.Table(16));
+    Vcf v = new Vcf(g, new Vcf.Table(16), true);
+    int[] edges = {1, 3, 10, 30, 100, 300, 1000, 3000, 10000};
+    int from = 0;
+    System.out.printf(Locale.ROOT, "%s %s stop %.0f ms, windows %d%n", size, e.getClass().getSimpleName(), limitMs,
+        g.windows);
+    for (int edge : edges) {
+      int to = Math.min(edge, calls);
+      if (to <= from) {
+        continue;
+      }
+      long[] over = new long[to - from];
+      long maxGap = 0;
+      long maxVcf = 0;
+      long sumNodes = 0;
+      for (int i = from; i < to; i++) {
+        Pos p = list.get(i % list.size());
+        Board b = p.board(g);
+        long t0 = System.nanoTime();
+        Searcher.Result r = s.run(b, p.me, p.cdMe, p.cdOpp, p.turn, Clock.nanos(), hard);
+        over[i - from] = System.nanoTime() - t0 - hard;
+        maxGap = Math.max(maxGap, s.lastMaxGapNanos());
+        sumNodes += r.nodes();
+        // the threat search alone, with no node limit to stop it: how far past a 1 ms deadline does it run?
+        long t1 = System.nanoTime();
+        v.attack(b, p.me, p.cdMe, p.cdOpp, ROOT_VCF_MOVES, p.turn, Clock.nanos() + 1_000_000L, Long.MAX_VALUE / 4);
+        maxVcf = Math.max(maxVcf, System.nanoTime() - t1 - 1_000_000L);
+      }
+      Arrays.sort(over);
+      System.out.printf(Locale.ROOT,
+          "  calls %5d-%-5d mean knodes %7.1f  overrun ms p50 %6.2f p99 %6.2f max %6.2f  max poll gap ms %5.1f"
+              + "  vcf past 1 ms deadline, max ms %6.2f%n",
+          from, to - 1, sumNodes / 1000.0 / (to - from), over[over.length / 2] / 1e6, over[over.length * 99 / 100] / 1e6,
+          over[over.length - 1] / 1e6, maxGap / 1e6, maxVcf / 1e6);
+      from = to;
+    }
+    System.out.flush();
+  }
+
   /** Samples positions from server games (per tag and size) and from short self-play on unseen sizes. */
   private static void extract(Path out, List<String> files, int perTag, String unseen) throws Exception {
     SplittableRandom rnd = new SplittableRandom(20261104L);
@@ -347,6 +464,39 @@ public final class SpeedBench {
     }
     Files.write(out, lines, StandardCharsets.UTF_8);
     System.out.println("wrote " + (lines.size() - 2) + " positions from " + games + " games");
+  }
+
+  /** Random boards filled to 30 to 85% with both blasts ready: tall columns make blasts cost the most. */
+  private static void fillPositions(Path out, String sizes) throws Exception {
+    SplittableRandom rnd = new SplittableRandom(20261105L);
+    List<String> lines = new ArrayList<>();
+    for (String size : sizes.split(",")) {
+      String[] rc = size.trim().split("x");
+      Geometry g = new Geometry(Integer.parseInt(rc[0]), Integer.parseInt(rc[1]));
+      int taken = 0;
+      for (int tries = 0; tries < 200 && taken < 8; tries++) {
+        Board b = new Board(g);
+        int want = g.cells * (30 + 55 * taken / 7) / 100;
+        int colour = 1;
+        int stuck = 0;
+        while (b.discs() < want && stuck < 4 * g.cells) {
+          int c = rnd.nextInt(g.cols);
+          if (b.isFull(c) || b.height(c) + 1 >= g.rows || b.threats(colour, g.index(c, b.height(c))) > 0) {
+            stuck++;
+            continue;
+          }
+          b.make(c, colour);
+          colour = 3 - colour;
+        }
+        Pos p = pos("fill", g, b, colour, COOLDOWN, COOLDOWN, 2 * COOLDOWN + b.discs());
+        if (usable(p)) {
+          lines.add(p.line());
+          taken++;
+        }
+      }
+    }
+    Files.write(out, lines, StandardCharsets.UTF_8);
+    System.out.println("wrote " + lines.size() + " positions");
   }
 
   /** Walks a game (as {@link ServerGames#replay} does) and files each position under its tag. */
@@ -417,9 +567,9 @@ public final class SpeedBench {
   private static boolean usable(Pos p) {
     Geometry g = new Geometry(p.rows, p.cols);
     Board b = p.board(g);
-    Searcher.Result r = searcher(g, new HandEval(g)).run(b, p.me, p.cdMe, p.cdOpp, p.turn, Clock.nanos(), FAR_NANOS,
-        4000);
-    return r.nodes() >= 4000;
+    int want = Math.min(4000, 20 * g.cells);
+    Searcher.Result r = searcher(g, new HandEval(g)).run(b, p.me, p.cdMe, p.cdOpp, p.turn, Clock.nanos(), FAR_NANOS, want);
+    return r.nodes() * 3 > want && Math.abs(r.score()) <= Searcher.MATE_BOUND;
   }
 
   /** Positions for a size the server has not shown yet, from a short deterministic self-play game. */
@@ -436,7 +586,7 @@ public final class SpeedBench {
       FastGame.Engine engine = (b, me, cdMe, cdOpp, turn) -> searcher(g, e)
           .run(b, me, cdMe, cdOpp, turn, Clock.nanos(), FAR_NANOS, 2000).move();
       FastGame.Observer obs = (b, stm, cdStm, cdOpp, turn, move) -> {
-        if (taken[0] < 14 && (turn == 10 || turn == 24 || turn == 40)) {
+        if (taken[0] < 14 && (turn == 10 || turn == 24 || turn == 40 || turn == 80 || turn == 160)) {
           String tag = tag(g, b, cdStm, cdOpp, turn);
           if (tag != null) {
             Pos p = pos(tag, g, b, stm, cdStm, cdOpp, turn);
