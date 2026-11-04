@@ -35,6 +35,7 @@ import java.util.concurrent.Future;
  * --book FILE --lines suites/book-lines.txt --size 15x11 --weights hand --target Savi --us beater --deep-ms 4000
  * --rollouts N (games per move, 0 = none) --rollout-nodes N --threads N --top N (how many differences get rollouts)
  * --games LOG (instead: how long side A stayed in the book in a BookMatch or BookFast log)
+ * --sim-nodes N (node budget of the search without book in the simulation against the target's known replies)
  * </pre>
  */
 public final class BookCheck {
@@ -68,6 +69,7 @@ public final class BookCheck {
     int threads = 2;
     int top = 8;
     Path gamesLog = null;
+    long simNodes = 150_000;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--book" -> bookFile = Path.of(args[++i]);
@@ -82,6 +84,7 @@ public final class BookCheck {
         case "--threads" -> threads = Integer.parseInt(args[++i]);
         case "--top" -> top = Integer.parseInt(args[++i]);
         case "--games" -> gamesLog = Path.of(args[++i]);
+        case "--sim-nodes" -> simNodes = Long.parseLong(args[++i]);
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
@@ -209,7 +212,41 @@ public final class BookCheck {
             String.join(",", d.who.subList(0, Math.min(2, d.who.size()))), sp, sb, sb - sp, rp, rb);
         rank++;
       }
-      simulate(g, book, lines, target, us -> {});
+      Map<String, Map<Integer, int[]>> known = replies(lines, target);
+      Searcher plain = new Searcher(g, eval, new TranspositionTable(18), Searcher.Options.DEFAULT, new Vcf.Table(16));
+      long deepNodes = nps * deepMs / 1000;
+      for (int us = 1; us <= 2; us++) {
+        String withBook = simulate(g, (b, ply, side) -> book.column(b, ply, side, (ply + 1) / 2), known, us, "book");
+        long sn = simNodes;
+        String noBook = simulate(g, (b, ply, side) -> {
+          int move = plain.run(b, side, ply / 2, (ply + 1) / 2, ply, Clock.nanos(), NO_TIME_LIMIT, sn).move();
+          return Tactics.isSpecial(move) ? -1 : Tactics.column(move);
+        }, known, us, "search of " + sn + " nodes");
+        int d = 0;
+        while (d < withBook.length() && d < noBook.length() && withBook.charAt(d) == noBook.charAt(d)) {
+          d++;
+        }
+        if (deepMs > 0 && d < withBook.length() && d < noBook.length()) {
+          String prefix = withBook.substring(0, d);
+          int stm = d % 2 == 0 ? 1 : 2;
+          Searcher s = new Searcher(g, eval, new TranspositionTable(22), Searcher.Options.DEFAULT, new Vcf.Table(17));
+          Board b = position(g, prefix);
+          int cb = Character.digit(withBook.charAt(d), 36);
+          int cn = Character.digit(noBook.charAt(d), 36);
+          int sn1 = score(s, g, b, cn, stm, d, deepNodes);
+          int sb1 = score(s, g, b, cb, stm, d, deepNodes);
+          sb1 = (sb1 + score(s, g, b, cb, stm, d, deepNodes)) / 2;
+          sn1 = (sn1 + score(s, g, b, cn, stm, d, deepNodes)) / 2;
+          String roll = "";
+          if (rollouts > 0) {
+            double[] x = rollout(g, eval, prefix, cn, stm, rollouts, rolloutNodes, pool, threads);
+            double[] y = rollout(g, eval, prefix, cb, stm, rollouts, rolloutNodes, pool, threads);
+            roll = String.format(Locale.ROOT, "; rollouts no book %.1f%%, book %.1f%% of %d", x[0], y[0], (int) x[1]);
+          }
+          System.out.printf(Locale.ROOT, "first difference at ply %d after %s: book %c %+d, search %c %+d (long search)%s%n", d, prefix,
+              Character.forDigit(cb, 36), sb1, Character.forDigit(cn, 36), sn1, roll);
+        }
+      }
     } finally {
       pool.shutdownNow();
     }
@@ -276,8 +313,9 @@ public final class BookCheck {
     }
   }
 
-  private interface Sink {
-    void line(int us);
+  /** Our move in a simulated game, -1 to stop. */
+  private interface Chooser {
+    int column(Board b, int ply, int us);
   }
 
   /** Our own bots are called Savi beater, so they do not count as Savi. */
@@ -285,11 +323,8 @@ public final class BookCheck {
     return name.contains(target) && !name.contains("beater");
   }
 
-  /**
-   * Book against the target's replies known from the export: at the target's positions it plays its most frequent move
-   * there, from any game of that bot. Stops when the target's reply is unknown or the book has no entry.
-   */
-  private static void simulate(Geometry g, Book book, List<Line> lines, String target, Sink sink) {
+  /** The target's moves per exact move prefix, from all its games. */
+  private static Map<String, Map<Integer, int[]>> replies(List<Line> lines, String target) {
     Map<String, Map<Integer, int[]>> replies = new HashMap<>();
     for (Line line : lines) {
       for (int side = 1; side <= 2; side++) {
@@ -302,52 +337,56 @@ public final class BookCheck {
         }
       }
     }
-    for (int us = 1; us <= 2; us++) {
-      StringBuilder sb = new StringBuilder();
-      StringBuilder show = new StringBuilder("book as " + (us == 1 ? "F" : "S") + " against known " + target + " replies:");
-      Board b = new Board(g);
-      int stm = 1;
-      String stop = "";
-      for (int i = 0; i < 60; i++) {
-        int col;
-        if (stm == us) {
-          col = book.column(b, i, us, (i + 1) / 2);
-          if (col < 0) {
-            stop = " (book ends)";
-            break;
-          }
-        } else {
-          Map<Integer, int[]> r = replies.get(sb.toString());
-          if (r == null) {
-            stop = " (reply unknown)";
-            break;
-          }
-          col = -1;
-          int bestN = 0;
-          for (Map.Entry<Integer, int[]> e : r.entrySet()) {
-            if (e.getValue()[0] > bestN) {
-              bestN = e.getValue()[0];
-              col = e.getKey();
-            }
-          }
-          show.append(" [").append(bestN).append("/");
-          int all = 0;
-          for (int[] v : r.values()) {
-            all += v[0];
-          }
-          show.append(all).append("]");
-        }
-        char ch = Character.forDigit(col, 36);
-        sb.append(ch);
-        show.append(' ').append(stm == 1 ? 'F' : 'S').append(ch);
-        if (b.make(col, stm)) {
-          stop = " (win)";
+    return replies;
+  }
+
+  /**
+   * One side against the target's known replies: at the target's positions it plays its most frequent move there, from
+   * any game of that bot. Stops when the target's reply is unknown or the chooser has no move. Returns the moves.
+   */
+  private static String simulate(Geometry g, Chooser chooser, Map<String, Map<Integer, int[]>> replies, int us, String label) {
+    StringBuilder sb = new StringBuilder();
+    StringBuilder show = new StringBuilder(label + " as " + (us == 1 ? "F" : "S") + ":");
+    Board b = new Board(g);
+    int stm = 1;
+    String stop = " (60 plies)";
+    for (int i = 0; i < 60; i++) {
+      int col;
+      if (stm == us) {
+        col = chooser.column(b, i, us);
+        if (col < 0) {
+          stop = " (no move of ours)";
           break;
         }
-        stm = 3 - stm;
+      } else {
+        Map<Integer, int[]> r = replies.get(sb.toString());
+        if (r == null) {
+          stop = " (reply unknown)";
+          break;
+        }
+        col = -1;
+        int bestN = 0;
+        int all = 0;
+        for (Map.Entry<Integer, int[]> e : r.entrySet()) {
+          all += e.getValue()[0];
+          if (e.getValue()[0] > bestN) {
+            bestN = e.getValue()[0];
+            col = e.getKey();
+          }
+        }
+        show.append(" [").append(bestN).append('/').append(all).append(']');
       }
-      System.out.println(show + stop + ", " + sb.length() + " plies");
+      char ch = Character.forDigit(col, 36);
+      sb.append(ch);
+      show.append(' ').append(stm == 1 ? 'F' : 'S').append(ch);
+      if (b.make(col, stm)) {
+        stop = " (win)";
+        break;
+      }
+      stm = 3 - stm;
     }
+    System.out.println(show + stop + ", " + sb.length() + " plies");
+    return sb.toString();
   }
 
   private static Board position(Geometry g, String prefix) {
