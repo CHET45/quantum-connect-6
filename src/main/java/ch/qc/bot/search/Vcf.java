@@ -131,15 +131,11 @@ public final class Vcf {
     }
     if (cdA >= COOLDOWN) {
       for (int c = 0; c < g.cols; c++) {
-        if (b.blastMayWin(c)) {
-          Board p = pool(vply);
-          p.copyFrom(b);
-          if (p.blast(c)) {
-            if (vply == 0) {
-              winMove = c | Tactics.SPECIAL;
-            }
-            return true;
+        if (b.blastWins(c)) {
+          if (vply == 0) {
+            winMove = c | Tactics.SPECIAL;
           }
+          return true;
         }
       }
     }
@@ -218,7 +214,7 @@ public final class Vcf {
         defWins = true;
       }
     }
-    if (threats == 0 || defWins || (defReady && blastWins(b, vply + 1))) {
+    if (threats == 0 || defWins || (defReady && b.anyBlastWins())) {
       return false;
     }
     return defender(b, a, nextCdA, cdD, d - 1, vply + 1, threats, threatCol);
@@ -255,19 +251,6 @@ public final class Vcf {
       }
     }
     return true;
-  }
-
-  private boolean blastWins(Board b, int vply) {
-    for (int c = 0; c < g.cols; c++) {
-      if (b.blastMayWin(c)) {
-        Board p = pool(vply);
-        p.copyFrom(b);
-        if (p.blast(c)) {
-          return true;
-        }
-      }
-    }
-    return false;
   }
 
   private void store(long key, int idx, int result, int d, int move) {
