@@ -107,6 +107,7 @@ public final class QcBot implements Algorithm {
   }
 
   public QcBot(Searcher.Options options, Timing timing) {
+    long constructed = Clock.nanos();
     this.options = options;
     this.timing = timing;
     tt = TranspositionTable.forBot();
@@ -115,7 +116,12 @@ public final class QcBot implements Algorithm {
     probeUpward = timing.probeUpward;
     if (timing.warmupNanos > 0 && !warmedUp) {
       warmedUp = true;
-      WarmUp.beforeTheGame(options).run(timing.warmupNanos);
+      // the whole constructor stays inside this time, also where loading the tables is slow
+      WarmUp warm = WarmUp.beforeTheGame(options);
+      long left = timing.warmupNanos - (Clock.nanos() - constructed);
+      if (left > 0) {
+        warm.run(left);
+      }
     }
   }
 

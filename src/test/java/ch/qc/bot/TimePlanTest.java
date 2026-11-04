@@ -275,6 +275,10 @@ class TimePlanTest {
     l.measured(90 * MS);
     assertTrue(l.known(), "a measurement near the prior settles it");
     assertEquals(CallLimit.PRIOR_NANOS, l.nanos());
+    CallLimit n = new CallLimit();
+    n.measured(40 * MS);
+    n.assumePrior();
+    assertEquals(CallLimit.PRIOR_NANOS, n.nanos(), "a full probe overrules a short measurement");
     CallLimit m = new CallLimit();
     m.measured(30 * MS);
     m.measured(26 * MS);

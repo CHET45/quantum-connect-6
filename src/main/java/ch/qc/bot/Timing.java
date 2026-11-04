@@ -10,9 +10,9 @@ public final class Timing {
   private static final long MS = 1_000_000L;
 
   /**
-   * One-line switch: real search in the constructor, 0 for none. Whether the server times the constructor is unknown
-   * (about 200 ms is known to work). Without a warm-up the code stays cold for longer, so the plan below has lower
-   * stops for longer and a later second-call search.
+   * One-line switch: real search in the constructor until it has taken this long, 0 for none. Whether the server times
+   * the constructor is unknown (about 200 ms is known to work). Without a warm-up the code stays cold for longer, so the
+   * plan below has lower stops for longer and a later second-call search.
    */
   private static final long CONSTRUCTOR_WARMUP_NANOS = 1000 * MS;
 

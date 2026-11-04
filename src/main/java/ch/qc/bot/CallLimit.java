@@ -32,8 +32,12 @@ final class CallLimit {
     return known;
   }
 
-  /** The prior stands: the probe saw no timeout up to the point where a timeout would mean a limit below the prior. */
+  /**
+   * The prior stands: the probe saw no timeout up to the point where a timeout would mean a limit below the prior. That
+   * also overrules an earlier short measurement, which then came from a thread that started very late.
+   */
   void assumePrior() {
+    nanos = PRIOR_NANOS;
     known = true;
   }
 
