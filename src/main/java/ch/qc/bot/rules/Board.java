@@ -58,7 +58,6 @@ public final class Board {
   private long[] sumTag;
   private int[] sumValue;
 
-
   public Board(Geometry g) {
     this.g = g;
     this.t = g.tables;
@@ -267,8 +266,8 @@ public final class Board {
 
   /**
    * Special move in place (R5-R7): the disc lands at height h, the 3x3 block around it is cleared and the
-   * three columns are compacted. A full column is a no-op. Returns true if any K-line of either colour exists
-   * in a window touching the three columns afterwards (the mover wins it, R3-R4).
+   * three columns are compacted. A full column is a no-op. Returns true if a window the blast changed now holds a
+   * K-line of either colour (the mover wins it, R3-R4); a position in play holds no other line.
    */
   public boolean blast(int col) {
     int h = height[col];
