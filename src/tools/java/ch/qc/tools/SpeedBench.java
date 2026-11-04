@@ -38,6 +38,7 @@ import java.util.SplittableRandom;
  * latency: --limit 25 --calls 500 --sizes 40x40 [--eval NAME]  searches with that stop as in play (root VCF on, table
  *          kept): by call number the nodes, the overrun past the stop, the longest gap between clock polls
  * extract: --extract OUT [--per-tag 6] [--unseen 12x16,20x20,10x10,7x9] matches.jsonl ...
+ *          --fill OUT --unseen 40x40,...   tall random boards with both blasts ready, the worst case for a node's cost
  * </pre>
  */
 public final class SpeedBench {
@@ -89,6 +90,7 @@ public final class SpeedBench {
     String extract = null;
     int perTag = 6;
     String unseen = "12x16,20x20,10x10,7x9";
+    String fill = null;
     boolean build = false;
     boolean afterBot = false;
     double limit = 0;
@@ -109,6 +111,7 @@ public final class SpeedBench {
         case "--extract" -> extract = args[++i];
         case "--per-tag" -> perTag = Integer.parseInt(args[++i]);
         case "--unseen" -> unseen = args[++i];
+        case "--fill" -> fill = args[++i];
         case "--build" -> build = true;
         case "--after-bot" -> afterBot = true;
         case "--limit" -> limit = Double.parseDouble(args[++i]);
@@ -118,6 +121,10 @@ public final class SpeedBench {
     }
     if (extract != null) {
       extract(Path.of(extract), files, perTag, unseen);
+      return;
+    }
+    if (fill != null) {
+      fillPositions(Path.of(fill), unseen);
       return;
     }
     if (build) {
@@ -454,6 +461,39 @@ public final class SpeedBench {
     }
     Files.write(out, lines, StandardCharsets.UTF_8);
     System.out.println("wrote " + (lines.size() - 2) + " positions from " + games + " games");
+  }
+
+  /** Random boards filled to 30 to 85% with both blasts ready: tall columns make blasts cost the most. */
+  private static void fillPositions(Path out, String sizes) throws Exception {
+    SplittableRandom rnd = new SplittableRandom(20261105L);
+    List<String> lines = new ArrayList<>();
+    for (String size : sizes.split(",")) {
+      String[] rc = size.trim().split("x");
+      Geometry g = new Geometry(Integer.parseInt(rc[0]), Integer.parseInt(rc[1]));
+      int taken = 0;
+      for (int tries = 0; tries < 200 && taken < 8; tries++) {
+        Board b = new Board(g);
+        int want = g.cells * (30 + 55 * taken / 7) / 100;
+        int colour = 1;
+        int stuck = 0;
+        while (b.discs() < want && stuck < 4 * g.cells) {
+          int c = rnd.nextInt(g.cols);
+          if (b.isFull(c) || b.height(c) + 1 >= g.rows || b.threats(colour, g.index(c, b.height(c))) > 0) {
+            stuck++;
+            continue;
+          }
+          b.make(c, colour);
+          colour = 3 - colour;
+        }
+        Pos p = pos("fill", g, b, colour, COOLDOWN, COOLDOWN, 2 * COOLDOWN + b.discs());
+        if (usable(p)) {
+          lines.add(p.line());
+          taken++;
+        }
+      }
+    }
+    Files.write(out, lines, StandardCharsets.UTF_8);
+    System.out.println("wrote " + lines.size() + " positions");
   }
 
   /** Walks a game (as {@link ServerGames#replay} does) and files each position under its tag. */
