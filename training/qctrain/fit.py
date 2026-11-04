@@ -107,7 +107,7 @@ def main():
     ap.add_argument("--k", default="auto", help="search-value scale of the target, or auto (fitted to outcomes)")
     args = ap.parse_args()
     torch.manual_seed(1)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = os.environ.get("QC_FIT_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
     spec = spec_mod.load(args.spec)
     if args.no_stage:
         spec = dataclasses.replace(spec, stages=1)

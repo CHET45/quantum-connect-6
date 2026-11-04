@@ -120,7 +120,11 @@ def main():
     ap.add_argument("--height-stage", action="store_true", help="stages by average pile height, not by board fill")
     args = ap.parse_args()
     torch.manual_seed(1)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # QC_FIT_DEVICE=cpu (qctrain.budget) keeps this process off the GPU without asking the driver anything
+    device = os.environ.get("QC_FIT_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+    if device == "cpu" and os.environ.get("OMP_NUM_THREADS"):
+        torch.set_num_threads(int(os.environ["OMP_NUM_THREADS"]))
+    print(f"device {device}, {torch.get_num_threads()} threads", flush=True)
     ks = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in args.k}
     sets = [load_set(a, ks, args.lam, device, args.cap, args.k_std) for a in args.set]
     for i, s in enumerate(sets):
@@ -183,8 +187,26 @@ def main():
     best = (float("inf"), None, 0, None)
     history = []
     t0 = time.time()
-    rng = np.random.default_rng(1)
-    for epoch in range(args.epochs):
+    first_epoch = 0
+    os.makedirs(args.out, exist_ok=True)
+    checkpoint = os.path.join(args.out, "checkpoint.pt")
+    # a checkpoint is only good for the same sets; a stale one from another run of this name is ignored
+    c = torch.load(checkpoint, map_location=device) if os.path.exists(checkpoint) else None
+    if c is not None and c.get("sets") != args.set:
+        print("checkpoint of other data ignored", flush=True)
+        c = None
+    if c is not None:
+        theta.data.copy_(c["theta"])
+        tau.data.copy_(c["tau"])
+        opt.load_state_dict(c["opt"])
+        sched.load_state_dict(c["sched"])
+        best = (c["best_val"], c["best_theta"], c["best_epoch"], c["best_tau"])
+        history = c["history"]
+        first_epoch = c["epoch"] + 1
+        print(f"resuming after epoch {c['epoch']} on {device}", flush=True)
+    for epoch in range(first_epoch, args.epochs):
+        rng = np.random.default_rng(1000 + epoch)
+        torch.manual_seed(1000 + epoch)
         plan = []
         for i, s in enumerate(sets):
             n = s["train"]["y"].shape[0]
@@ -227,8 +249,13 @@ def main():
             best = (weighted, theta.detach().clone(), epoch, tau.detach().clone())
         elif epoch - best[2] >= args.patience:
             break
-    theta.data.copy_(best[1])
-    tau.data.copy_(best[3])
+        temporary = checkpoint + ".tmp"
+        torch.save({"sets": args.set, "epoch": epoch, "theta": theta.detach().cpu(), "tau": tau.detach().cpu(), "opt": opt.state_dict(),
+                    "sched": sched.state_dict(), "best_val": best[0], "best_theta": best[1].cpu(), "best_epoch": best[2],
+                    "best_tau": best[3].cpu(), "history": history}, temporary)
+        os.replace(temporary, checkpoint)
+    theta.data.copy_(best[1].to(device))
+    tau.data.copy_(best[3].to(device))
     report = {"lam": args.lam, "best_epoch": best[2], "val_bce": best[0], "stages": sets[0]["spec"].stages,
               "history": history, "generic_hash": hex(sets[0]["hash"]), "sets": []}
     for i, s in enumerate(sets):
@@ -254,6 +281,8 @@ def main():
     with open(os.path.join(args.out, "fit-report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
     print(json.dumps({k: v for k, v in report.items() if k != "history"}), flush=True)
+    if os.path.exists(checkpoint):
+        os.remove(checkpoint)
 
 
 if __name__ == "__main__":
