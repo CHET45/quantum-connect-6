@@ -110,7 +110,7 @@ public final class Searcher {
    * holding 3 discs (an audit of wrongly reduced moves found these 2 to 6 times more often than others).
    */
   public static final class Options {
-    public static final Options DEFAULT = new Options(true, true, false, true, false, 0, 0, 1, 0, 2);
+    public static final Options DEFAULT = new Options(true, true, false, true, false, 0, 0, 0, 0, 2);
     public static final Options NONE = new Options(false, false, false, true, false);
 
     public final boolean rootVcf;
