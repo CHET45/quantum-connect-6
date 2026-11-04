@@ -8,7 +8,7 @@ import ch.qc.bot.rules.Geometry;
  */
 public final class GenericTables {
   private final int k;
-  private final short[][] w;
+  private final short[][] direct;
   private final boolean staged;
   private final boolean heightStage;
   private final int bands;
@@ -20,7 +20,7 @@ public final class GenericTables {
 
   private GenericTables(WeightBlob blob) {
     k = blob.k;
-    w = GenericEval.contexts(blob);
+    direct = GenericEval.directTables(blob);
     staged = blob.stages == Features.STAGES;
     heightStage = blob.version == WeightBlob.VERSION_HEIGHT_STAGE;
     bands = blob.classes / GenericSpec.GROUPS;
@@ -42,7 +42,7 @@ public final class GenericTables {
     }
     GenericEval e = last;
     if (e == null || !e.fits(g)) {
-      e = new GenericEval(g, w, staged, heightStage, bands, shift, t1, t2, t3);
+      e = new GenericEval(g, direct, staged, heightStage, bands, shift, t1, t2, t3);
       last = e;
     }
     return e;

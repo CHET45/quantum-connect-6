@@ -16,6 +16,7 @@ public final class GenericSpec {
   public static final int GROUPS = 3;
   public static final int CLASSES = GROUPS * BANDS;
   /** Canonical-code kinds: digits as they are, reversed, or the smaller of both. */
+  static final int KINDS = 3;
   static final int AS_IS = 0;
   static final int REVERSED = 1;
   static final int SYMMETRIC = 2;
