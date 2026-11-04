@@ -112,6 +112,8 @@ public final class BookMatch {
       exp.runExperiment();
     } catch (RuntimeException e) {
       crashed = true;
+      System.err.println("crash: " + e + (e.getStackTrace().length > 0 ? " at " + e.getStackTrace()[0] : "")
+          + (e.getCause() != null ? " caused by " + e.getCause() : ""));
     }
     ExperimentStatus st = exp.getExperimentStatus();
     List<Move> history = new ArrayList<>(exp.getHistory());
