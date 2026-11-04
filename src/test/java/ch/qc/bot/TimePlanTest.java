@@ -81,7 +81,7 @@ class TimePlanTest {
 
   @Test
   void secondCallSearchesThePositionAfterOurMove() {
-    QcBot bot = new QcBot("s=20,f=20,p=15");
+    QcBot bot = new QcBot("s=20,f=20,p=15,pf=0");
     Algorithm other = new RandomBot();
     QuantumField f = FieldFactory.create(15, 11, bot, other);
     FieldFactory.play(f, bot.accelerateQuark(f), bot.useSpecialMove(f));
@@ -192,7 +192,7 @@ class TimePlanTest {
     int prompt = 0;
     int late = 0;
     for (int game = 0; game < 400 && (prompt < 3 || late < 3); game++) {
-      QcBot bot = new QcBot("s=4,f=4");
+      QcBot bot = new QcBot("s=4,f=4,p=0");
       QuantumField f = FieldFactory.create(8, 12, bot, new RandomBot());
       for (int ply = 0; ply < 70 && FieldFactory.status(f) == ExperimentStatus.INCOMPLETE; ply++) {
         int col = rnd.nextInt(12);

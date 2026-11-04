@@ -63,7 +63,10 @@ final class WarmUp {
     Board b = boards[i];
     int me = toMove[i];
     int[] cd = counter[i];
-    Searcher.Result r = searchers[i].run(b, me, cd[me], cd[3 - me], plies[i], now, nanos);
+    // as a real call does: a fresh board loaded from the cells
+    Board root = new Board(sizes[i]);
+    root.load(b.cells());
+    Searcher.Result r = searchers[i].run(root, me, cd[me], cd[3 - me], plies[i], now, nanos);
     int m = r.move();
     if (m == Tactics.NONE) {
       startGame(i);

@@ -8,11 +8,18 @@ package ch.qc.bot;
 public final class Timing {
   private static final long MS = 1_000_000L;
 
-  /** One-line switch: nanoseconds of real search in the constructor, 0 for none (the server may time it). */
-  private static final long CONSTRUCTOR_WARMUP_NANOS = 0L;
+  /**
+   * One-line switch: real search in the constructor, 0 for none. Whether the server times the constructor is unknown
+   * (about 200 ms is known to work). Without a warm-up the code stays cold for longer, so the plan below has lower
+   * stops for longer and a later second-call search.
+   */
+  private static final long CONSTRUCTOR_WARMUP_NANOS = 1000 * MS;
 
-  public static final Timing DEFAULT = new Timing(new int[] {Integer.MAX_VALUE}, new long[] {80 * MS}, 30 * MS, 0L,
-      CONSTRUCTOR_WARMUP_NANOS, 0, 0L, 0L, false, 0L, 0, 0, 0, 0);
+  public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
+      ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {70 * MS, 80 * MS}, 50 * MS, 85 * MS,
+          CONSTRUCTOR_WARMUP_NANOS, 0, 0L, 0L, true, 96 * MS, 85, 100, 0, 10)
+      : new Timing(new int[] {10, 20, 30, 60, Integer.MAX_VALUE}, new long[] {50 * MS, 60 * MS, 70 * MS, 75 * MS, 80 * MS},
+          30 * MS, 85 * MS, 0L, 0, 0L, 0L, true, 96 * MS, 85, 100, 0, 30);
 
   /** stopNanos[i] holds for own turn indices (0-based) below untilTurn[i], the first match wins. */
   final int[] untilTurn;
