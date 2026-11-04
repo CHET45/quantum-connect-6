@@ -18,9 +18,9 @@ public final class Timing {
 
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {70 * MS, 80 * MS}, 85 * MS,
-          CONSTRUCTOR_WARMUP_NANOS, 0, 0L, 0L, 96 * MS, 85, 100, 10, false)
+          CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 70 * MS, 75 * MS)
       : new Timing(new int[] {10, 20, 30, 60, Integer.MAX_VALUE}, new long[] {50 * MS, 60 * MS, 70 * MS, 75 * MS, 80 * MS},
-          85 * MS, 0L, 0, 0L, 0L, 96 * MS, 85, 100, 30, false);
+          85 * MS, 0L, 96 * MS, 85, 100, 30, false, 70 * MS, 75 * MS);
 
   /** stopNanos[i] holds for own turn indices (0-based) below untilTurn[i], the first match wins. */
   final int[] untilTurn;
@@ -28,10 +28,6 @@ public final class Timing {
   /** Stop of the second-call search, measured from the entry of the second call; 0 for no such search. */
   final long ponderNanos;
   final long warmupNanos;
-  /** Own turns the stop stays at cutNanos after a lost turn or an overrun of overrunNanos; 0 turns this off. */
-  final int cutTurns;
-  final long cutNanos;
-  final long overrunNanos;
   /** First calls aim to end this long after their start, less the stalls seen lately; 0 turns the sensor off. */
   final long stallLimitNanos;
   /** The remembered stall keeps this share, in percent, per own turn, and counts this much, in percent. */
@@ -45,22 +41,29 @@ public final class Timing {
    * longer than a limit of 100 ms allows then starts this probe. Below 100 ms the limit is found either way.
    */
   final boolean probeUpward;
+  /**
+   * A special after a timed-out first call crashes the engine (design R10, R15; seen in night matches), and the bot
+   * cannot see that timeout, only the time since it was called, which starts late if its thread started late. So a blast
+   * is requested only if the first call took at most safeFinishNanos, less the stall remembered; a search with a blast in
+   * the lead stops at blastStopNanos, less that stall, to stay inside it.
+   */
+  final long blastStopNanos;
+  final long safeFinishNanos;
 
-  Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, int cutTurns, long cutNanos,
-      long overrunNanos, long stallLimitNanos, int stallDecayPercent, int stallWeightPercent, int ponderFromTurn,
-      boolean probeUpward) {
+  Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
+      int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
+      long safeFinishNanos) {
     this.untilTurn = untilTurn;
     this.stopNanos = stopNanos;
     this.ponderNanos = ponderNanos;
     this.warmupNanos = warmupNanos;
-    this.cutTurns = cutTurns;
-    this.cutNanos = cutNanos;
-    this.overrunNanos = overrunNanos;
     this.stallLimitNanos = stallLimitNanos;
     this.stallDecayPercent = stallDecayPercent;
     this.stallWeightPercent = stallWeightPercent;
     this.ponderFromTurn = ponderFromTurn;
     this.probeUpward = probeUpward;
+    this.blastStopNanos = blastStopNanos;
+    this.safeFinishNanos = safeFinishNanos;
   }
 
   /** Stop of the first call on this own turn (0-based). */
@@ -74,11 +77,10 @@ public final class Timing {
   }
 
   /**
-   * Harness only: "s=55@10/65@30/80,p=85,w=1000,cut=45@5,over=10,g=96@85@100,up=1". s: first-call stop in ms, each
-   * until an own turn, the last for all others. p: second-call search. w: warm-up. cut=MS@TURNS: the stop after trouble
-   * and for how long. over: the overrun that counts as trouble. g=LIMIT@DECAY@WEIGHT: the stall sensor. pf=N: no
-   * second-call search on own turns below N. up=1: {@link #probeUpward}. Anything not named keeps the value of
-   * {@link #DEFAULT}.
+   * Harness only: "s=55@10/65@30/80,p=85,w=1000,g=96@85@100,up=1,b=70@75". s: first-call stop in ms, each until an own
+   * turn, the last for all others. p: second-call search. w: warm-up. g=LIMIT@DECAY@WEIGHT: the stall sensor. pf=N: no
+   * second-call search on own turns below N. up=1: {@link #probeUpward}. b=STOP@FINISH: blast limits. Anything not named
+   * keeps the value of {@link #DEFAULT}.
    */
   public static Timing parse(String spec) {
     Timing d = DEFAULT;
@@ -86,14 +88,13 @@ public final class Timing {
     long[] stop = d.stopNanos;
     long ponder = d.ponderNanos;
     long warm = d.warmupNanos;
-    int cutTurns = d.cutTurns;
-    long cut = d.cutNanos;
-    long over = d.overrunNanos;
     long stall = d.stallLimitNanos;
     int decay = d.stallDecayPercent;
     int weight = d.stallWeightPercent;
     int ponderFrom = d.ponderFromTurn;
     boolean up = d.probeUpward;
+    long blastStop = d.blastStopNanos;
+    long safeFinish = d.safeFinishNanos;
     for (String part : spec.split(",")) {
       int eq = part.indexOf('=');
       if (eq < 0) {
@@ -116,12 +117,10 @@ public final class Timing {
         ponder = MS * Long.parseLong(value);
       } else if (key.equals("w")) {
         warm = MS * Long.parseLong(value);
-      } else if (key.equals("cut")) {
+      } else if (key.equals("b")) {
         int at = value.indexOf('@');
-        cut = MS * Long.parseLong(value.substring(0, at));
-        cutTurns = Integer.parseInt(value.substring(at + 1));
-      } else if (key.equals("over")) {
-        over = MS * Long.parseLong(value);
+        blastStop = MS * Long.parseLong(value.substring(0, at));
+        safeFinish = MS * Long.parseLong(value.substring(at + 1));
       } else if (key.equals("pf")) {
         ponderFrom = Integer.parseInt(value);
       } else if (key.equals("g")) {
@@ -131,6 +130,6 @@ public final class Timing {
         weight = Integer.parseInt(g[2]);
       }
     }
-    return new Timing(until, stop, ponder, warm, cutTurns, cut, over, stall, decay, weight, ponderFrom, up);
+    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish);
   }
 }

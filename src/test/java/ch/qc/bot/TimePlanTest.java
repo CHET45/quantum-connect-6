@@ -98,7 +98,7 @@ class TimePlanTest {
 
   @Test
   void secondCallSearchesAfterAFirstCallThatUsedItsWholeStop() {
-    QcBot bot = new QcBot("s=" + (QcBot.SAFE_FINISH_NANOS / MS + 5) + ",p=5,pf=0");
+    QcBot bot = new QcBot("s=80,b=70@75,p=5,pf=0");
     QuantumField f = FieldFactory.create(15, 11, bot, new RandomBot());
     FieldFactory.play(f, bot.accelerateQuark(f), bot.useSpecialMove(f));
     FieldFactory.play(f, 5, false);
@@ -193,8 +193,8 @@ class TimePlanTest {
     assertTrue(QcBot.secondCallInTime(1_000 * MS, 1_089 * MS, limit));
     assertFalse(QcBot.secondCallInTime(1_000 * MS, 1_090 * MS, limit));
     assertFalse(QcBot.secondCallInTime(1_000 * MS, 1_100 * MS, limit));
-    assertTrue(QcBot.SAFE_FINISH_NANOS < QcBot.SECOND_CALL_LATE_NANOS);
-    assertTrue(QcBot.BLAST_STOP_NANOS < QcBot.SAFE_FINISH_NANOS);
+    assertTrue(Timing.DEFAULT.safeFinishNanos < QcBot.SECOND_CALL_LATE_NANOS);
+    assertTrue(Timing.DEFAULT.blastStopNanos < Timing.DEFAULT.safeFinishNanos);
   }
 
   /**

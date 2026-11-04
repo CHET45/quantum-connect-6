@@ -30,18 +30,14 @@ import ch.qc.bot.search.Vcf;
  */
 public final class QcBot implements Algorithm {
   /**
-   * A special after a timed-out first call crashes the engine (design R10, R15; seen in a night match), and the bot
-   * cannot see the timeout directly, only the time since it was called, which starts late if its thread started late.
-   * So a blast is requested only if the first call took at most SAFE_FINISH_NANOS, which leaves 25 ms for such a late
-   * start; a search with a blast in the lead stops at BLAST_STOP_NANOS to stay inside that. And it is requested only if
-   * the second call starts before SECOND_CALL_LATE_NANOS since the first began: a first call that timed out makes the
-   * second start at 100 ms or later, seen here from at most the late start's length earlier; 90 leaves margin for that
-   * and for the clock's 1 ms steps, and catches a stall after the first call measured its own end. These three, like
-   * all budgets, are given at a call limit of 100 ms ({@link CallLimit#scaled}).
+   * No blast if the second call starts this long after the first began (at a limit of 100 ms): a first call that timed
+   * out makes the second start at the limit or later, seen here from at most the first thread's late start earlier; 90
+   * leaves margin for that and for the clock's 1 ms steps, and catches a stall after the first call measured its end.
    */
-  static final long SAFE_FINISH_NANOS = 75_000_000L;
-  static final long BLAST_STOP_NANOS = 70_000_000L;
   static final long SECOND_CALL_LATE_NANOS = 90_000_000L;
+  /** A lost turn counts as a stall of this much on top of the one remembered, up to MAX_STALL_PERCENT of the limit. */
+  static final long LOST_TURN_STALL_NANOS = 30_000_000L;
+  static final int MAX_STALL_PERCENT = 60;
   /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
   static final int MAX_MODEL_CELLS = 4096;
   /** Search is limited to boards whose column index fits the transposition-table move field. */
@@ -59,9 +55,6 @@ public final class QcBot implements Algorithm {
   /** An opponent's whole turn longer than this share of the limit, plus a little, hints at a longer limit. */
   private static final int HINT_PERCENT = 110;
   private static final long HINT_SLACK_NANOS = 5_000_000L;
-  /** Each further lost turn while the stop is cut cuts it by this share again. */
-  private static final int CUT_AGAIN_PERCENT = 75;
-  private static final int MAX_CUT_LEVEL = 4;
   /** Budget of the fallback tactics. */
   static final long TACTICS_NANOS = 10_000_000L;
 
@@ -80,7 +73,6 @@ public final class QcBot implements Algorithm {
   private boolean probeUpward;
   private boolean probedUpward;
   private long lastReturn;
-  private int cutLevel;
   private Geometry geometry;
   private Searcher searcher;
   private int calls;
@@ -95,9 +87,6 @@ public final class QcBot implements Algorithm {
   private int searchedCdOpp;
   private int searchedPly;
   private int searchedEmpty;
-  /** Last own turn of a cut stop, and how far the last first call ran past its stop. */
-  private int cutUntil;
-  private volatile long lastOverrun;
   /** Longest stall seen lately, fading per own turn (see {@link Timing#stallLimitNanos}). */
   private long stall;
   private volatile boolean building;
@@ -158,9 +147,6 @@ public final class QcBot implements Algorithm {
     clock.beginTurn(t0, tracker.turn(), tracker.plyIndex());
     if (tracker.turn() == 1) {
       lastScore = 0;
-      cutUntil = 0;
-      cutLevel = 0;
-      lastOverrun = 0;
       stall = 0;
     } else if (lastReturn > 0 && tracker.opponentMoved()
         && t0 - lastReturn > limit.nanos() / 100 * HINT_PERCENT + HINT_SLACK_NANOS) {
@@ -173,7 +159,7 @@ public final class QcBot implements Algorithm {
       col = safeColumn(field);
       special = false;
     }
-    boolean inTime = Clock.nanos() - t0 <= limit.scaled(SAFE_FINISH_NANOS, 40);
+    boolean inTime = Clock.nanos() - t0 <= blastFinish();
     if (special && !inTime && lastResult != null) {
       // too late to ask for the blast: play the best drop, not a drop in the blast's column
       int drop = searcher.lastBestDrop();
@@ -295,6 +281,12 @@ public final class QcBot implements Algorithm {
     }
   }
 
+  /** How long a first call may take and still ask for a blast: the less the more this thread stalled lately. */
+  private long blastFinish() {
+    long limitNow = limit.nanos();
+    return Math.max(limitNow / 10, limit.scaled(timing.safeFinishNanos, 40) - stall);
+  }
+
   /** Called once per own turn with the longest gap between clock polls in the first call. */
   private void noteStall(long gap) {
     stall = Math.max(gap, stall / 100 * timing.stallDecayPercent);
@@ -358,10 +350,9 @@ public final class QcBot implements Algorithm {
       int empty = s.rows * s.cols - s.discs;
       long hard = clock.budget(t0, tracker.plyIndex(), stopNow(), lastScore, empty, limit.nanos());
       searcher.setStallLimit(limit.scaled(timing.stallLimitNanos, 50));
-      searcher.setBlastStop(limit.scaled(BLAST_STOP_NANOS, 30));
+      searcher.setBlastStop(Math.max(limit.nanos() / 20, limit.scaled(timing.blastStopNanos, 30) - stall));
       Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0, hard);
       lastResult = r;
-      lastOverrun = Clock.nanos() - t0 - hard;
       noteStall(searcher.lastMaxGapNanos());
       if (r.move() != Tactics.NONE) {
         lastScore = r.score();
@@ -377,30 +368,15 @@ public final class QcBot implements Algorithm {
     return new Tactics(geometry).choose(board, me, cdMe, cdOpp, Clock.nanos() + Math.min(TACTICS_NANOS, limit.nanos() / 10));
   }
 
-  /** The first-call stop on this turn: by own turn and call limit, and cut after trouble. */
+  /** The first-call stop on this turn: by own turn and call limit, less the stalls seen lately; a lost turn is one. */
   private long stopNow() {
     int turn = tracker.turn() - 1;
     if (tracker.lostPreviousTurn()) {
       limit.distrustRaise();
+      stall = Math.min(stall + LOST_TURN_STALL_NANOS, limit.nanos() / 100 * MAX_STALL_PERCENT);
     }
     long min = limit.nanos() / 100 * MIN_STOP_PERCENT;
     long stop = limit.scaled(timing.stop(turn), MIN_STOP_PERCENT);
-    if (timing.cutTurns > 0) {
-      if (tracker.lostPreviousTurn()) {
-        cutLevel = turn <= cutUntil ? Math.min(cutLevel + 1, MAX_CUT_LEVEL) : 1;
-        cutUntil = turn + timing.cutTurns;
-      } else if (lastOverrun >= timing.overrunNanos) {
-        cutLevel = Math.max(cutLevel, 1);
-        cutUntil = turn + timing.cutTurns;
-      }
-      if (turn <= cutUntil) {
-        long cut = limit.scaled(timing.cutNanos, MIN_STOP_PERCENT);
-        for (int i = 1; i < cutLevel; i++) {
-          cut = cut / 100 * CUT_AGAIN_PERCENT;
-        }
-        stop = Math.min(stop, Math.max(min, cut));
-      }
-    }
     if (timing.stallLimitNanos > 0) {
       long sensed = limit.scaled(timing.stallLimitNanos, 50) - stall / 100 * timing.stallWeightPercent;
       stop = Math.min(stop, Math.max(min, sensed));
