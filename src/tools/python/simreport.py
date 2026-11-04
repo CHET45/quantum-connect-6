@@ -20,11 +20,17 @@ def main():
         files = [f for f in files if f != only]
     data = collections.defaultdict(lambda: collections.defaultdict(list))
     ticks = collections.defaultdict(collections.Counter)
+    results = collections.defaultdict(collections.Counter)
     for path in files:
         for line in open(path, encoding="utf-8"):
             p = line.rstrip("\n").split(",")
             if p[0] == "tick":
                 ticks[p[1]][int(p[2])] += int(p[3])
+                continue
+            if p[0] == "game":
+                results[p[1]][p[5]] += 1
+                results[p[1]]["time"] += p[7] == "TIME"
+                results[p[1]]["seconds"] += float(p[8]) if len(p) > 8 else 0
                 continue
             if len(p) < 18:
                 continue
@@ -66,6 +72,11 @@ def main():
         if n:
             print(f"{','.join(key):<28}{'all':>8}{n:>7}{total['o90']:>6}{total['o100']:>6}{total['to']:>5}"
                   f"{1000 * total['o100'] / n:>8.1f}{1000 * total['to'] / n:>7.1f}")
+    for label, c in sorted(results.items()):
+        n = c["A"] + c["B"] + c["-"]
+        score = (c["A"] + 0.5 * c["-"]) / max(1, n)
+        print(f"games {label}: {n}, A won {c['A']}, B won {c['B']}, drawn {c['-']} (past 30 s: {c['time']}), A scores "
+              f"{100 * score:.1f}%, mean game {c['seconds'] / max(1, n):.1f} s")
     for label, c in sorted(ticks.items()):
         n = sum(c.values())
         print(f"monitor {label}: ticks {n}, late >=20 ms {100 * sum(v for k, v in c.items() if k >= 20) / max(n, 1):.1f}%, "

@@ -158,6 +158,21 @@ class TimePlanTest {
     assertTrue(col >= 0 && col < 12);
   }
 
+  @Test
+  void aBlastTooLateFallsBackToTheBestDrop() {
+    ch.qc.bot.rules.Geometry g = new ch.qc.bot.rules.Geometry(15, 11);
+    ch.qc.bot.search.Searcher s = new ch.qc.bot.search.Searcher(g, new ch.qc.bot.eval.HandEval(g),
+        new ch.qc.bot.search.TranspositionTable(16));
+    ch.qc.bot.rules.Board b = new ch.qc.bot.rules.Board(g);
+    for (int i = 0; i < 20; i++) {
+      assertFalse(b.make(i % 11, 1 + i % 2));
+    }
+    s.run(b, 1, 10, 10, 20, Clock.nanos(), 20 * MS);
+    int drop = s.lastBestDrop();
+    assertTrue(drop != ch.qc.bot.search.Tactics.NONE && !ch.qc.bot.search.Tactics.isSpecial(drop), "drop " + drop);
+    assertFalse(b.isFull(ch.qc.bot.search.Tactics.column(drop)));
+  }
+
   private static int discs(QuantumField f) {
     return Snapshot.read(f).discs;
   }

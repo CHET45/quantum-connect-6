@@ -11,7 +11,7 @@ def main():
     for path in sys.argv[1:]:
         for line in open(path, encoding="utf-8"):
             p = line.rstrip("\n").split(",")
-            if p[0] == "tick" or len(p) < 18:
+            if p[0] in ("tick", "game") or len(p) < 18:
                 continue
             games[(path, p[0], p[1], int(p[2]), p[3])].append(
                 dict(turn=int(p[4]), inms=float(p[6]), outer=float(p[7]), to=int(p[8]), sp=float(p[9]), spo=float(p[10]),

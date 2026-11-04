@@ -189,7 +189,13 @@ public final class ServerSim {
         int toMove = 1;
         int iter = 0;
         long compStart = comp.getTotalCompilationTime();
+        long gameStart = System.nanoTime();
+        boolean onTime = false;
         while (ToolsFields.status(field) == ExperimentStatus.INCOMPLETE && iter < maxPlies) {
+          if (System.nanoTime() - gameStart > 30_000_000_000L) {
+            onTime = true;
+            break;
+          }
           Algorithm bot = toMove == 1 ? first : second;
           AtomicLong in = new AtomicLong();
           long s0 = System.nanoTime();
@@ -257,6 +263,11 @@ public final class ServerSim {
           toMove = 3 - toMove;
           iter++;
         }
+        ExperimentStatus st = ToolsFields.status(field);
+        // after a win the engine leaves the winner's turn passed: the side now to move lost
+        String winner = st == ExperimentStatus.COLLAPSED && !onTime ? ((toMove == 1) == aFirst ? "B" : "A") : "-";
+        w.printf(Locale.ROOT, "game,%s,%dx%d,%d,%s,%s,%d,%s,%.1f%n", label, rows, cols, g, aFirst ? "A" : "B", winner, iter,
+            onTime ? "TIME" : st.toString(), (System.nanoTime() - gameStart) / 1e9);
         w.flush();
       }
       synchronized (lateness) {

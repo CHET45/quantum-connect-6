@@ -71,6 +71,7 @@ public final class QcBot implements Algorithm {
   /** Longest stall seen lately, fading per own turn (see {@link Timing#stallLimitNanos}). */
   private long stall;
   private volatile boolean building;
+  private WarmUp warmUp;
 
   public QcBot() {
     this(Searcher.Options.DEFAULT, Timing.DEFAULT);
@@ -98,7 +99,7 @@ public final class QcBot implements Algorithm {
     }
     if (timing.warmupNanos > 0 && !warmedUp) {
       warmedUp = true;
-      WarmUp.run(preparedGeometry, options, timing.warmupNanos);
+      new WarmUp(preparedGeometry, options).run(timing.warmupNanos);
     }
   }
 
@@ -153,7 +154,16 @@ public final class QcBot implements Algorithm {
       col = safeColumn(field);
       special = false;
     }
-    decision = new Decision(callId, s.fingerprint, col, special, Clock.nanos() - t0 <= SAFE_FINISH_NANOS);
+    boolean inTime = Clock.nanos() - t0 <= SAFE_FINISH_NANOS;
+    if (special && !inTime && lastResult != null) {
+      // too late to ask for the blast: play the best drop, not a drop in the blast's column
+      int drop = searcher.lastBestDrop();
+      if (drop != Tactics.NONE && !field.isColumnFull(Tactics.column(drop))) {
+        col = Tactics.column(drop);
+        special = false;
+      }
+    }
+    decision = new Decision(callId, s.fingerprint, col, special, inTime);
     return col;
   }
 
@@ -179,7 +189,14 @@ public final class QcBot implements Algorithm {
       tracker.noteSpecialRequested();
       return true;
     }
-    ponder(col, t0);
+    if (tracker.turn() <= timing.warmTurns) {
+      if (warmUp == null) {
+        warmUp = new WarmUp(preparedGeometry, options);
+      }
+      warmUp.run(timing.ponderNanos - (Clock.nanos() - t0));
+    } else {
+      ponder(col, t0);
+    }
     return false;
   }
 
@@ -191,7 +208,7 @@ public final class QcBot implements Algorithm {
     Board b = searchedBoard;
     searchedBoard = null;
     lastPonder = null;
-    if (timing.ponderNanos <= 0 || b == null || b.isFull(col)
+    if (timing.ponderNanos <= 0 || tracker.turn() <= timing.ponderFromTurn || b == null || b.isFull(col)
         || !clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
       return;
     }

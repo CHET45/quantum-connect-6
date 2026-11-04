@@ -12,7 +12,7 @@ public final class Timing {
   private static final long CONSTRUCTOR_WARMUP_NANOS = 0L;
 
   public static final Timing DEFAULT = new Timing(new int[] {Integer.MAX_VALUE}, new long[] {80 * MS}, 30 * MS, 0L,
-      CONSTRUCTOR_WARMUP_NANOS, 0, 0L, 0L, false, 0L, 0, 0);
+      CONSTRUCTOR_WARMUP_NANOS, 0, 0L, 0L, false, 0L, 0, 0, 0, 0);
 
   /** stopNanos[i] holds for own turn indices (0-based) below untilTurn[i], the first match wins. */
   final int[] untilTurn;
@@ -33,10 +33,14 @@ public final class Timing {
   /** The remembered stall keeps this share, in percent, per own turn, and counts this much, in percent. */
   final int stallDecayPercent;
   final int stallWeightPercent;
+  /** On own turns below this the second call runs the warm-up games instead of searching the real position. */
+  final int warmTurns;
+  /** The second call does not search on own turns below this: the compiler threads get the CPU instead. */
+  final int ponderFromTurn;
 
   Timing(int[] untilTurn, long[] stopNanos, long firstCallNanos, long ponderNanos, long warmupNanos, int cutTurns,
       long cutNanos, long overrunNanos, boolean centreOnEmpty, long stallLimitNanos, int stallDecayPercent,
-      int stallWeightPercent) {
+      int stallWeightPercent, int warmTurns, int ponderFromTurn) {
     this.untilTurn = untilTurn;
     this.stopNanos = stopNanos;
     this.firstCallNanos = firstCallNanos;
@@ -49,6 +53,8 @@ public final class Timing {
     this.stallLimitNanos = stallLimitNanos;
     this.stallDecayPercent = stallDecayPercent;
     this.stallWeightPercent = stallWeightPercent;
+    this.warmTurns = warmTurns;
+    this.ponderFromTurn = ponderFromTurn;
   }
 
   /** Stop of the first call on this own turn (0-based). */
@@ -65,7 +71,8 @@ public final class Timing {
    * Harness only: "s=55@10/65@30/80,f=30,p=85,w=1000,cut=45@5,over=10,c=1,g=96@85@100". s: first-call stop in ms, each
    * until an own turn, the last for all others. f: first call of an instance. p: second-call search. w: warm-up.
    * cut=MS@TURNS: the stop after trouble and for how long. over: the overrun that counts as trouble. c=1: centre on an
-   * empty board. g=LIMIT@DECAY@WEIGHT: the stall sensor. Anything not named keeps the value of {@link #DEFAULT}.
+   * empty board. g=LIMIT@DECAY@WEIGHT: the stall sensor. wt=N: warm-up games in the second call of own turns below N.
+   * pf=N: no second-call search on own turns below N. Anything not named keeps the value of {@link #DEFAULT}.
    */
   public static Timing parse(String spec) {
     Timing d = DEFAULT;
@@ -81,6 +88,8 @@ public final class Timing {
     long stall = d.stallLimitNanos;
     int decay = d.stallDecayPercent;
     int weight = d.stallWeightPercent;
+    int warmTurns = d.warmTurns;
+    int ponderFrom = d.ponderFromTurn;
     for (String part : spec.split(",")) {
       int eq = part.indexOf('=');
       if (eq < 0) {
@@ -111,6 +120,10 @@ public final class Timing {
         over = MS * Long.parseLong(value);
       } else if (key.equals("c")) {
         centre = value.equals("1");
+      } else if (key.equals("pf")) {
+        ponderFrom = Integer.parseInt(value);
+      } else if (key.equals("wt")) {
+        warmTurns = Integer.parseInt(value);
       } else if (key.equals("g")) {
         String[] g = value.split("@");
         stall = MS * Long.parseLong(g[0]);
@@ -118,6 +131,7 @@ public final class Timing {
         weight = Integer.parseInt(g[2]);
       }
     }
-    return new Timing(until, stop, first, ponder, warm, cutTurns, cut, over, centre, stall, decay, weight);
+    return new Timing(until, stop, first, ponder, warm, cutTurns, cut, over, centre, stall, decay, weight, warmTurns,
+        ponderFrom);
   }
 }

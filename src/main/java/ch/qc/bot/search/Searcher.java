@@ -205,6 +205,8 @@ public final class Searcher {
   private long stallLimit;
   /** Longest time between two clock polls of the last finished search. */
   private volatile long lastMaxGap;
+  /** Best drop of the last finished search, NONE if it stopped before it had one. */
+  private volatile int lastBestDrop = Tactics.NONE;
 
   /** Mutable state of one search call. */
   private static final class Ctx {
@@ -221,6 +223,8 @@ public final class Searcher {
     long maxGap;
     long start;
     long stallLimit;
+    /** Best root move that is not a blast, in the order of the last completed iteration. */
+    int bestDrop;
     final int[][] moves = new int[MAX_PLY][];
     final int[][] order = new int[MAX_PLY][];
     final int[][] killers = new int[MAX_PLY][2];
@@ -340,6 +344,11 @@ public final class Searcher {
     return lastMaxGap;
   }
 
+  /** The move to play if a chosen blast cannot be requested safely any more: the best drop of the last search. */
+  public int lastBestDrop() {
+    return lastBestDrop;
+  }
+
   /**
    * Searches the position for colour me and returns the best move found before the hard deadline.
    *
@@ -371,6 +380,7 @@ public final class Searcher {
     x.lastPoll = startNanos;
     x.maxGap = 0;
     x.stallLimit = stallLimit;
+    x.bestDrop = Tactics.NONE;
     int opp = 3 - me;
     cdMe = Math.min(cdMe, COOLDOWN);
     cdOpp = Math.min(cdOpp, COOLDOWN);
@@ -408,6 +418,7 @@ public final class Searcher {
           + centreBonus[Tactics.column(moves[i])];
     }
     sortByScore(moves, scores, n);
+    x.bestDrop = firstDrop(moves, n);
 
     long hardDeadline = startNanos + hardNanos;
     if (options.rootVcf) {
@@ -461,6 +472,7 @@ public final class Searcher {
       bestScore = iterScore;
       completed = depth;
       sortByScore(moves, scores, n);
+      x.bestDrop = firstDrop(moves, n);
       long elapsed = Clock.nanos() - startNanos;
       if (Math.abs(bestScore) > MATE_BOUND || n == 1 || (options.ebf > 0 && elapsed * options.ebf > hardNanos)
           || x.nodes * EBF > maxNodes) {
@@ -470,6 +482,15 @@ public final class Searcher {
     return result(x, best, bestScore, completed, startNanos);
   }
 
+  private static int firstDrop(int[] moves, int n) {
+    for (int i = 0; i < n; i++) {
+      if (!Tactics.isSpecial(moves[i])) {
+        return moves[i];
+      }
+    }
+    return Tactics.NONE;
+  }
+
   private Result result(Ctx x, int move, int score, int depth, long startNanos) {
     boolean two = x.leafVcf != x.vcf;
     long vn = x.vcf.nodes + (two ? x.leafVcf.nodes : 0);
@@ -477,6 +498,7 @@ public final class Searcher {
     long br = x.vcf.blastRefutations + (two ? x.leafVcf.blastRefutations : 0);
     Result r = new Result(move, score, depth, x.nodes, Clock.nanos() - startNanos, vn, vp, br);
     lastMaxGap = x.maxGap;
+    lastBestDrop = x.bestDrop;
     idle = x;
     return r;
   }
