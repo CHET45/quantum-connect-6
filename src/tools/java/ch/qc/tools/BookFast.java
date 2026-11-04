@@ -32,7 +32,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <pre>
  * --book FILE --size 15x11 --weights SPEC (a .qcw file or "hand") --nodes N --jitter 0.3 --pairs N --threads N
- * --seed S --out FILE --b-book FILE (a book for B as well, to compare two books)
+ * --seed S --out FILE --b-book FILE (a book for B as well, to compare two books) --b-weights SPEC (another evaluation
+ * for B); --book none plays A without a book, the baseline against such a B
  * </pre>
  */
 public final class BookFast {
@@ -61,6 +62,7 @@ public final class BookFast {
     Path bookFileB = null;
     String size = "15x11";
     String weights = "hand";
+    String weightsB = null;
     long nodes = 60_000;
     double jitter = 0.3;
     int pairs = 100;
@@ -73,6 +75,7 @@ public final class BookFast {
         case "--b-book" -> bookFileB = Path.of(args[++i]);
         case "--size" -> size = args[++i];
         case "--weights" -> weights = args[++i];
+        case "--b-weights" -> weightsB = args[++i];
         case "--nodes" -> nodes = Long.parseLong(args[++i]);
         case "--jitter" -> jitter = Double.parseDouble(args[++i]);
         case "--pairs" -> pairs = Integer.parseInt(args[++i]);
@@ -82,11 +85,13 @@ public final class BookFast {
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
-    Book bookA = Book.fromBytes(Files.readAllBytes(bookFile));
+    // "none" plays both sides without a book: the baseline against a different opponent
+    Book bookA = bookFile.toString().equals("none") ? null : Book.fromBytes(Files.readAllBytes(bookFile));
     Book bookB = bookFileB == null ? null : Book.fromBytes(Files.readAllBytes(bookFileB));
     String[] rc = size.split("x");
     Geometry g = new Geometry(Integer.parseInt(rc[0]), Integer.parseInt(rc[1]));
     Evaluator eval = Evaluators.factory(weights).apply(g);
+    Evaluator evalB = weightsB == null ? eval : Evaluators.factory(weightsB).apply(g);
     if (out != null && out.toAbsolutePath().getParent() != null) {
       Files.createDirectories(out.toAbsolutePath().getParent());
     }
@@ -104,8 +109,8 @@ public final class BookFast {
       long sd = seed;
       for (int p = 0; p < pairs; p++) {
         int pair = p;
-        done.submit(() -> new String[] {game(g, eval, n, j, sd, pair, true, bookA, bookB, hits),
-            game(g, eval, n, j, sd, pair, false, bookA, bookB, hits)});
+        done.submit(() -> new String[] {game(g, eval, evalB, n, j, sd, pair, true, bookA, bookB, hits),
+            game(g, eval, evalB, n, j, sd, pair, false, bookA, bookB, hits)});
       }
       for (int p = 0; p < pairs; p++) {
         for (String line : done.take().get()) {
@@ -129,11 +134,11 @@ public final class BookFast {
         games == 0 ? 0 : (double) hits.get() / games, (System.nanoTime() - t0) / 6e10);
   }
 
-  private static String game(Geometry g, Evaluator eval, long nodes, double jitter, long seed, int pair, boolean aFirst,
-      Book bookA, Book bookB, AtomicLong hits) {
+  private static String game(Geometry g, Evaluator eval, Evaluator evalB, long nodes, double jitter, long seed, int pair,
+      boolean aFirst, Book bookA, Book bookB, AtomicLong hits) {
     long s = seed * 1_000_003L + pair * 2L + (aFirst ? 0 : 1);
     FastGame.Engine a = engine(g, eval, nodes, jitter, s, bookA, hits);
-    FastGame.Engine b = engine(g, eval, nodes, jitter, s ^ 0x5DEECE66DL, bookB, new AtomicLong());
+    FastGame.Engine b = engine(g, evalB, nodes, jitter, s ^ 0x5DEECE66DL, bookB, new AtomicLong());
     StringBuilder moves = new StringBuilder();
     int[] plies = new int[1];
     FastGame.Outcome o = FastGame.play(g, new int[0], aFirst ? a : b, aFirst ? b : a,
