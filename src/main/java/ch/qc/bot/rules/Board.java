@@ -34,7 +34,6 @@ public final class Board {
   private final int[] colThreats;
   /** Bit c % 64 of threatCols[c / 64] says whether colThreats[c] is above 0. */
   private final long[] threatCols;
-  private final int[] live3 = new int[3];
   private long hash;
   private int discs;
 
@@ -108,8 +107,6 @@ public final class Board {
       threatCols[i] = o.threatCols[i];
     }
     resetLevels();
-    live3[1] = o.live3[1];
-    live3[2] = o.live3[2];
     hash = o.hash;
     discs = o.discs;
   }
@@ -156,7 +153,6 @@ public final class Board {
     java.util.Arrays.fill(colThreats, 0);
     java.util.Arrays.fill(threatCols, 0);
     resetLevels();
-    live3[1] = live3[2] = 0;
     for (int w = 0; w < g.windows; w++) {
       int code = codeFromCells(w);
       wc[w] = (short) code;
@@ -190,12 +186,6 @@ public final class Board {
       int cellIndex = winCells[w * k + p - 1];
       thr[2][cellIndex] += (byte) sign;
       countThreat(cellIndex / rows, sign);
-    }
-    if ((f & 256) != 0) {
-      live3[1] += sign;
-    }
-    if ((f & 512) != 0) {
-      live3[2] += sign;
     }
   }
 
@@ -527,8 +517,16 @@ public final class Board {
     return -1;
   }
 
+  /** Windows with at least three discs of the colour and none of the other, counted on demand (leaf VCF only). */
   public int live3(int colour) {
-    return live3[colour];
+    boolean[] live = t.live3[colour];
+    int n = 0;
+    for (int w = 0; w < g.windows; w++) {
+      if (live[wc[w]]) {
+        n++;
+      }
+    }
+    return n;
   }
 
   private void resetLevels() {
@@ -608,8 +606,6 @@ public final class Board {
         && java.util.Arrays.equals(fresh.thr[1], thr[1])
         && java.util.Arrays.equals(fresh.thr[2], thr[2])
         && java.util.Arrays.equals(fresh.colThreats, colThreats)
-        && java.util.Arrays.equals(fresh.threatCols, threatCols)
-        && fresh.live3[1] == live3[1]
-        && fresh.live3[2] == live3[2];
+        && java.util.Arrays.equals(fresh.threatCols, threatCols);
   }
 }
