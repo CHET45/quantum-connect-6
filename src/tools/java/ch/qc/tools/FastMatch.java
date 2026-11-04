@@ -25,6 +25,7 @@ import java.util.concurrent.Executors;
  * --a SPEC --b SPEC       search options as for qcbot: specs ("" for the defaults, "+razor,-rootVcf", "noVcf"),
  *                         optionally followed by @WEIGHTS (a .qcw file, or @hand), e.g. "@data/models/gen001/eval.qcw"
  * --nodes N               node budget per move (default 20000)
+ * --ms N                  real time per move instead of nodes (run it through rtrun.py)
  * --openings FILE         opening pool (default suites/openings-ROWSxCOLS.txt)
  * --rows R --cols C       board size (default 8x12)
  * --pairs N --sprt E0,E1 --threads N --seed S --out FILE   as in MatchMain
@@ -38,11 +39,14 @@ import java.util.concurrent.Executors;
 public final class FastMatch {
   private FastMatch() {}
 
+  /** The time limit of each search, far away unless --ms is given. */
+  private static long hardNanos = Long.MAX_VALUE / 4;
+
   /** A search configuration as a FastGame engine with its own tables, one per game and side. */
   public static FastGame.Engine engine(Geometry g, Searcher.Options options, Evaluator eval, long nodes) {
     Searcher s = new Searcher(g, eval, new TranspositionTable(18), options, new Vcf.Table(16));
     return (Board b, int me, int cdMe, int cdOpp, int turn) ->
-        s.run(b, me, cdMe, cdOpp, turn, ch.qc.bot.Clock.nanos(), Long.MAX_VALUE / 4, nodes).move();
+        s.run(b, me, cdMe, cdOpp, turn, ch.qc.bot.Clock.nanos(), hardNanos, nodes).move();
   }
 
   /**
@@ -120,6 +124,10 @@ public final class FastMatch {
         case "--a" -> a = args[++i];
         case "--b" -> b = args[++i];
         case "--nodes" -> nodes = Long.parseLong(args[++i]);
+        case "--ms" -> {
+          hardNanos = Long.parseLong(args[++i]) * 1_000_000L;
+          nodes = Long.MAX_VALUE;
+        }
         case "--openings" -> openings = args[++i];
         case "--rows" -> rows = Integer.parseInt(args[++i]);
         case "--cols" -> cols = Integer.parseInt(args[++i]);
