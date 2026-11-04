@@ -35,7 +35,7 @@ import java.util.SplittableRandom;
  *          [--eval bot|hand|FILE.qcw] [--sig FILE] [--vcf-only]
  * cold:    --cold --sizes 15x22 --nodes 4000 --seconds 3   one first pass in this JVM, time per position
  * build:   --build --sizes 40x40 [--after-bot] [--eval NAME]  time and bytes to build the tables of a size, twice
- * latency: --limit 25 --calls 500 --sizes 40x40 [--eval NAME]  searches with that stop as in play (root VCF on, table
+ * latency: --limit 25 --calls 500 --sizes 40x40 [--after-bot] [--eval NAME]  searches with that stop as in play (root VCF on, table
  *          kept): by call number the nodes, the overrun past the stop, the longest gap between clock polls
  * extract: --extract OUT [--per-tag 6] [--unseen 12x16,20x20,10x10,7x9] matches.jsonl ...
  *          --fill OUT --unseen 40x40,...   tall random boards with both blasts ready, the worst case for a node's cost
@@ -130,6 +130,9 @@ public final class SpeedBench {
     if (build) {
       buildTimes(sizes, evalName, afterBot);
       return;
+    }
+    if (afterBot && limit > 0) {
+      new ch.qc.bot.QcBot(); // its warm-up runs, so the first calls below are those of a size it did not prepare
     }
     Map<String, List<Pos>> bySize = load(Path.of(positions));
     PrintWriter w = sig == null ? null : new PrintWriter(Files.newBufferedWriter(Path.of(sig), StandardCharsets.UTF_8));
