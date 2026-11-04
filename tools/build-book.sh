@@ -33,12 +33,10 @@ CP="$RUN/main;$RUN/tools;libs/core-2.0-SNAPSHOT.jar"
 "$JB/java.exe" -Xmx3g -cp "$CP" ch.qc.tools.BookBuilder --weights "$WEIGHTS" --minutes "$MINUTES" --threads "$THREADS" \
   --out "$OUT" "$@" 2>&1 | grep --line-buffered -v "Picked up" &
 if [ "$THREADS" -gt 2 ]; then
-  sleep 2
-  for P in $(ps -W | grep -i java.exe | awk '{print $4}'); do
-    if powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=$P').CommandLine" 2>/dev/null \
-        | grep -q "BookBuilder.*--out $OUT"; then
-      powershell -NoProfile -Command "(Get-Process -Id $P).PriorityClass='Idle'" || true
-    fi
+  sleep 3
+  for P in $(powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | Where-Object { \$_.CommandLine -match 'BookBuilder' -and \$_.CommandLine -match [regex]::Escape('$RUN') } | ForEach-Object { \$_.ProcessId }" | tr -d ''); do
+    powershell -NoProfile -Command "(Get-Process -Id $P).PriorityClass='Idle'" || true
+    echo "java process $P set to Idle priority"
   done
 fi
 wait
