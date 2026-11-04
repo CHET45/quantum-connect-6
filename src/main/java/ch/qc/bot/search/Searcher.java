@@ -180,6 +180,7 @@ public final class Searcher {
     public boolean nodeRule = true;
     /** Collect cut and node statistics into {@link Result#stats()} (bench only). */
     public boolean trace;
+    public boolean audit;
     // ordering
     public boolean histCell;
     public boolean histKeep;
@@ -197,7 +198,7 @@ public final class Searcher {
     public int lmrDepth = 3;
     public int lmrDiv = 200;
     public int lmrBase = 50;
-    public boolean lmrTact;
+    public int lmrTact;
     public int lmrRoot;
     public int lmrBlast;
     public int lmrHist;
@@ -209,6 +210,8 @@ public final class Searcher {
     public boolean partial;
     public boolean pvFix = true;
     public boolean lazyOrder = true;
+    public boolean lazyLeafBlast = true;
+    public boolean leafBlastThreat;
     public int evalCacheBits;
     public int rootVcfMs = 10;
     public int oppVcfMs = 5;
@@ -217,6 +220,7 @@ public final class Searcher {
       maxDepth = o.maxDepth;
       nodeRule = o.nodeRule;
       trace = o.trace;
+      audit = o.audit;
       histCell = o.histCell;
       histKeep = o.histKeep;
       histMalus = o.histMalus;
@@ -244,6 +248,8 @@ public final class Searcher {
       partial = o.partial;
       pvFix = o.pvFix;
       lazyOrder = o.lazyOrder;
+      lazyLeafBlast = o.lazyLeafBlast;
+      leafBlastThreat = o.leafBlastThreat;
       evalCacheBits = o.evalCacheBits;
       rootVcfMs = o.rootVcfMs;
       oppVcfMs = o.oppVcfMs;
@@ -341,7 +347,7 @@ public final class Searcher {
     final Vcf vcf;
     final Vcf leafVcf;
     /** Bench counters. */
-    final long[] stats = new long[64];
+    final long[] stats = new long[256];
 
     Ctx(Geometry g, Options options, Vcf.Table vcfTable, int token, long deadline, long maxNodes, int turnBase) {
       this.g = g;
@@ -789,7 +795,8 @@ public final class Searcher {
       }
     }
     boolean ready = cdStm >= COOLDOWN;
-    if (ready && depth >= options.blastWinMinDepth && b.anyBlastWins()) {
+    boolean leafBlast = options.blastWinMinDepth <= 0 && options.lazyLeafBlast;
+    if (ready && (leafBlast ? depth >= 1 : depth >= options.blastWinMinDepth) && b.anyBlastWins()) {
       return MATE - ply - 1;
     }
     if (oppThreats >= 2 && !ready) {
@@ -815,6 +822,19 @@ public final class Searcher {
         if (options.trace) {
           x.stats[11]++;
         }
+        if (leafBlast) {
+          // the scan can only raise the value, so a leaf already at beta needs none
+          int v = eval.evaluate(b, stm, cdStm, cdOpp);
+          if (ready) {
+            return v < beta && b.anyBlastWins() ? MATE - ply - 1 : v;
+          }
+          if (options.leafBlastThreat && cdOpp >= COOLDOWN && v > alpha && ply < MAX_PLY - 2 && b.anyBlastWins()) {
+            // the opponent wins by a blast next turn unless this side has an answer: look one ply further
+            depth = 1;
+          } else {
+            return v;
+          }
+        } else
         if (evalCache != null) {
           long k = key(b, stm, cdStm, cdOpp, x.turnBase + ply);
           int idx = (int) k & (evalCache.length - 1);
@@ -829,9 +849,13 @@ public final class Searcher {
           evalCache[idx] = (k & ~0xFFFFL) | (v + 32768L);
           return v;
         }
-        return eval.evaluate(b, stm, cdStm, cdOpp);
+        else return eval.evaluate(b, stm, cdStm, cdOpp);
+      } else {
+        if (leafBlast && ready && b.anyBlastWins()) {
+          return MATE - ply - 1;
+        }
+        depth = 1;
       }
-      depth = 1;
     } else if (forced && options.forcedExt) {
       depth++;
     }
@@ -1005,8 +1029,8 @@ public final class Searcher {
         }
         score[k] = s;
       }
-      if (options.lmrTact && !Tactics.isSpecial(m)) {
-        tactic[k] = isTactical(b, c, stm) ? 1 : 0;
+      if (options.lmrTact > 0 && !Tactics.isSpecial(m)) {
+        tactic[k] = isTactical(b, c, stm, prevCell) ? 1 : 0;
       } else {
         tactic[k] = 0;
       }
@@ -1063,6 +1087,7 @@ public final class Searcher {
       if (!Tactics.isSpecial(m)) {
         int cell = g.index(c, b.height(c));
         x.prevCell[ply] = cell;
+        int feat = options.audit ? auditFeatures(b, c, cell, stm, prevCell, x) : 0;
         boolean win = b.make(c, stm);
         int lmr = options.lmrFrom;
         int red = 0;
@@ -1092,7 +1117,19 @@ public final class Searcher {
         } else if (red > 0) {
           s = -search(x, b, opp, cdOpp, nextCdOpp, depth - 1 - red, -alpha - 1, -alpha, ply + 1, false);
           if (!x.stop && s > alpha) {
+            if (options.audit) {
+              auditCount(x, feat, 2);
+            }
             s = pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, false);
+            if (options.audit && s > alpha) {
+              auditCount(x, feat, 3);
+            }
+          } else if (options.audit && !x.stop) {
+            auditCount(x, feat, 0);
+            int full = -search(x, b, opp, cdOpp, nextCdOpp, depth - 1, -alpha - 1, -alpha, ply + 1, false);
+            if (!x.stop && full > alpha) {
+              auditCount(x, feat, 1);
+            }
           }
         } else {
           s = pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, i == 0);
@@ -1213,6 +1250,58 @@ public final class Searcher {
     return s;
   }
 
+  /**
+   * Bench only: bit features of a drop for the LMR audit. 0 same column as the last move, 1 next column, 2 two columns
+   * away, 3 own window with 4+, 4 own window with 3, 5 opponent window with 4+, 6 opponent window with 3, 7 the cell
+   * above is an own threat, 8 the last move was a blast, 9 positive history, 10 potential at or above 40.
+   */
+  private int auditFeatures(Board b, int c, int cell, int stm, int prevCell, Ctx x) {
+    int f = 0;
+    if (prevCell < 0) {
+      f |= 1 << 8;
+    } else {
+      int d = Math.abs(prevCell / g.rows - c);
+      f |= d == 0 ? 1 : d == 1 ? 2 : d == 2 ? 4 : 0;
+    }
+    int[] mine = live[stm];
+    int[] theirs = live[3 - stm];
+    for (int j = g.cellStart[cell]; j < g.cellStart[cell + 1]; j++) {
+      int old = b.windowCode(g.cellWin[j]);
+      if (mine[old] >= 16) {
+        f |= 1 << 3;
+      } else if (mine[old] == 9) {
+        f |= 1 << 4;
+      }
+      if (theirs[old] >= 16) {
+        f |= 1 << 5;
+      } else if (theirs[old] == 9) {
+        f |= 1 << 6;
+      }
+    }
+    if (b.height(c) + 1 < g.rows && b.threats(stm, cell + 1) > 0) {
+      f |= 1 << 7;
+    }
+    if (x.history[stm][c] > 0) {
+      f |= 1 << 9;
+    }
+    if (potential(b, c, stm) >= 40) {
+      f |= 1 << 10;
+    }
+    return f;
+  }
+
+  /** kind: 0 reduced and stayed low, 1 of those, full depth beat alpha, 2 reduced beat alpha, 3 full confirmed. */
+  private static void auditCount(Ctx x, int feat, int kind) {
+    x.stats[100 + kind]++;
+    for (int i = 0; i < 11; i++) {
+      if ((feat & (1 << i)) != 0) {
+        x.stats[104 + 4 * i + kind]++;
+      } else {
+        x.stats[160 + 4 * i + kind]++;
+      }
+    }
+  }
+
   /** If m is in list[front..n), swaps it to index front and returns front + 1; otherwise returns front. */
   private static int moveToFront(int[] list, int n, int front, int m) {
     if (m == Tactics.NONE) {
@@ -1246,16 +1335,18 @@ public final class Searcher {
    * A drop that must not be reduced: it makes a new threat of the mover, takes a window with four opponent discs, or
    * opens the cell above when that is a threat of the mover.
    */
-  private boolean isTactical(Board b, int c, int stm) {
+  private boolean isTactical(Board b, int c, int stm, int prevCell) {
     int cell = g.index(c, b.height(c));
-    if (b.height(c) + 1 < g.rows && b.threats(stm, cell + 1) > 0) {
+    int level = options.lmrTact;
+    if (level >= 2 && prevCell >= 0 && prevCell / g.rows == c) {
       return true;
     }
+    int limit = level >= 3 ? 9 : 16;
     int[] mine = live[stm];
     int[] theirs = live[3 - stm];
     for (int j = g.cellStart[cell]; j < g.cellStart[cell + 1]; j++) {
       int old = b.windowCode(g.cellWin[j]);
-      if (mine[old] >= 16 || theirs[old] >= 16) {
+      if (mine[old] >= limit || theirs[old] >= limit) {
         return true;
       }
     }

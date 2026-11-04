@@ -66,6 +66,7 @@ public final class SearchOptions {
       case "lmrDiv" -> o.lmrDiv = v;
       case "lmrBase" -> o.lmrBase = v;
       case "lmrRoot" -> o.lmrRoot = v;
+      case "lmrTact" -> o.lmrTact = v;
       case "lmrBlast" -> o.lmrBlast = v;
       case "lmrHist" -> o.lmrHist = v;
       case "lmp" -> o.lmp = v;
@@ -83,14 +84,16 @@ public final class SearchOptions {
     switch (name) {
       case "nodeRule" -> o.nodeRule = on;
       case "pvFix" -> o.pvFix = on;
+      case "audit" -> o.audit = on;
       case "lazyOrder" -> o.lazyOrder = on;
+      case "lazyLeafBlast" -> o.lazyLeafBlast = on;
+      case "leafBlastThreat" -> o.leafBlastThreat = on;
       case "histCell" -> o.histCell = on;
       case "histKeep" -> o.histKeep = on;
       case "counterMove" -> o.counterMove = on;
       case "valOrder" -> o.valOrder = on;
       case "rootNodes" -> o.rootNodes = on;
       case "forcedExt" -> o.forcedExt = on;
-      case "lmrTact" -> o.lmrTact = on;
       case "partial" -> o.partial = on;
       default -> throw new IllegalArgumentException("unknown search option " + name);
     }

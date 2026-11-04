@@ -253,6 +253,19 @@ public final class SearchBench {
         sb.append(' ').append(st[6 + i]);
       }
       System.out.println(sb);
+      if (st[6 + 100] > 0) {
+        String[] names = {"same col", "next col", "2 cols", "own 4+", "own 3", "opp 4+", "opp 3", "own thr above", "after blast",
+            "hist>0", "pot>=40"};
+        System.out.printf(Locale.ROOT, "   audit all: stayed low %d, missed %d (%.2f%%); beat alpha %d, confirmed %d (%.1f%%)%n",
+            st[106], st[107], 100.0 * st[107] / Math.max(1, st[106]), st[108], st[109], 100.0 * st[109] / Math.max(1, st[108]));
+        for (int i = 0; i < 11; i++) {
+          int on = 6 + 104 + 4 * i;
+          int off = 6 + 160 + 4 * i;
+          System.out.printf(Locale.ROOT, "   %-14s with: low %8d missed %6.2f%%, beat %7d confirmed %5.1f%% | without: low %8d missed %6.2f%%, beat %7d confirmed %5.1f%%%n",
+              names[i], st[on], 100.0 * st[on + 1] / Math.max(1, st[on]), st[on + 2], 100.0 * st[on + 3] / Math.max(1, st[on + 2]),
+              st[off], 100.0 * st[off + 1] / Math.max(1, st[off]), st[off + 2], 100.0 * st[off + 3] / Math.max(1, st[off + 2]));
+        }
+      }
     }
   }
 }
