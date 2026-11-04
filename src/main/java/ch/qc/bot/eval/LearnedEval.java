@@ -9,8 +9,7 @@ import ch.qc.bot.rules.Tables;
  * plus the threat-family tables, from the side to move's view, in 1/256 logit. The window tables are expanded per
  * window and per context at construction, so a window costs one short read. Immutable, shareable between bots.
  */
-public final class LearnedEval implements Evaluator {
-  private final Geometry g;
+public final class LearnedEval extends WindowSumEval {
   private final short[] swap12;
   private final int codes;
   /** w[stage * cdContexts + cd][window * codes + relative code]; stage 0 only for a one-stage blob. */
@@ -22,7 +21,7 @@ public final class LearnedEval implements Evaluator {
 
   /** The blob must match the spec ({@link WeightBlob#matches}); callers check that first. */
   public LearnedEval(FeatureSpec spec, WeightBlob blob) {
-    this.g = spec.g;
+    super(spec.g);
     Tables t = g.tables;
     this.swap12 = t.swap12;
     this.codes = spec.codes;
@@ -56,7 +55,17 @@ public final class LearnedEval implements Evaluator {
   /** The unclamped integer sum (the quantity the Java-Python parity test compares). */
   public int rawSum(Board b, int stm, int cdStm, int cdOpp) {
     int cd = Features.cdContext(cdStm, cdOpp);
-    short[] table = w[staged ? Features.stage(b) * Features.CD_CONTEXTS + cd : cd];
+    int ctx = staged ? Features.stage(b) * Features.CD_CONTEXTS + cd : cd;
+    int sum = windowSum(b, 2 * ctx + stm - 1, w[ctx], stm);
+    int packed = Features.threatIndices(b, stm, cdStm, cdOpp);
+    sum += t1[cd * Features.T1_SIZE + Features.t1(packed)];
+    sum += t2[cd * Features.T2_SIZE + Features.t2(packed)];
+    sum += t3[Features.t3(packed)];
+    return sum;
+  }
+
+  @Override
+  int fullSum(Board b, short[] table, int stm) {
     int sum = 0;
     int off = 0;
     if (stm == Board.FIRST) {
@@ -68,10 +77,31 @@ public final class LearnedEval implements Evaluator {
         sum += table[off + swap12[b.windowCode(win)]];
       }
     }
-    int packed = Features.threatIndices(b, stm, cdStm, cdOpp);
-    sum += t1[cd * Features.T1_SIZE + Features.t1(packed)];
-    sum += t2[cd * Features.T2_SIZE + Features.t2(packed)];
-    sum += t3[Features.t3(packed)];
+    return sum;
+  }
+
+  @Override
+  int dropChange(Board b, int level, short[] table, int stm) {
+    int cell = b.levelCell(level);
+    int colour = b.levelColour(level);
+    int[] wins = g.cellWin;
+    int[] pow = g.cellPow;
+    int log = b.levelLog(level);
+    int end = g.cellStart[cell + 1];
+    int sum = 0;
+    if (stm == Board.FIRST) {
+      for (int j = g.cellStart[cell]; j < end; j++) {
+        int off = wins[j] * codes;
+        int old = b.loggedCode(log++);
+        sum += table[off + old + colour * pow[j]] - table[off + old];
+      }
+    } else {
+      for (int j = g.cellStart[cell]; j < end; j++) {
+        int off = wins[j] * codes;
+        int old = b.loggedCode(log++);
+        sum += table[off + swap12[old + colour * pow[j]]] - table[off + swap12[old]];
+      }
+    }
     return sum;
   }
 }

@@ -31,7 +31,6 @@ public final class Tactics {
   private final Board child;
   private final Board grand;
   private final Board great;
-  private final Board probe;
   /** potential[colour][code]: weight of a window that still can become a line of colour. */
   private final int[][] potential;
   private long deadline;
@@ -42,7 +41,6 @@ public final class Tactics {
     this.child = new Board(g);
     this.grand = new Board(g);
     this.great = new Board(g);
-    this.probe = new Board(g);
     potential = new int[3][t.codes];
     for (int code = 0; code < t.codes; code++) {
       int[] n = new int[3];
@@ -84,11 +82,8 @@ public final class Tactics {
     if (mySp) {
       for (int i = 0; i < cols; i++) {
         int c = centre(i);
-        if (b.blastMayWin(c)) {
-          child.copyFrom(b);
-          if (child.blast(c)) {
-            return c | SPECIAL;
-          }
+        if (b.blastWins(c)) {
+          return c | SPECIAL;
         }
       }
     }
@@ -244,11 +239,8 @@ public final class Tactics {
     }
     if (special) {
       for (int c = 0; c < g.cols; c++) {
-        if (b.blastMayWin(c)) {
-          probe.copyFrom(b);
-          if (probe.blast(c)) {
-            return true;
-          }
+        if (b.blastWins(c)) {
+          return true;
         }
       }
     }

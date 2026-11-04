@@ -228,14 +228,23 @@ public final class MatchMain {
       Algorithm first = new ScriptedOpening(aFirst ? pa : pb, openings[0]);
       Algorithm second = new ScriptedOpening(aFirst ? pb : pa, openings[1]);
       Experiment exp = new Experiment(first, second, false, false, rows, cols);
-      exp.runExperiment();
+      boolean crashed = false;
+      try {
+        exp.runExperiment();
+      } catch (ArrayIndexOutOfBoundsException e) {
+        crashed = true; // a special after a timed-out first call: the engine indexes column -1 (design R10, R15)
+      }
 
       ExperimentStatus st = exp.getExperimentStatus();
       List<Move> history = exp.getHistory();
       SpaceOwnership aColour = aFirst ? SpaceOwnership.FIRST_PLAYER : SpaceOwnership.SECOND_PLAYER;
       int scoreA2 = 1;
       String reason = st == ExperimentStatus.UNCERTAIN ? "full" : "cap";
-      if (st == ExperimentStatus.COLLAPSED) {
+      if (crashed) {
+        // the mover crashed the engine: scored as a loss, so a run of many games survives it
+        scoreA2 = exp.getCurrentPlayer() == aColour ? 0 : 2;
+        reason = "crash";
+      } else if (st == ExperimentStatus.COLLAPSED) {
         scoreA2 = exp.getCurrentPlayer() == aColour ? 2 : 0;
         reason = history.get(history.size() - 1).isSpecialMove() ? "blast" : "six";
       }
