@@ -238,9 +238,9 @@ public final class Board {
       if ((info[old] | info[nw]) != 0) {
         account(w, old, -1);
         account(w, nw, 1);
-      }
-      if (nw == target) {
-        win = true;
+        if (nw == target) {
+          win = true;
+        }
       }
     }
     levelLog[l + 1] = log;
@@ -427,18 +427,22 @@ public final class Board {
         return true;
       }
     }
+    if (lineRun(n + away, lo + 1, away, 1, v) + lineRun(n - away, lo - 1, -away, -1, v) >= need) {
+      return true;
+    }
     int far = n + away * need;
-    boolean room = far >= 0 && far < cols;
-    for (int y = lo; y < end; y++) {
+    if (far < 0 || far >= cols) {
+      return false;
+    }
+    // a line away from the blast needs discs in each of the next columns, at worst descending one row per column
+    int limit = end;
+    for (int i = 1; i <= need; i++) {
+      limit = Math.min(limit, height[n + away * i] + i);
+    }
+    for (int y = lo; y < limit; y++) {
       v = cell[base + y + drop];
-      if (room && (lineRun(n + away, y, away, 0, v) >= need || lineRun(n + away, y - 1, away, -1, v) >= need)) {
-        return true;
-      }
-      if (y == lo) {
-        if (lineRun(n + away, y + 1, away, 1, v) + lineRun(n - away, y - 1, -away, -1, v) >= need) {
-          return true;
-        }
-      } else if (room && lineRun(n + away, y + 1, away, 1, v) >= need) {
+      if (lineRun(n + away, y, away, 0, v) >= need || lineRun(n + away, y - 1, away, -1, v) >= need
+          || (y > lo && lineRun(n + away, y + 1, away, 1, v) >= need)) {
         return true;
       }
     }
