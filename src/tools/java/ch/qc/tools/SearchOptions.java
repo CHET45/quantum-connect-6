@@ -65,8 +65,8 @@ public final class SearchOptions {
       case "lmp" -> o.lmp = v;
       case "nullR" -> o.nullR = v;
       case "blastGenDepth" -> o.blastGenDepth = v;
-      case "rootVcfMs" -> o.rootVcfMs = v;
-      case "oppVcfMs" -> o.oppVcfMs = v;
+      case "rootVcfShare" -> o.rootVcfShare = v;
+      case "oppVcfShare" -> o.oppVcfShare = v;
       default -> throw new IllegalArgumentException("unknown search option " + name);
     }
   }

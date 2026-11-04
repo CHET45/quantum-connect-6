@@ -195,8 +195,9 @@ public final class Searcher {
     public boolean partial;
     public int nodeVcf;
     public int nodeVcfNodes = 200;
-    public int rootVcfMs = 10;
-    public int oppVcfMs = 5;
+    /** The root threat searches get at most 1/rootVcfShare and 1/oppVcfShare of the budget of the call. */
+    public int rootVcfShare = 8;
+    public int oppVcfShare = 16;
 
     private Options tunedLike(Options o) {
       maxDepth = o.maxDepth;
@@ -215,8 +216,8 @@ public final class Searcher {
       partial = o.partial;
       nodeVcf = o.nodeVcf;
       nodeVcfNodes = o.nodeVcfNodes;
-      rootVcfMs = o.rootVcfMs;
-      oppVcfMs = o.oppVcfMs;
+      rootVcfShare = o.rootVcfShare;
+      oppVcfShare = o.oppVcfShare;
       return this;
     }
 
@@ -245,10 +246,17 @@ public final class Searcher {
   }
 
   private static final int ROOT_VCF_MOVES = 12;
-  private static final long ROOT_VCF_NODES = 20_000;
   private static final int OPP_VCF_MOVES = 8;
-  private static final long OPP_VCF_NODES = 8_000;
-  private static final long OPP_VCF_REPLY_NODES = 1_500;
+  /**
+   * The root threat searches scale with the budget of the call, so they take the same share of any time limit: nodes per
+   * millisecond of budget (20,000, 8,000 and 1,500 at 80 ms), and the time shares in {@link Options}. A fixed-node run
+   * counts 2,000 nodes as a millisecond, about what the search visits.
+   */
+  private static final long ROOT_VCF_NODES_PER_MS = 250;
+  private static final long OPP_VCF_NODES_PER_MS = 100;
+  private static final long OPP_VCF_REPLY_NODES_PER_MS = 19;
+  private static final long NODES_PER_MS = 2_000;
+  private static final long MAX_BUDGET_MS = 1_000_000;
   private static final int LEAF_VCF_MOVES = 3;
   private static final int NODE_VCF_MOVES = 10;
   private static final long LEAF_VCF_NODES = 100;
@@ -523,16 +531,17 @@ public final class Searcher {
     x.bestDrop = firstDrop(moves, n);
 
     long hardDeadline = startNanos + hardNanos;
+    long budgetMs = Math.max(1, Math.min(Math.min(hardNanos / 1_000_000L, maxNodes / NODES_PER_MS), MAX_BUDGET_MS));
     if (options.rootVcf) {
       int m = x.vcf.attack(root, me, cdMe, cdOpp, ROOT_VCF_MOVES, turnIndex,
-          Math.min(hardDeadline, Clock.nanos() + options.rootVcfMs * 1_000_000L), ROOT_VCF_NODES);
+          Math.min(hardDeadline, Clock.nanos() + hardNanos / options.rootVcfShare), budgetMs * ROOT_VCF_NODES_PER_MS);
       if (m != Tactics.NONE) {
         return result(x, m, MATE_BOUND + 1, 0, startNanos);
       }
     }
     if (options.opponentVcf && n > 1) {
       n = dropMovesLosingToVcf(x, root, me, cdMe, cdOpp, turnIndex, moves, scores, n,
-          Math.min(hardDeadline, Clock.nanos() + options.oppVcfMs * 1_000_000L));
+          Math.min(hardDeadline, Clock.nanos() + hardNanos / options.oppVcfShare), budgetMs);
     }
 
     x.lastPoll = Clock.nanos();
@@ -630,9 +639,10 @@ public final class Searcher {
    * found (moves stay in their order). Returns the new move count; all moves are kept if none stops it.
    */
   private int dropMovesLosingToVcf(Ctx x, Board root, int me, int cdMe, int cdOpp, int turnIndex, int[] moves,
-      int[] scores, int n, long deadline) {
+      int[] scores, int n, long deadline, long budgetMs) {
     int opp = 3 - me;
-    if (x.vcf.attack(root, opp, cdOpp, cdMe, OPP_VCF_MOVES, turnIndex + 1, deadline, OPP_VCF_NODES) == Tactics.NONE) {
+    if (x.vcf.attack(root, opp, cdOpp, cdMe, OPP_VCF_MOVES, turnIndex + 1, deadline, budgetMs * OPP_VCF_NODES_PER_MS)
+        == Tactics.NONE) {
       return n;
     }
     int kept = 0;
@@ -650,8 +660,8 @@ public final class Searcher {
         child.make(c, me);
         cdNext = Math.min(cdMe + 1, COOLDOWN);
       }
-      if (x.vcf.attack(child, opp, cdOpp, cdNext, OPP_VCF_MOVES, turnIndex + 1, deadline, OPP_VCF_REPLY_NODES)
-          == Tactics.NONE) {
+      if (x.vcf.attack(child, opp, cdOpp, cdNext, OPP_VCF_MOVES, turnIndex + 1, deadline,
+          budgetMs * OPP_VCF_REPLY_NODES_PER_MS) == Tactics.NONE) {
         keep[kept++] = i;
       }
     }
