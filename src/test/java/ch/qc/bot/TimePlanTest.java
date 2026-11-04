@@ -262,7 +262,8 @@ class TimePlanTest {
     assertEquals(25 * MS, CallLimit.round(26 * MS));
     assertEquals(50 * MS, CallLimit.round(53 * MS));
     assertEquals(500 * MS, CallLimit.round(530 * MS));
-    assertEquals(149 * MS / 10 * 9, CallLimit.round(149 * MS));
+    assertEquals(200 * MS, CallLimit.round(199 * MS));
+    assertEquals(140 * MS / 10 * 9, CallLimit.round(140 * MS));
   }
 
   @Test
