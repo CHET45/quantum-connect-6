@@ -207,6 +207,8 @@ public final class Searcher {
   private volatile Ctx idle;
   /** See {@link #setStallLimit}; 0 is off. */
   private long stallLimit;
+  /** See {@link #setBlastStop}; 0 is off. */
+  private long blastStop;
   /** Longest time between two clock polls of the last finished search. */
   private volatile long lastMaxGap;
   /** Best drop of the last finished search, NONE if it stopped before it had one. */
@@ -229,6 +231,9 @@ public final class Searcher {
     long stallLimit;
     /** Best root move that is not a blast, in the order of the last completed iteration. */
     int bestDrop;
+    /** The move this search would play now is a blast; past blastDeadline that ends the search. */
+    boolean leadingBlast;
+    long blastDeadline;
     final int[][] moves = new int[MAX_PLY][];
     final int[][] order = new int[MAX_PLY][];
     final int[][] killers = new int[MAX_PLY][2];
@@ -343,6 +348,15 @@ public final class Searcher {
     stallLimit = nanos;
   }
 
+  /**
+   * A search whose current choice is a blast ends this long after its start: a blast needs a first call that surely
+   * ended in time (the engine crashes on a special after a timed-out first call), and searching on would only eat that
+   * margin. A later iteration may still change its mind before this time.
+   */
+  public void setBlastStop(long nanos) {
+    blastStop = nanos;
+  }
+
   /** Longest time between two clock polls of the last finished search. */
   public long lastMaxGapNanos() {
     return lastMaxGap;
@@ -385,6 +399,8 @@ public final class Searcher {
     x.maxGap = 0;
     x.stallLimit = stallLimit;
     x.bestDrop = Tactics.NONE;
+    x.leadingBlast = false;
+    x.blastDeadline = blastStop > 0 ? startNanos + blastStop : Long.MAX_VALUE;
     int opp = 3 - me;
     cdMe = Math.min(cdMe, COOLDOWN);
     cdOpp = Math.min(cdOpp, COOLDOWN);
@@ -459,6 +475,7 @@ public final class Searcher {
         if (score > alpha) {
           alpha = score;
         }
+        x.leadingBlast = Tactics.isSpecial(completed > 0 && iterScore <= bestScore ? best : iterBest);
       }
       if (x.stop) {
         // a move that beat the previous best with a completed score is still trustworthy
@@ -798,7 +815,7 @@ public final class Searcher {
         x.deadline = Math.min(x.deadline, x.start + x.stallLimit - gap);
       }
     }
-    if (x.nodes > x.maxNodes || now > x.deadline || token != x.token) {
+    if (x.nodes > x.maxNodes || now > x.deadline || token != x.token || (x.leadingBlast && now > x.blastDeadline)) {
       x.stop = true;
     }
     return x.stop;

@@ -31,6 +31,7 @@ def main():
                 results[p[1]][p[5]] += 1
                 results[p[1]]["time"] += p[7] == "TIME"
                 results[p[1]]["seconds"] += float(p[8]) if len(p) > 8 else 0
+                results[p[1]]["crash"] += int(p[9]) if len(p) > 9 else 0
                 continue
             if len(p) < 18:
                 continue
@@ -76,7 +77,7 @@ def main():
         n = c["A"] + c["B"] + c["-"]
         score = (c["A"] + 0.5 * c["-"]) / max(1, n)
         print(f"games {label}: {n}, A won {c['A']}, B won {c['B']}, drawn {c['-']} (past 30 s: {c['time']}), A scores "
-              f"{100 * score:.1f}%, mean game {c['seconds'] / max(1, n):.1f} s")
+              f"{100 * score:.1f}%, mean game {c['seconds'] / max(1, n):.1f} s, engine crash path {c['crash']}")
     for label, c in sorted(ticks.items()):
         n = sum(c.values())
         print(f"monitor {label}: ticks {n}, late >=20 ms {100 * sum(v for k, v in c.items() if k >= 20) / max(n, 1):.1f}%, "

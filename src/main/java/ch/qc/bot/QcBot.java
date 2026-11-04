@@ -27,8 +27,18 @@ import ch.qc.bot.search.Vcf;
  * from {@link Clock}.
  */
 public final class QcBot implements Algorithm {
-  /** A special is never raised if the first call took longer than this (it may have timed out, R10, R15). */
-  static final long SAFE_FINISH_NANOS = 85_000_000L;
+  /**
+   * A special after a timed-out first call crashes the engine (design R10, R15; seen in a night match), and the bot
+   * cannot see the timeout directly, only the time since it was called, which starts late if its thread started late.
+   * So a blast is requested only if the first call took at most SAFE_FINISH_NANOS, which leaves 25 ms for such a late
+   * start; a search with a blast in the lead stops at BLAST_STOP_NANOS to stay inside that. And it is requested only if
+   * the second call starts before SECOND_CALL_LATE_NANOS since the first began: a first call that timed out makes the
+   * second start at 100 ms or later, seen here from at most the late start's length earlier; 90 leaves margin for that
+   * and for the clock's 1 ms steps, and catches a stall after the first call measured its own end.
+   */
+  static final long SAFE_FINISH_NANOS = 75_000_000L;
+  static final long BLAST_STOP_NANOS = 70_000_000L;
+  static final long SECOND_CALL_LATE_NANOS = 90_000_000L;
   /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
   static final int MAX_MODEL_CELLS = 4096;
   /** Search is limited to boards whose column index fits the transposition-table move field. */
@@ -56,6 +66,7 @@ public final class QcBot implements Algorithm {
   private Searcher searcher;
   private int calls;
   private volatile Decision decision;
+  private volatile long firstCallStart;
   private volatile Searcher.Result lastResult;
   private volatile Searcher.Result lastPonder;
   /** Our search position of this turn and its context, for the second call; null when no search ran. */
@@ -136,6 +147,7 @@ public final class QcBot implements Algorithm {
   @Override
   public int accelerateQuark(QuantumField field) {
     long t0 = Clock.nanos();
+    firstCallStart = t0;
     int callId = ++calls;
     decision = null;
     Snapshot s = Snapshot.read(field);
@@ -178,7 +190,7 @@ public final class QcBot implements Algorithm {
       return false;
     }
     Decision d = decision;
-    if (d == null || !d.finishedInTime() || d.callId() != calls) {
+    if (d == null || !d.finishedInTime() || d.callId() != calls || !secondCallInTime(firstCallStart, t0)) {
       return false;
     }
     int col = d.column();
@@ -200,6 +212,11 @@ public final class QcBot implements Algorithm {
     return false;
   }
 
+  /** False if the second call starts so late that the first may have timed out. */
+  static boolean secondCallInTime(long firstCallStart, long secondCallStart) {
+    return secondCallStart - firstCallStart < SECOND_CALL_LATE_NANOS;
+  }
+
   /**
    * Searches the position after our committed move, opponent to move, so the next turn starts from a filled
    * transposition table. It returns well inside the second call; the next first call's search ends any overrun.
@@ -216,6 +233,7 @@ public final class QcBot implements Algorithm {
       return;
     }
     searcher.setStallLimit(0L);
+    searcher.setBlastStop(0L);
     lastPonder = searcher.run(b, 3 - searchedMe, searchedCdOpp, Math.min(searchedCdMe + 1, TurnTracker.COOLDOWN),
         searchedPly + 1, t0, timing.ponderNanos);
     if (searcher.lastMaxGapNanos() > stall) {
@@ -240,6 +258,10 @@ public final class QcBot implements Algorithm {
 
   TurnTracker tracker() {
     return tracker;
+  }
+
+  Decision lastDecision() {
+    return decision;
   }
 
   /** Search statistics of the latest call (harness only). */
@@ -277,6 +299,7 @@ public final class QcBot implements Algorithm {
       int empty = s.rows * s.cols - s.discs;
       long hard = clock.budget(t0, tracker.plyIndex(), stopNow(firstCall), lastScore, empty);
       searcher.setStallLimit(timing.stallLimitNanos);
+      searcher.setBlastStop(BLAST_STOP_NANOS);
       Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0, hard);
       lastResult = r;
       lastOverrun = Clock.nanos() - t0 - hard;

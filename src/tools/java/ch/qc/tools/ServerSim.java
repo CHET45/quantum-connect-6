@@ -191,6 +191,7 @@ public final class ServerSim {
         long compStart = comp.getTotalCompilationTime();
         long gameStart = System.nanoTime();
         boolean onTime = false;
+        int crashes = 0;
         while (ToolsFields.status(field) == ExperimentStatus.INCOMPLETE && iter < maxPlies) {
           if (System.nanoTime() - gameStart > 30_000_000_000L) {
             onTime = true;
@@ -257,6 +258,8 @@ public final class ServerSim {
               spOuter / 1e6, spTo ? 1 : 0, nodes, depth, gcCount, gcMs, comp.getTotalCompilationTime() - compStart,
               (isA ? ctorA : ctorB) / 1_000_000L, ponderNodes);
           own[toMove]++;
+          // the real engine crashes here: a special it would honour on a column of -1
+          crashes += sp && counter[toMove] >= 10 && col < 0 ? 1 : 0;
           boolean honoured = sp && counter[toMove] >= 10 && col >= 0;
           ToolsFields.play(field, col, honoured);
           counter[toMove] = honoured ? 1 : counter[toMove] + 1;
@@ -266,8 +269,8 @@ public final class ServerSim {
         ExperimentStatus st = ToolsFields.status(field);
         // after a win the engine leaves the winner's turn passed: the side now to move lost
         String winner = st == ExperimentStatus.COLLAPSED && !onTime ? ((toMove == 1) == aFirst ? "B" : "A") : "-";
-        w.printf(Locale.ROOT, "game,%s,%dx%d,%d,%s,%s,%d,%s,%.1f%n", label, rows, cols, g, aFirst ? "A" : "B", winner, iter,
-            onTime ? "TIME" : st.toString(), (System.nanoTime() - gameStart) / 1e9);
+        w.printf(Locale.ROOT, "game,%s,%dx%d,%d,%s,%s,%d,%s,%.1f,%d%n", label, rows, cols, g, aFirst ? "A" : "B", winner, iter,
+            onTime ? "TIME" : st.toString(), (System.nanoTime() - gameStart) / 1e9, crashes);
         w.flush();
       }
       synchronized (lateness) {

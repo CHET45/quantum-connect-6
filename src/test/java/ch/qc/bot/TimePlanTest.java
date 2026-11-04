@@ -173,6 +173,55 @@ class TimePlanTest {
     assertFalse(b.isFull(ch.qc.bot.search.Tactics.column(drop)));
   }
 
+  @Test
+  void secondCallThatStartsLateNeverAsksForABlast() {
+    assertTrue(QcBot.secondCallInTime(1_000 * MS, 1_089 * MS));
+    assertFalse(QcBot.secondCallInTime(1_000 * MS, 1_090 * MS));
+    assertFalse(QcBot.secondCallInTime(1_000 * MS, 1_100 * MS));
+    assertTrue(QcBot.SAFE_FINISH_NANOS < QcBot.SECOND_CALL_LATE_NANOS);
+    assertTrue(QcBot.BLAST_STOP_NANOS < QcBot.SAFE_FINISH_NANOS);
+  }
+
+  /**
+   * Random positions with the blast ready, driven by hand so the second call can start late: whenever the bot has
+   * chosen a blast, a prompt second call asks for it and one after a pause as long as an engine timeout does not.
+   */
+  @Test
+  void aChosenBlastIsDroppedIfTheFirstCallMayHaveTimedOut() throws Exception {
+    java.util.SplittableRandom rnd = new java.util.SplittableRandom(5);
+    int prompt = 0;
+    int late = 0;
+    for (int game = 0; game < 400 && (prompt < 3 || late < 3); game++) {
+      QcBot bot = new QcBot("s=4,f=4");
+      QuantumField f = FieldFactory.create(8, 12, bot, new RandomBot());
+      for (int ply = 0; ply < 70 && FieldFactory.status(f) == ExperimentStatus.INCOMPLETE; ply++) {
+        int col = rnd.nextInt(12);
+        for (int i = 0; i < 12 && f.isColumnFull(col); i++) {
+          col = (col + 1) % 12;
+        }
+        if (ply % 2 == 0) {
+          int chosen = bot.accelerateQuark(f);
+          Decision d = bot.lastDecision();
+          if (d.special() && bot.tracker().ownSpecialReady()) {
+            if (late <= prompt) {
+              Thread.sleep(95);
+              assertFalse(bot.useSpecialMove(f), "a late second call must not ask for the blast");
+              late++;
+            } else {
+              assertTrue(bot.useSpecialMove(f), "a prompt second call asks for the chosen blast");
+              prompt++;
+            }
+            break;
+          }
+          assertFalse(bot.useSpecialMove(f));
+          assertTrue(chosen >= 0 && chosen < 12);
+        }
+        FieldFactory.play(f, col, false);
+      }
+    }
+    assertTrue(prompt >= 3 && late >= 3, "blasts seen: prompt " + prompt + ", late " + late);
+  }
+
   private static int discs(QuantumField f) {
     return Snapshot.read(f).discs;
   }
