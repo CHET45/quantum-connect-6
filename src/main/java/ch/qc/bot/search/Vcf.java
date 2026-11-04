@@ -112,10 +112,7 @@ public final class Vcf {
     int def = 3 - a;
     int defThreats = 0;
     int defCol = -1;
-    for (int c = 0; c < g.cols; c++) {
-      if (b.isFull(c)) {
-        continue;
-      }
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
       int cell = g.index(c, b.height(c));
       if (b.threats(a, cell) > 0) {
         if (vply == 0) {
@@ -200,10 +197,7 @@ public final class Vcf {
     int threats = 0;
     int threatCol = -1;
     boolean defWins = false;
-    for (int x = 0; x < g.cols; x++) {
-      if (b.isFull(x)) {
-        continue;
-      }
+    for (int x = b.nextThreatColumn(0); x >= 0; x = b.nextThreatColumn(x + 1)) {
       int cell = g.index(x, b.height(x));
       if (b.threats(a, cell) > 0) {
         threats++;
