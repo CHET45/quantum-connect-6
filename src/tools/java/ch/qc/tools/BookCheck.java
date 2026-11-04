@@ -219,6 +219,9 @@ public final class BookCheck {
         String withBook = simulate(g, (b, ply, side) -> book.column(b, ply, side, (ply + 1) / 2), known, us, "book");
         long sn = simNodes;
         String noBook = simulate(g, (b, ply, side) -> {
+          if (ply == 0) {
+            return (g.cols - 1) / 2; // the bot opens in the centre without a search
+          }
           int move = plain.run(b, side, ply / 2, (ply + 1) / 2, ply, Clock.nanos(), NO_TIME_LIMIT, sn).move();
           return Tactics.isSpecial(move) ? -1 : Tactics.column(move);
         }, known, us, "search of " + sn + " nodes");
