@@ -825,6 +825,15 @@ public final class BookBuilder {
       }
       n.value = value;
       n.choice = choice;
+      if (n.ply == 0) {
+        // the bot plays the centre on an empty board without looking at the book (Timing.centreOnEmpty)
+        int centre = (run.g.cols - 1) / 2;
+        for (int i = 0; i < n.cols.length; i++) {
+          if (n.cols[i] == Math.min(centre, run.g.cols - 1 - centre)) {
+            n.choice = i;
+          }
+        }
+      }
       if (n.provenWin >= 0) {
         for (int i = 0; i < n.cols.length; i++) {
           if (n.cols[i] == n.provenWin
