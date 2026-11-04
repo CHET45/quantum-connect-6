@@ -212,6 +212,8 @@ public final class Searcher {
     public boolean partial;
     public boolean pvFix = true;
     public boolean lazyOrder = true;
+    public int nodeVcf;
+    public int nodeVcfNodes = 200;
     public boolean lazyLeafBlast = true;
     public boolean leafBlastThreat;
     public int evalCacheBits;
@@ -250,6 +252,8 @@ public final class Searcher {
       partial = o.partial;
       pvFix = o.pvFix;
       lazyOrder = o.lazyOrder;
+      nodeVcf = o.nodeVcf;
+      nodeVcfNodes = o.nodeVcfNodes;
       lazyLeafBlast = o.lazyLeafBlast;
       leafBlastThreat = o.leafBlastThreat;
       evalCacheBits = o.evalCacheBits;
@@ -288,6 +292,7 @@ public final class Searcher {
   private static final long OPP_VCF_NODES = 8_000;
   private static final long OPP_VCF_REPLY_NODES = 1_500;
   private static final int LEAF_VCF_MOVES = 3;
+  private static final int NODE_VCF_MOVES = 10;
   private static final long LEAF_VCF_NODES = 100;
   private static final int TENTATIVE_WIN = 5_000;
   /** Leaf and razor VCF only on boards up to this many cells; above it a leaf proof costs too much time. */
@@ -887,6 +892,20 @@ public final class Searcher {
       }
     }
 
+    if (options.nodeVcf > 0 && depth >= options.nodeVcf && oppThreats == 0 && beta > -MATE_BOUND) {
+      // a threat search costs a few dozen nodes on most positions and looks far past the horizon of this node
+      long before = x.vcf.nodes;
+      int proof = x.vcf.attack(b, stm, cdStm, cdOpp, NODE_VCF_MOVES, x.turnBase + ply, x.deadline, options.nodeVcfNodes);
+      x.nodes += x.vcf.nodes - before;
+      if (proof != Tactics.NONE) {
+        int v = MATE - ply - (2 * NODE_VCF_MOVES + 1);
+        if (options.trace) {
+          x.stats[57]++;
+        }
+        tt.store(key, depth, toTT(v, ply), TranspositionTable.LOWER, proof);
+        return v;
+      }
+    }
     int staticEval = -INF;
     if (!pv && !forced && oppThreats == 0 && Math.abs(beta) < MATE_BOUND) {
       boolean needEval = (options.rfp > 0 && depth <= 3) || (options.futility > 0 && depth <= 2)
@@ -1031,7 +1050,7 @@ public final class Searcher {
         }
         score[k] = s;
       }
-      if (options.lmrTact > 0 && !Tactics.isSpecial(m)) {
+      if (options.lmrTact > 0 && !Tactics.isSpecial(m) && (depth >= options.lmrDepth || options.lmp > 0)) {
         tactic[k] = isTactical(b, c, stm, prevCell) ? 1 : 0;
       } else {
         tactic[k] = 0;
@@ -1120,17 +1139,17 @@ public final class Searcher {
           s = -search(x, b, opp, cdOpp, nextCdOpp, depth - 1 - red, -alpha - 1, -alpha, ply + 1, false);
           if (!x.stop && s > alpha) {
             if (options.audit) {
-              auditCount(x, feat, 2);
+              auditCount(x, feat, 2, depth, i);
             }
             s = pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, false);
             if (options.audit && s > alpha) {
-              auditCount(x, feat, 3);
+              auditCount(x, feat, 3, depth, i);
             }
           } else if (options.audit && !x.stop) {
-            auditCount(x, feat, 0);
+            auditCount(x, feat, 0, depth, i);
             int full = -search(x, b, opp, cdOpp, nextCdOpp, depth - 1, -alpha - 1, -alpha, ply + 1, false);
             if (!x.stop && full > alpha) {
-              auditCount(x, feat, 1);
+              auditCount(x, feat, 1, depth, i);
             }
           }
         } else {
@@ -1293,8 +1312,10 @@ public final class Searcher {
   }
 
   /** kind: 0 reduced and stayed low, 1 of those, full depth beat alpha, 2 reduced beat alpha, 3 full confirmed. */
-  private static void auditCount(Ctx x, int feat, int kind) {
+  private static void auditCount(Ctx x, int feat, int kind, int depth, int index) {
     x.stats[100 + kind]++;
+    x.stats[208 + 4 * (Math.min(depth, 9) - 3) + kind]++;
+    x.stats[236 + 4 * Math.min(index / 3, 3) + kind]++;
     for (int i = 0; i < 11; i++) {
       if ((feat & (1 << i)) != 0) {
         x.stats[104 + 4 * i + kind]++;

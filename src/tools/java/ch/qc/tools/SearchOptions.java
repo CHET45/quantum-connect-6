@@ -61,6 +61,8 @@ public final class SearchOptions {
       case "iid" -> o.iid = v;
       case "asp" -> o.asp = v;
       case "evalCacheBits" -> o.evalCacheBits = v;
+      case "nodeVcf" -> o.nodeVcf = v;
+      case "nodeVcfNodes" -> o.nodeVcfNodes = v;
       case "lmrMode" -> o.lmrMode = v;
       case "lmrDepth" -> o.lmrDepth = v;
       case "lmrDiv" -> o.lmrDiv = v;

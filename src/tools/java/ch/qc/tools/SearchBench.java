@@ -258,6 +258,16 @@ public final class SearchBench {
             "hist>0", "pot>=40"};
         System.out.printf(Locale.ROOT, "   audit all: stayed low %d, missed %d (%.2f%%); beat alpha %d, confirmed %d (%.1f%%)%n",
             st[106], st[107], 100.0 * st[107] / Math.max(1, st[106]), st[108], st[109], 100.0 * st[109] / Math.max(1, st[108]));
+        for (int d = 0; d < 7; d++) {
+          int at = 6 + 208 + 4 * d;
+          System.out.printf(Locale.ROOT, "   depth %d: low %8d missed %6.2f%%, beat %7d confirmed %5.1f%%%n", d + 3, st[at],
+              100.0 * st[at + 1] / Math.max(1, st[at]), st[at + 2], 100.0 * st[at + 3] / Math.max(1, st[at + 2]));
+        }
+        for (int d = 0; d < 4; d++) {
+          int at = 6 + 236 + 4 * d;
+          System.out.printf(Locale.ROOT, "   index %d..: low %8d missed %6.2f%%, beat %7d confirmed %5.1f%%%n", d * 3, st[at],
+              100.0 * st[at + 1] / Math.max(1, st[at]), st[at + 2], 100.0 * st[at + 3] / Math.max(1, st[at + 2]));
+        }
         for (int i = 0; i < 11; i++) {
           int on = 6 + 104 + 4 * i;
           int off = 6 + 160 + 4 * i;
