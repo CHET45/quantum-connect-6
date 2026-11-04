@@ -34,7 +34,6 @@ public final class Board {
   private final int[] colThreats;
   /** Bit c % 64 of threatCols[c / 64] says whether colThreats[c] is above 0. */
   private final long[] threatCols;
-  private final int[] live3 = new int[3];
   private long hash;
   private int discs;
 
@@ -58,7 +57,6 @@ public final class Board {
   private Object sumOwner;
   private long[] sumTag;
   private int[] sumValue;
-
 
   public Board(Geometry g) {
     this.g = g;
@@ -108,8 +106,6 @@ public final class Board {
       threatCols[i] = o.threatCols[i];
     }
     resetLevels();
-    live3[1] = o.live3[1];
-    live3[2] = o.live3[2];
     hash = o.hash;
     discs = o.discs;
   }
@@ -156,7 +152,6 @@ public final class Board {
     java.util.Arrays.fill(colThreats, 0);
     java.util.Arrays.fill(threatCols, 0);
     resetLevels();
-    live3[1] = live3[2] = 0;
     for (int w = 0; w < g.windows; w++) {
       int code = codeFromCells(w);
       wc[w] = (short) code;
@@ -190,12 +185,6 @@ public final class Board {
       int cellIndex = winCells[w * k + p - 1];
       thr[2][cellIndex] += (byte) sign;
       countThreat(cellIndex / rows, sign);
-    }
-    if ((f & 256) != 0) {
-      live3[1] += sign;
-    }
-    if ((f & 512) != 0) {
-      live3[2] += sign;
     }
   }
 
@@ -238,9 +227,9 @@ public final class Board {
       if ((info[old] | info[nw]) != 0) {
         account(w, old, -1);
         account(w, nw, 1);
-      }
-      if (nw == target) {
-        win = true;
+        if (nw == target) {
+          win = true;
+        }
       }
     }
     levelLog[l + 1] = log;
@@ -277,8 +266,8 @@ public final class Board {
 
   /**
    * Special move in place (R5-R7): the disc lands at height h, the 3x3 block around it is cleared and the
-   * three columns are compacted. A full column is a no-op. Returns true if any K-line of either colour exists
-   * in a window touching the three columns afterwards (the mover wins it, R3-R4).
+   * three columns are compacted. A full column is a no-op. Returns true if a window the blast changed now holds a
+   * K-line of either colour (the mover wins it, R3-R4); a position in play holds no other line.
    */
   public boolean blast(int col) {
     int h = height[col];
@@ -427,18 +416,22 @@ public final class Board {
         return true;
       }
     }
+    if (lineRun(n + away, lo + 1, away, 1, v) + lineRun(n - away, lo - 1, -away, -1, v) >= need) {
+      return true;
+    }
     int far = n + away * need;
-    boolean room = far >= 0 && far < cols;
-    for (int y = lo; y < end; y++) {
+    if (far < 0 || far >= cols) {
+      return false;
+    }
+    // a line away from the blast needs discs in each of the next columns, at worst descending one row per column
+    int limit = end;
+    for (int i = 1; i <= need; i++) {
+      limit = Math.min(limit, height[n + away * i] + i);
+    }
+    for (int y = lo; y < limit; y++) {
       v = cell[base + y + drop];
-      if (room && (lineRun(n + away, y, away, 0, v) >= need || lineRun(n + away, y - 1, away, -1, v) >= need)) {
-        return true;
-      }
-      if (y == lo) {
-        if (lineRun(n + away, y + 1, away, 1, v) + lineRun(n - away, y - 1, -away, -1, v) >= need) {
-          return true;
-        }
-      } else if (room && lineRun(n + away, y + 1, away, 1, v) >= need) {
+      if (lineRun(n + away, y, away, 0, v) >= need || lineRun(n + away, y - 1, away, -1, v) >= need
+          || (y > lo && lineRun(n + away, y + 1, away, 1, v) >= need)) {
         return true;
       }
     }
@@ -523,8 +516,16 @@ public final class Board {
     return -1;
   }
 
+  /** Windows with at least three discs of the colour and none of the other, counted on demand (leaf VCF only). */
   public int live3(int colour) {
-    return live3[colour];
+    boolean[] live = t.live3[colour];
+    int n = 0;
+    for (int w = 0; w < g.windows; w++) {
+      if (live[wc[w]]) {
+        n++;
+      }
+    }
+    return n;
   }
 
   private void resetLevels() {
@@ -604,8 +605,6 @@ public final class Board {
         && java.util.Arrays.equals(fresh.thr[1], thr[1])
         && java.util.Arrays.equals(fresh.thr[2], thr[2])
         && java.util.Arrays.equals(fresh.colThreats, colThreats)
-        && java.util.Arrays.equals(fresh.threatCols, threatCols)
-        && fresh.live3[1] == live3[1]
-        && fresh.live3[2] == live3[2];
+        && java.util.Arrays.equals(fresh.threatCols, threatCols);
   }
 }
