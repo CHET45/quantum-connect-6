@@ -272,9 +272,6 @@ class TimePlanTest {
     l.measured(52 * MS);
     assertFalse(l.known());
     assertEquals(50 * MS, l.nanos());
-    l.measured(90 * MS);
-    assertTrue(l.known(), "a measurement near the prior settles it");
-    assertEquals(CallLimit.PRIOR_NANOS, l.nanos());
     CallLimit n = new CallLimit();
     n.measured(40 * MS);
     n.assumePrior();
@@ -288,6 +285,34 @@ class TimePlanTest {
     assertEquals(30 * MS, m.nanos());
   }
 
+  @Test
+  void aLimitAboveThePriorNeedsThreeSamplesThatAgree() {
+    CallLimit near = new CallLimit();
+    near.assumePrior();
+    near.upwardSample(104 * MS);
+    assertFalse(near.upwardOpen(), "the engine gave up at about the prior: the question is closed");
+    assertEquals(CallLimit.PRIOR_NANOS, near.nanos());
+
+    CallLimit stalled = new CallLimit();
+    stalled.assumePrior();
+    stalled.upwardSample(190 * MS);
+    assertEquals(CallLimit.PRIOR_NANOS, stalled.nanos(), "one sample raises nothing");
+    stalled.upwardSample(140 * MS);
+    assertFalse(stalled.upwardOpen(), "samples that disagree close it");
+    stalled.upwardSample(190 * MS);
+    assertEquals(CallLimit.PRIOR_NANOS, stalled.nanos());
+
+    CallLimit real = new CallLimit();
+    real.assumePrior();
+    real.upwardSample(201 * MS);
+    real.upwardSample(204 * MS);
+    assertEquals(CallLimit.PRIOR_NANOS, real.nanos(), "two samples raise nothing");
+    real.upwardSample(202 * MS);
+    assertEquals(200 * MS, real.nanos());
+    real.closeUpward();
+    assertEquals(CallLimit.PRIOR_NANOS, real.nanos(), "a lost turn takes the raise back");
+  }
+
   /** The engine's timer, a late second call: the field changes while the bot is in its second call. */
   @Test
   void theProbeReadsTheLimitFromTheField() throws Exception {
@@ -296,7 +321,7 @@ class TimePlanTest {
     int col = bot.accelerateQuark(f);
     Thread engine = new Thread(() -> {
       try {
-        Thread.sleep(50);
+        Thread.sleep(20);
       } catch (InterruptedException e) {
         return;
       }
@@ -306,7 +331,7 @@ class TimePlanTest {
     assertFalse(bot.useSpecialMove(f));
     engine.join();
     // the sleep above can be late on a loaded machine, so only the order of magnitude is sure
-    assertTrue(bot.callLimitNanos() >= 40 * MS && bot.callLimitNanos() <= 75 * MS, "limit " + bot.callLimitNanos());
+    assertTrue(bot.callLimitNanos() >= 10 * MS && bot.callLimitNanos() <= 75 * MS, "limit " + bot.callLimitNanos());
   }
 
   @Test
@@ -326,6 +351,7 @@ class TimePlanTest {
   void theUpwardProbeInTheRealEngine() throws Exception {
     QcBot bot = new QcBot("up=1,s=10,p=0");
     ch.qc.tools.BotProbe probe = new ch.qc.tools.BotProbe(bot);
+    // the probe watches the field, so through the engine's real limit of 100 ms it must end at the prior
     ch.cern.quantumconnect.core.Experiment exp =
         new ch.cern.quantumconnect.core.Experiment(probe, new RandomBot(), false, false, 8, 12);
     exp.runExperiment();

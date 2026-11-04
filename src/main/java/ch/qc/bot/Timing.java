@@ -36,9 +36,10 @@ public final class Timing {
   /** The second call does not search on own turns below this: the compiler threads get the CPU instead. */
   final int ponderFromTurn;
   /**
-   * Find out from the first turn whether the call limit is above 100 ms, by staying in the second call until the engine
-   * gives up. That logs one timeout per game on a server at 100 ms, so it is off: only an opponent whose turns are
-   * longer than a limit of 100 ms allows then starts this probe. Below 100 ms the limit is found either way.
+   * Find out from the second turn on whether the call limit is above 100 ms, by staying in the second call until the
+   * engine gives up. That logs one timeout per game on a server at 100 ms, so it is off: only an opponent whose turns are
+   * repeatedly and steadily longer than a limit of 100 ms allows then starts this probe. Below 100 ms the limit is found
+   * either way.
    */
   final boolean probeUpward;
   /**

@@ -53,9 +53,14 @@ public final class QcBot implements Algorithm {
   static final long PROBE_NANOS = 85_000_000L;
   /** The probe for a limit above 100 ms gives up here and takes this as the limit. */
   static final long PROBE_UP_NANOS = 2_000_000_000L;
-  /** An opponent's whole turn longer than this share of the limit, plus a little, hints at a longer limit. */
+  /**
+   * An opponent's whole turn longer than this share of the limit, plus a little, hints at a longer limit if this many
+   * in a row last about the same: a stall gives a long turn but not the same one again.
+   */
   private static final int HINT_PERCENT = 110;
   private static final long HINT_SLACK_NANOS = 5_000_000L;
+  private static final int HINT_TURNS = 5;
+  private static final int HINT_AGREE_PERCENT = 15;
   /** Budget of the fallback tactics. */
   static final long TACTICS_NANOS = 10_000_000L;
 
@@ -72,8 +77,11 @@ public final class QcBot implements Algorithm {
   private final CallLimit limit = new CallLimit();
   /** An opponent's turns or the time plan call for a look above the prior limit. */
   private boolean probeUpward;
-  private boolean probedUpward;
   private long lastReturn;
+  private long hintTurn;
+  private int hintCount;
+  /** An opponent that loses turns says nothing about the limit, even if some of its turns are long. */
+  private boolean hintClosed;
   private Geometry geometry;
   private Searcher searcher;
   private int calls;
@@ -155,9 +163,8 @@ public final class QcBot implements Algorithm {
     if (tracker.turn() == 1) {
       lastScore = 0;
       stall = 0;
-    } else if (lastReturn > 0 && tracker.opponentMoved()
-        && t0 - lastReturn > limit.nanos() / 100 * HINT_PERCENT + HINT_SLACK_NANOS) {
-      probeUpward = true;
+    } else if (lastReturn > 0) {
+      noteOpponentTurn(t0 - lastReturn);
     }
     int move = choose(s, t0);
     int col = move == Tactics.NONE ? -1 : Tactics.column(move);
@@ -209,9 +216,7 @@ public final class QcBot implements Algorithm {
     }
     if (!limit.known()) {
       probe(field, d, t0, PROBE_NANOS);
-    } else if (probeUpward && !probedUpward && limit.nanos() <= CallLimit.PRIOR_NANOS
-        && clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
-      probedUpward = true;
+    } else if (probeUpward && limit.upwardOpen() && clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
       probe(field, d, t0, PROBE_UP_NANOS);
     } else {
       ponder(col, t0);
@@ -227,25 +232,42 @@ public final class QcBot implements Algorithm {
    */
   private void probe(QuantumField field, Decision d, long t0, long until) {
     boolean upward = until > PROBE_NANOS;
-    if (!upward && !limit.known() && timing.probeUpward) {
-      until = PROBE_UP_NANOS;
-      upward = true;
-      probedUpward = true;
-    }
     while (true) {
-      long now = Clock.nanos();
-      if (Snapshot.fingerprint(field) != d.fingerprint()) {
-        limit.measured(now - t0);
+      long took = Clock.nanos() - t0;
+      // first the time: a stall that ends after the engine gave up must not look like a limit of that length
+      if (!upward && took >= until) {
+        limit.assumePrior();
         return;
       }
-      if (now - t0 >= until) {
+      if (Snapshot.fingerprint(field) != d.fingerprint()) {
         if (upward) {
-          limit.atLeast(until);
+          limit.upwardSample(took);
         } else {
-          limit.assumePrior();
+          limit.measured(took);
         }
         return;
       }
+      if (took >= until) {
+        limit.upwardSample(until);
+        return;
+      }
+    }
+  }
+
+  /** Called with the time since our last return: the opponent's whole turn. */
+  private void noteOpponentTurn(long turnNanos) {
+    if (!tracker.opponentMoved()) {
+      hintClosed = true;
+    }
+    if (hintClosed || turnNanos <= limit.nanos() / 100 * HINT_PERCENT + HINT_SLACK_NANOS) {
+      hintCount = 0;
+      return;
+    }
+    boolean same = hintCount > 0 && Math.abs(turnNanos - hintTurn) <= hintTurn / 100 * HINT_AGREE_PERCENT;
+    hintCount = same ? hintCount + 1 : 1;
+    hintTurn = turnNanos;
+    if (hintCount >= HINT_TURNS) {
+      probeUpward = true;
     }
   }
 
@@ -375,7 +397,7 @@ public final class QcBot implements Algorithm {
   private long stopNow() {
     int turn = tracker.turn() - 1;
     if (tracker.lostPreviousTurn()) {
-      limit.distrustRaise();
+      limit.closeUpward();
       stall = Math.min(stall + LOST_TURN_STALL_NANOS, limit.nanos() / 100 * MAX_STALL_PERCENT);
     }
     long min = limit.nanos() / 100 * MIN_STOP_PERCENT;

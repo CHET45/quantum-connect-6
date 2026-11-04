@@ -12,7 +12,9 @@ package ch.qc.bot;
 final class CallLimit {
   static final long PRIOR_NANOS = 100_000_000L;
   private static final long MS = 1_000_000L;
-  private static final long NEAR_PRIOR_NANOS = 85 * MS;
+  /** Above the prior: a sample must be this far above it, and within this share of the first sample. */
+  private static final long CLEARLY_ABOVE_NANOS = 130 * MS;
+  private static final int AGREE_PERCENT = 15;
   /** Limits a server would plausibly set; a measurement just above one of them is that limit plus some delay. */
   private static final long[] ROUND_MS = {1, 2, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 500, 750, 1000,
       1500, 2000};
@@ -23,6 +25,10 @@ final class CallLimit {
   private volatile long nanos = PRIOR_NANOS;
   /** Measured or assumed to hold, so no probe is due any more. */
   private volatile boolean known;
+  /** Samples for a limit above the prior; the question is closed for this game once they disagree or a turn is lost. */
+  private final long[] upSamples = new long[3];
+  private int upCount;
+  private boolean upClosed;
 
   long nanos() {
     return nanos;
@@ -41,42 +47,50 @@ final class CallLimit {
     known = true;
   }
 
-  /** The engine gave up on a call after this long. Below the prior more samples are due, if any are left. */
+  /** The engine gave up on a call after this long, which is below where the probe for a shorter limit ends. */
   void measured(long took) {
-    if (known || took >= NEAR_PRIOR_NANOS || count == samples.length) {
-      // just below the prior is the prior seen from a thread that started late
-      nanos = took >= NEAR_PRIOR_NANOS && took < PRIOR_NANOS ? PRIOR_NANOS : round(took);
-      known = true;
-      return;
-    }
     samples[count++] = took;
-    nanos = round(median());
+    nanos = round(median(samples, count));
     known = count == samples.length;
   }
 
-  private long median() {
-    long a = samples[0];
-    if (count == 1) {
-      return a;
+  private static long median(long[] s, int n) {
+    if (n == 1) {
+      return s[0];
     }
-    long b = samples[1];
-    if (count == 2) {
-      return Math.min(a, b);
+    if (n == 2) {
+      return Math.min(s[0], s[1]);
     }
-    long c = samples[2];
-    return Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
+    return Math.max(Math.min(s[0], s[1]), Math.min(Math.max(s[0], s[1]), s[2]));
   }
 
-  /** A call ran this long without the engine giving up. */
-  void atLeast(long took) {
-    if (took > nanos) {
-      nanos = took;
-    }
-    known = true;
+  /**
+   * True while a limit above the prior may still be proven. Such a limit is hypothetical and a lost turn is real, and a
+   * stall makes a measurement late, so only three samples that agree and are clearly above the prior raise it.
+   */
+  boolean upwardOpen() {
+    return !upClosed;
   }
 
-  /** Back to the prior after a lost turn with a raised limit: the raise may have come from a late measurement. */
-  void distrustRaise() {
+  /** The engine gave up on a call after this long, or the probe for a longer limit ended there. */
+  void upwardSample(long took) {
+    if (upClosed) {
+      return;
+    }
+    if (took < CLEARLY_ABOVE_NANOS || (upCount > 0 && Math.abs(took - upSamples[0]) > upSamples[0] / 100 * AGREE_PERCENT)) {
+      upClosed = true;
+      return;
+    }
+    upSamples[upCount++] = took;
+    if (upCount == upSamples.length) {
+      nanos = round(median(upSamples, upCount));
+      upClosed = true;
+    }
+  }
+
+  /** A turn was lost: stay at or back to the prior for the rest of this game. */
+  void closeUpward() {
+    upClosed = true;
     if (nanos > PRIOR_NANOS) {
       nanos = PRIOR_NANOS;
     }
