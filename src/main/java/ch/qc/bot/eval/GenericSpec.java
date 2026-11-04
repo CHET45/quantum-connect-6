@@ -5,7 +5,7 @@ import ch.qc.bot.rules.Geometry;
 /**
  * Window family that does not depend on the board size, so one set of tables serves every board: a window's class
  * is its direction group (horizontal, vertical, diagonal; the two diagonals are mirror images and share a class)
- * and the row of its lowest cell, capped at {@link #BANDS} - 1. Codes are read with the digits in rising-row order
+ * and the row of its lowest cell, capped at the number of bands - 1 ({@link #BANDS} unless a blob has more). Codes are read with the digits in rising-row order
  * (a down-sloping diagonal is read backwards), and a horizontal window, its own mirror image within its class,
  * uses the smaller of its code and the reversed code. {@link #featMap} gives the parameter index
  * {@code class * codes + canonical code} per (window, code) in the layout of {@link FeatureSpec}, so the training
@@ -24,13 +24,18 @@ public final class GenericSpec {
 
   /** Class of window w of g. */
   public static int windowClass(Geometry g, int w) {
+    return windowClass(g, w, BANDS);
+  }
+
+  /** Class of window w of g in a family with this many row bands. */
+  public static int windowClass(Geometry g, int w, int bands) {
     int dir = g.winDir[w];
     int group = dir == 0 ? 0 : dir == 1 ? 1 : 2;
     int lowest = g.rows;
     for (int i = 0; i < g.k; i++) {
       lowest = Math.min(lowest, g.winCells[w * g.k + i] % g.rows);
     }
-    return group * BANDS + Math.min(lowest, BANDS - 1);
+    return group * bands + Math.min(lowest, bands - 1);
   }
 
   /** Canonical-code kind of window w: horizontal windows are symmetric, down-sloping diagonals reversed. */
@@ -75,9 +80,14 @@ public final class GenericSpec {
 
   /** Identifies the family and the table layout; written into generic blobs instead of a board's spec hash. */
   public static long hash(int k) {
+    return hash(k, BANDS);
+  }
+
+  /** As {@link #hash(int)} for a family with this many row bands. */
+  public static long hash(int k, int bands) {
     long h = 0x47454E45524943L; // "GENERIC"
     h = 31 * h + k;
-    h = 31 * h + BANDS;
+    h = 31 * h + bands;
     h = 31 * h + GROUPS;
     h = 31 * h + Features.STAGES;
     h = 31 * h + Features.CD_CONTEXTS;

@@ -57,15 +57,19 @@ def main():
     spec = spec_mod.load(args.spec)
     # a blob fitted with --no-stage has one stage (see export.HEADER: version, rows, cols, k, hash, scale, stages)
     header = struct.unpack_from(export.HEADER, zlib.decompress(open(os.path.join(args.model, "eval.qcw"), "rb").read()), 4)
-    scale, stages = header[5], header[6]
+    version, scale, stages, classes = header[0], header[5], header[6], header[8]
     if stages != spec.stages:
         spec = dataclasses.replace(spec, stages=stages)
+    if classes != spec.classes:
+        spec = spec_mod.with_bands(spec, classes // 3)
     recs, _, _ = data.read_dirs(args.data)
     rng = np.random.default_rng(5)
     recs = recs[rng.choice(len(recs), size=min(args.count, len(recs)), replace=False)]
     cells = data.unpack_cells(recs["cells"], spec.rows * spec.cols)
     stm = recs["stm"].astype(np.int64) + 1
     stage = recs["stage"].astype(np.int64) if spec.stages > 1 else np.zeros(len(recs), dtype=np.int64)
+    if version == 2:
+        stage = spec_mod.height_stage(cells, spec.cols)
     cd = recs["cd_ctx"].astype(np.int64)
     t1, t2, t3 = (recs[k].astype(np.int64) for k in ("t1", "t2", "t3"))
     tables = read_qcw(os.path.join(args.model, "eval.qcw"), spec)

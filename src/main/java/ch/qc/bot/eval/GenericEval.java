@@ -17,6 +17,7 @@ public final class GenericEval extends WindowSumEval {
   private final int[][] canonOf;
   private final short[][] w;
   private final boolean staged;
+  private final boolean heightStage;
   /** The tables are in 1/(256 * 2^shift) logit; the result is always in 1/256 logit. */
   private final int shift;
   private final short[] t1;
@@ -24,7 +25,8 @@ public final class GenericEval extends WindowSumEval {
   private final short[] t3;
 
   /** Tables of a generic blob ({@link #fits}): w[stage * cdContexts + cd][class * codes + canonical code]. */
-  GenericEval(Geometry g, short[][] w, boolean staged, int shift, short[] t1, short[] t2, short[] t3) {
+  GenericEval(Geometry g, short[][] w, boolean staged, boolean heightStage, int bands, int shift, short[] t1, short[] t2,
+      short[] t3) {
     super(g);
     this.swap12 = g.tables.swap12;
     this.codes = g.tables.codes;
@@ -32,11 +34,12 @@ public final class GenericEval extends WindowSumEval {
     base = new int[g.windows];
     canonOf = new int[g.windows][];
     for (int win = 0; win < g.windows; win++) {
-      base[win] = GenericSpec.windowClass(g, win) * codes;
+      base[win] = GenericSpec.windowClass(g, win, bands) * codes;
       canonOf[win] = canon[GenericSpec.kind(g, win)];
     }
     this.w = w;
     this.staged = staged;
+    this.heightStage = heightStage;
     this.shift = shift;
     this.t1 = t1;
     this.t2 = t2;
@@ -71,7 +74,7 @@ public final class GenericEval extends WindowSumEval {
   /** The unclamped integer sum, in 1/256 logit. */
   public int rawSum(Board b, int stm, int cdStm, int cdOpp) {
     int cd = Features.cdContext(cdStm, cdOpp);
-    int ctx = staged ? Features.stage(b) * Features.CD_CONTEXTS + cd : cd;
+    int ctx = staged ? (heightStage ? Features.heightStage(b) : Features.stage(b)) * Features.CD_CONTEXTS + cd : cd;
     int sum = windowSum(b, 2 * ctx + stm - 1, w[ctx], stm);
     int packed = Features.threatIndices(b, stm, cdStm, cdOpp);
     sum += t1[cd * Features.T1_SIZE + Features.t1(packed)];

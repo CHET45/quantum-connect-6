@@ -30,8 +30,8 @@ def signed64(x):
     return x - (1 << 64) if x >= 1 << 63 else x
 
 
-def write(path, spec, tables, scale=SCALE):
-    head = b"QCW1" + struct.pack(HEADER, 1, spec.rows, spec.cols, spec.k, signed64(spec.spec_hash), scale,
+def write(path, spec, tables, scale=SCALE, version=1):
+    head = b"QCW1" + struct.pack(HEADER, version, spec.rows, spec.cols, spec.k, signed64(spec.spec_hash), scale,
                                  spec.stages, spec.cd_contexts, spec.classes, spec.codes, spec.t1, spec.t2, spec.t3)
     body = b"".join(tables[k].astype(">i2").tobytes() for k in ("W", "T1", "T2", "T3"))
     with open(path, "wb") as f:

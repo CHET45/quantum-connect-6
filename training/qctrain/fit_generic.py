@@ -34,42 +34,12 @@ def spearman(a, b):
     return float(np.corrcoef(ra, rb)[0, 1])
 
 
-def family_spec(spec, family):
-    """The spec with the window classes of a candidate family (see the Java class GenericSpec for family 0).
-
-    class = group * bands + band, group 0 horizontal, 1 vertical, 2 diagonal, so the first third of the classes stay
-    horizontal. Canonical codes stay those of family 0, which is why the old class is read off the old feat_map.
-    0: band = row of the lowest cell, capped at 5.
-    1: band = family 0 band * 3 + cells to the nearest side wall, capped at 2.
-    2: band = row of the lowest cell up to 4, then 5 or 6 by the parity of that row.
-    3: as 1 with the parity split of 2.
-    """
-    if family == 0:
-        return spec
-    codes = spec.codes
-    old = spec.feat_map.reshape(spec.windows, codes)
-    old_class = old[:, 0] // codes
-    canon = old - old_class[:, None] * codes
-    cols = spec.win_cells // spec.rows
-    rows = spec.win_cells % spec.rows
-    group = old_class // 6
-    lowest = rows.min(1)
-    edge = np.minimum(np.minimum(cols.min(1), spec.cols - 1 - cols.max(1)), 2)
-    capped = np.minimum(lowest, 5)
-    parity = np.where(lowest < 5, lowest, 5 + (lowest & 1))
-    if family == 1:
-        band, bands = capped * 3 + edge, 18
-    elif family == 2:
-        band, bands = parity, 7
-    elif family == 3:
-        band, bands = parity * 3 + edge, 21
-    else:
-        raise SystemExit(f"unknown family {family}")
-    classes = group * bands + band
-    return dataclasses.replace(spec, classes=3 * bands, feat_map=(classes[:, None] * codes + canon).reshape(-1))
+def batch_of(args, s):
+    """Batch of a set: a position of a large board holds many windows, so fewer of them fit in memory and in one step."""
+    return max(1024, int(args.batch * min(1.0, 800 / s["spec"].windows)))
 
 
-def load_set(arg, ks, lam, device, cap=0):
+def load_set(arg, ks, lam, device, cap=0, k_std=None):
     spec_path, dirs, *extra = arg.split(":")
     with open(spec_path, encoding="utf-8") as f:
         raw = json.load(f)
@@ -95,6 +65,9 @@ def load_set(arg, ks, lam, device, cap=0):
         k = float(extra[0])
     elif size in ks:
         k = ks[size]
+    elif k_std:
+        k = float(recs["value"][~is_val & (recs["proven"] == 0)].astype(np.float64).std() / k_std)
+        print(f"{size}: K = {k:.0f} from the spread of the labels", flush=True)
     else:
         k, k_loss = fit.fit_scale(recs[~is_val])
         print(f"{size}: target scale K = {k:.0f} (outcome BCE {k_loss:.4f})", flush=True)
@@ -110,7 +83,7 @@ def load_set(arg, ks, lam, device, cap=0):
 
 def evaluate_scaled(s, tau):
     """Validation BCE and logits with the size's output scale."""
-    v, q = fit.evaluate(s["model"], s["val"])
+    v, q = fit.evaluate(s["model"], s["val"], max(1024, int(16384 * min(1.0, 800 / s["spec"].windows))))
     if tau.item() == 0.0:
         return v, q
     q = q * tau.exp()
@@ -124,6 +97,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--lam", type=float, default=0.9)
     ap.add_argument("--k", action="append", default=[], help="ROWSxCOLS=K, else fitted to that size's outcomes")
+    ap.add_argument("--k-std", type=float, default=None, help="K from the labels: standard deviation of the target logit")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch", type=int, default=8192)
     ap.add_argument("--lr", type=float, default=1e-2)
@@ -142,12 +116,13 @@ def main():
     ap.add_argument("--mask-empty", action="store_true", help="the all-empty window code contributes exactly zero")
     ap.add_argument("--mask-mixed", action="store_true", help="windows holding both colours contribute exactly zero")
     ap.add_argument("--sym", type=float, default=None, help="colour-even share of the window tables, 0 = antisymmetric")
-    ap.add_argument("--family", type=int, default=0, help="window class family, see family_spec")
+    ap.add_argument("--bands", type=int, default=6, help="row bands of the window classes")
+    ap.add_argument("--height-stage", action="store_true", help="stages by average pile height, not by board fill")
     args = ap.parse_args()
     torch.manual_seed(1)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ks = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in args.k}
-    sets = [load_set(a, ks, args.lam, device, args.cap) for a in args.set]
+    sets = [load_set(a, ks, args.lam, device, args.cap, args.k_std) for a in args.set]
     for i, s in enumerate(sets):
         s["name"] = f'{s["size"]}.{i}'
     if len({s["hash"] for s in sets}) != 1:
@@ -157,7 +132,13 @@ def main():
             s["spec"] = dataclasses.replace(s["spec"], stages=1)
             for part in ("train", "val"):
                 s[part]["stage"].zero_()
-        s["spec"] = family_spec(s["spec"], args.family)
+        if args.height_stage:
+            for part in ("train", "val"):
+                d = s[part]
+                d["stage"] = ((d["cells"] != 0).sum(1) // (2 * s["spec"].cols)).clamp(max=3)
+            s["val_stage"] = s["val"]["stage"].cpu().numpy()
+        if args.bands != 6:
+            s["spec"] = spec_mod.with_bands(s["spec"], args.bands)
         s["model"] = model_mod.Model(s["spec"], device, args.sym)
     sizes = {s["model"].layout.size for s in sets}
     if len(sizes) != 1:
@@ -189,7 +170,7 @@ def main():
         params.append({"params": [tau]})
     opt = torch.optim.Adam(params, lr=args.lr)
     n_total = sum(s["train"]["y"].shape[0] for s in sets)
-    batches = [math.ceil(s["train"]["y"].shape[0] / args.batch) for s in sets]
+    batches = [math.ceil(s["train"]["y"].shape[0] / batch_of(args, s)) for s in sets]
     steps_per_epoch = sum(batches)
     if args.balance:
         shares = {kv.split("=")[0]: float(kv.split("=")[1]) for kv in args.weight}
@@ -207,11 +188,13 @@ def main():
         plan = []
         for i, s in enumerate(sets):
             n = s["train"]["y"].shape[0]
-            need = batches[i] * args.batch
+            size_i = batch_of(args, s)
+            need = batches[i] * size_i
             perm = torch.cat([torch.randperm(n, device=device) for _ in range(max(1, math.ceil(need / n)))])[:need]
-            plan += [(i, perm[j:j + args.batch]) for j in range(0, need, args.batch)]
+            plan += [(i, perm[j:j + size_i]) for j in range(0, need, size_i)]
         order = rng.permutation(len(plan))
         total = 0.0
+        n_seen = 0
         for o in order:
             i, sel = plan[o]
             s = sets[i]
@@ -229,6 +212,7 @@ def main():
                 theta.clamp_(-8.0, 8.0)
             sched.step()
             total += loss.item() * sel.shape[0]
+            n_seen += sel.shape[0]
         vals = {}
         weighted = 0.0
         for i, s in enumerate(sets):
@@ -236,8 +220,8 @@ def main():
             vals[s["name"]] = v
             weighted += v * (1.0 if args.balance else s["val"]["y"].shape[0])
         weighted /= len(sets) if args.balance else sum(s["val"]["y"].shape[0] for s in sets)
-        history.append({"epoch": epoch, "train": total / n_total, "val": vals, "val_mean": weighted})
-        print(f"epoch {epoch:2d}: train {total / n_total:.5f} val {weighted:.5f} "
+        history.append({"epoch": epoch, "train": total / n_seen, "val": vals, "val_mean": weighted})
+        print(f"epoch {epoch:2d}: train {total / n_seen:.5f} val {weighted:.5f} "
               + " ".join(f"{k} {v:.5f}" for k, v in vals.items()) + f" {time.time() - t0:.0f}s", flush=True)
         if weighted < best[0] - 1e-6:
             best = (weighted, theta.detach().clone(), epoch, tau.detach().clone())
@@ -264,8 +248,9 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     torch.save(theta.detach().cpu(), os.path.join(args.out, "theta.pt"))
     tables = export.fold(sets[0]["model"], args.scale)
-    blob_spec = dataclasses.replace(sets[0]["spec"], rows=0, cols=0, spec_hash=sets[0]["hash"])
-    export.write(os.path.join(args.out, "eval.qcw"), blob_spec, tables, args.scale)
+    blob_hash = sets[0]["hash"] if args.bands == 6 else spec_mod.generic_hash(sets[0]["spec"], args.bands)
+    blob_spec = dataclasses.replace(sets[0]["spec"], rows=0, cols=0, spec_hash=blob_hash)
+    export.write(os.path.join(args.out, "eval.qcw"), blob_spec, tables, args.scale, 2 if args.height_stage else 1)
     with open(os.path.join(args.out, "fit-report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
     print(json.dumps({k: v for k, v in report.items() if k != "history"}), flush=True)
