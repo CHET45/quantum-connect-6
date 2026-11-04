@@ -189,7 +189,7 @@ public final class Searcher {
     public int lmrDepth = 3;
     public int lmrTact = 2;
     public int lmrRoot;
-    public int lmrBlast;
+    public int lmrBlast = 2;
     public int lmp;
     public int nullR;
     public int blastGenDepth = 3;
