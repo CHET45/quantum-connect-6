@@ -25,7 +25,7 @@ CPU_MARK = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__
                                         "night", "eval", "cpu-fit.txt"))
 
 # Windows desktop programs that nvidia-smi can list as compute programs; exact file names, nothing broader
-WINDOWS_DESKTOP = {"dwm.exe", "LogonUI.exe", "explorer.exe", "TextInputHost.exe"}
+WINDOWS_DESKTOP = {"dwm.exe", "LogonUI.exe", "explorer.exe", "TextInputHost.exe", "ShellExperienceHost.exe"}
 
 _PS = (
     "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | Where-Object { $_.CommandLine -match 'ch\\.qc\\.tools\\.' } "

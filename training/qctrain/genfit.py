@@ -20,7 +20,7 @@ from . import budget, data
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "..", "qc-bot", "data", "night", "eval"))
 DATA = os.path.abspath(os.path.join(ROOT, "..", ".."))
-SEEN = {"15x11", "15x22", "8x12"}
+SEEN = {"15x11", "15x22", "8x12", "15x30"}
 HAND = {"15x11": ["x11/gen000"], "15x22": ["x15/gen000", "x15/gen000b"]}
 OLD_8X12 = ["it03-partial"]
 MIN_SET = 2000
