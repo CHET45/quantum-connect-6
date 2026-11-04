@@ -60,6 +60,7 @@ public final class SearchOptions {
       case "etc" -> o.etc = v;
       case "iid" -> o.iid = v;
       case "asp" -> o.asp = v;
+      case "evalCacheBits" -> o.evalCacheBits = v;
       case "lmrMode" -> o.lmrMode = v;
       case "lmrDepth" -> o.lmrDepth = v;
       case "lmrDiv" -> o.lmrDiv = v;
@@ -82,6 +83,7 @@ public final class SearchOptions {
     switch (name) {
       case "nodeRule" -> o.nodeRule = on;
       case "pvFix" -> o.pvFix = on;
+      case "lazyOrder" -> o.lazyOrder = on;
       case "histCell" -> o.histCell = on;
       case "histKeep" -> o.histKeep = on;
       case "counterMove" -> o.counterMove = on;

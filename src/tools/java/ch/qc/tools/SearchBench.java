@@ -249,7 +249,7 @@ public final class SearchBench {
         sb.append(' ').append(st[6 + i]);
       }
       sb.append(" |");
-      for (int i = 50; i < 56; i++) {
+      for (int i = 50; i < 57; i++) {
         sb.append(' ').append(st[6 + i]);
       }
       System.out.println(sb);

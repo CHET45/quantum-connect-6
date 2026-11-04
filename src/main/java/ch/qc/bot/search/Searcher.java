@@ -208,6 +208,8 @@ public final class Searcher {
     public int blastGenDepth = 3;
     public boolean partial;
     public boolean pvFix = true;
+    public boolean lazyOrder = true;
+    public int evalCacheBits = 16;
     public int rootVcfMs = 10;
     public int oppVcfMs = 5;
 
@@ -241,6 +243,8 @@ public final class Searcher {
       blastGenDepth = o.blastGenDepth;
       partial = o.partial;
       pvFix = o.pvFix;
+      lazyOrder = o.lazyOrder;
+      evalCacheBits = o.evalCacheBits;
       rootVcfMs = o.rootVcfMs;
       oppVcfMs = o.oppVcfMs;
       return this;
@@ -299,6 +303,8 @@ public final class Searcher {
   /** valGain[colour][code]: the hand evaluation's window value of the code for colour, move ordering only. */
   private final int[][] valWin = new int[3][];
   private final int[][] lmrTable = new int[32][64];
+  /** Leaf values by position; a value does not depend on the search, so it stays valid for the whole game. */
+  private final long[] evalCache;
   private volatile int token;
   /**
    * Context of the last finished call, reused by the next one so a call allocates almost nothing (the server
@@ -437,6 +443,7 @@ public final class Searcher {
         live[colour][code] = dead ? 0 : own * own;
       }
     }
+    evalCache = options.evalCacheBits > 0 ? new long[1 << options.evalCacheBits] : null;
     int[] val = {0, 3, 13, 50, 150, 384, 0};
     for (int colour = 1; colour <= 2; colour++) {
       valWin[colour] = new int[t.codes];
@@ -807,6 +814,20 @@ public final class Searcher {
         if (options.trace) {
           x.stats[11]++;
         }
+        if (evalCache != null) {
+          long k = key(b, stm, cdStm, cdOpp, x.turnBase + ply);
+          int idx = (int) k & (evalCache.length - 1);
+          long e = evalCache[idx];
+          if ((e >>> 16) == (k >>> 16)) {
+            if (options.trace) {
+              x.stats[56]++;
+            }
+            return (int) (e & 0xFFFF) - 32768;
+          }
+          int v = eval.evaluate(b, stm, cdStm, cdOpp);
+          evalCache[idx] = (k & ~0xFFFFL) | (v + 32768L);
+          return v;
+        }
         return eval.evaluate(b, stm, cdStm, cdOpp);
       }
       depth = 1;
@@ -923,38 +944,20 @@ public final class Searcher {
     int prevCell = ply > 0 ? x.prevCell[ply - 1] : -1;
     int cmove = options.counterMove && prevCell >= 0 ? x.counter[stm][prevCell] : Tactics.NONE;
     boolean evalOrder = options.evalOrder > 0 && depth >= options.evalOrder && !forced;
-    for (int i = 0; i < n; i++) {
-      int m = list[i];
-      int c = Tactics.column(m);
-      if (m == ttMove) {
-        score[i] = 1 << 30;
-      } else if (Tactics.isSpecial(m)) {
-        score[i] = -(1 << 28) + centreBonus[c];
-      } else if (m == kill[0]) {
-        score[i] = 1 << 27;
-      } else if (m == kill[1]) {
-        score[i] = 1 << 26;
-      } else if (m == cmove) {
-        score[i] = 1 << 25;
-      } else {
-        int cell = g.index(c, b.height(c));
-        int s = hist[options.histCell ? cell : c] + centreBonus[c];
-        if (evalOrder) {
-          boolean win = b.make(c, stm);
-          s += win ? 1 << 20 : -eval.evaluate(b, opp, cdOpp, Math.min(cdStm + 1, COOLDOWN));
-          b.unmake(c);
-          x.nodes++;
-        } else {
-          s += options.valOrder ? potentialVal(b, c, stm) : 4 * potential(b, c, stm);
-        }
-        if (b.height(c) + 1 < g.rows && b.threats(opp, cell + 1) > 0) {
-          s -= 1 << 24; // the reply above would complete the opponent's line
-        }
-        score[i] = s;
+    // the TT move and the killers need no scores: most cuts come on them, so the others are scored only when reached
+    int front = 0;
+    if (options.lazyOrder) {
+      front = moveToFront(list, n, front, ttMove);
+      if (kill[0] != ttMove) {
+        front = moveToFront(list, n, front, kill[0]);
       }
-      if (options.lmrTact && !Tactics.isSpecial(m)) {
-        tactic[i] = isTactical(b, c, stm) ? 1 : 0;
-      } else {
+      if (kill[1] != ttMove) {
+        front = moveToFront(list, n, front, kill[1]);
+      }
+      if (cmove != ttMove && cmove != kill[0] && cmove != kill[1]) {
+        front = moveToFront(list, n, front, cmove);
+      }
+      for (int i = 0; i < front; i++) {
         tactic[i] = 0;
       }
     }
@@ -971,21 +974,61 @@ public final class Searcher {
     int origAlpha = alpha;
     int nextCdOpp = Math.min(cdStm + 1, COOLDOWN);
     for (int i = 0; i < n; i++) {
-      int bi = i;
-      for (int j = i + 1; j < n; j++) {
-        if (score[j] > score[bi]) {
-          bi = j;
+      if (i == front) {
+        for (int k = i; k < n; k++) {
+      int m = list[k];
+      int c = Tactics.column(m);
+      if (m == ttMove) {
+        score[k] = 1 << 30;
+      } else if (Tactics.isSpecial(m)) {
+        score[k] = -(1 << 28) + centreBonus[c];
+      } else if (m == kill[0]) {
+        score[k] = 1 << 27;
+      } else if (m == kill[1]) {
+        score[k] = 1 << 26;
+      } else if (m == cmove) {
+        score[k] = 1 << 25;
+      } else {
+        int cell = g.index(c, b.height(c));
+        int s = hist[options.histCell ? cell : c] + centreBonus[c];
+        if (evalOrder) {
+          boolean win = b.make(c, stm);
+          s += win ? 1 << 20 : -eval.evaluate(b, opp, cdOpp, Math.min(cdStm + 1, COOLDOWN));
+          b.unmake(c);
+          x.nodes++;
+        } else {
+          s += options.valOrder ? potentialVal(b, c, stm) : 4 * potential(b, c, stm);
         }
+        if (b.height(c) + 1 < g.rows && b.threats(opp, cell + 1) > 0) {
+          s -= 1 << 24; // the reply above would complete the opponent's line
+        }
+        score[k] = s;
       }
-      int m = list[bi];
-      list[bi] = list[i];
-      list[i] = m;
-      int tmp = score[bi];
-      score[bi] = score[i];
-      score[i] = tmp;
-      tmp = tactic[bi];
-      tactic[bi] = tactic[i];
-      tactic[i] = tmp;
+      if (options.lmrTact && !Tactics.isSpecial(m)) {
+        tactic[k] = isTactical(b, c, stm) ? 1 : 0;
+      } else {
+        tactic[k] = 0;
+      }
+    }
+      }
+      if (i >= front) {
+        int bi = i;
+        for (int j = i + 1; j < n; j++) {
+          if (score[j] > score[bi]) {
+            bi = j;
+          }
+        }
+        int mv = list[bi];
+        list[bi] = list[i];
+        list[i] = mv;
+        int tmp = score[bi];
+        score[bi] = score[i];
+        score[i] = tmp;
+        tmp = tactic[bi];
+        tactic[bi] = tactic[i];
+        tactic[i] = tmp;
+      }
+      int m = list[i];
 
       int c = Tactics.column(m);
       int s;
@@ -1181,6 +1224,21 @@ public final class Searcher {
       s += mine[nw] - mine[old] + theirs[old] - theirs[nw];
     }
     return s;
+  }
+
+  /** If m is in list[front..n), swaps it to index front and returns front + 1; otherwise returns front. */
+  private static int moveToFront(int[] list, int n, int front, int m) {
+    if (m == Tactics.NONE) {
+      return front;
+    }
+    for (int j = front; j < n; j++) {
+      if (list[j] == m) {
+        list[j] = list[front];
+        list[front] = m;
+        return front + 1;
+      }
+    }
+    return front;
   }
 
   /** As {@link #potential} with the hand evaluation's window values, for ordering by the likely evaluation change. */
