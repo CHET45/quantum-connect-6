@@ -18,9 +18,12 @@ import ch.qc.bot.search.Vcf;
  * the stop of the time plan ({@link Timing}: by own turn, cut after signs of trouble; less near the end of the shared
  * match clock, {@link MatchClock}), on top of the per-call pipeline (snapshot, turn tracking, board load, guarded
  * two-call protocol). The second call searches the position after our move to fill the transposition table for the
- * next turn, unless we blast or the match clock is short. A board size without prepared tables never builds them in
- * a first call: that turn plays without search and the second call builds them. The M1 root tactics are the fallback
- * if the search cannot run.
+ * next turn, unless we blast or the match clock is short. The M1 root tactics are the fallback if the search cannot run.
+ *
+ * <p>The first turn of a game knows neither the call limit nor the board's tables, so it plays without search; nothing
+ * can be lost there with at most one disc on the board. Its second call, where running late costs nothing, builds the
+ * tables of this board, whatever its size, and finds out whether the call limit is below 100 ms ({@link CallLimit}); a
+ * shorter limit is measured on the next two turns as well.
  *
  * <p>Upload rules: only basic Java (no java.lang.System, java.io, java.nio, reflection, threads or runtime access),
  * and no exceptions thrown or caught anywhere in the bot; UploadRulesTest checks the compiled classes. Time comes
@@ -28,25 +31,31 @@ import ch.qc.bot.search.Vcf;
  */
 public final class QcBot implements Algorithm {
   /**
-   * A special after a timed-out first call crashes the engine (design R10, R15; seen in a night match), and the bot
-   * cannot see the timeout directly, only the time since it was called, which starts late if its thread started late.
-   * So a blast is requested only if the first call took at most SAFE_FINISH_NANOS, which leaves 25 ms for such a late
-   * start; a search with a blast in the lead stops at BLAST_STOP_NANOS to stay inside that. And it is requested only if
-   * the second call starts before SECOND_CALL_LATE_NANOS since the first began: a first call that timed out makes the
-   * second start at 100 ms or later, seen here from at most the late start's length earlier; 90 leaves margin for that
-   * and for the clock's 1 ms steps, and catches a stall after the first call measured its own end.
+   * No blast if the second call starts this long after the first began (at a limit of 100 ms): a first call that timed
+   * out makes the second start at the limit or later, seen here from at most the first thread's late start earlier; 90
+   * leaves margin for that and for the clock's 1 ms steps, and catches a stall after the first call measured its end.
    */
-  static final long SAFE_FINISH_NANOS = 75_000_000L;
-  static final long BLAST_STOP_NANOS = 70_000_000L;
   static final long SECOND_CALL_LATE_NANOS = 90_000_000L;
+  /** A lost turn counts as a stall of this much on top of the one remembered, up to MAX_STALL_PERCENT of the limit. */
+  static final long LOST_TURN_STALL_NANOS = 30_000_000L;
+  static final int MAX_STALL_PERCENT = 60;
   /** Boards above this many cells skip the board model and use the field directly (design 5.6). */
   static final int MAX_MODEL_CELLS = 4096;
   /** Search is limited to boards whose column index fits the transposition-table move field. */
   static final int MAX_SEARCH_COLS = 255;
-  /** Board sizes seen on the server: their tables are built in the constructor, outside any timed call. */
-  private static final int[][] PREPARED_SIZES = {{8, 12}, {15, 11}, {15, 22}};
-  /** The stall sensor never takes the first-call stop below this. */
-  static final long MIN_STOP_NANOS = 25_000_000L;
+  /** The stall sensor never takes the first-call stop below this share of the limit. */
+  static final int MIN_STOP_PERCENT = 25;
+  /** Before the limit is known no search runs with this many discs or fewer. */
+  private static final int NO_SEARCH_DISCS = 3;
+  /** A search before the limit is known: only harness games with scripted openings get there. */
+  static final long UNPROBED_STOP_NANOS = 20_000_000L;
+  /** The probe ends here: on a limit of 100 ms a late thread start can hardly turn this into a timeout. */
+  static final long PROBE_NANOS = 85_000_000L;
+  /** The probe for a limit above 100 ms gives up here and takes this as the limit. */
+  static final long PROBE_UP_NANOS = 2_000_000_000L;
+  /** An opponent's whole turn longer than this share of the limit, plus a little, hints at a longer limit. */
+  private static final int HINT_PERCENT = 110;
+  private static final long HINT_SLACK_NANOS = 5_000_000L;
   /** Budget of the fallback tactics. */
   static final long TACTICS_NANOS = 10_000_000L;
 
@@ -60,8 +69,11 @@ public final class QcBot implements Algorithm {
   /** The warm-up runs once per loaded class: a server that keeps the class between games has hot code already. */
   private static boolean warmedUp;
   private final Vcf.Table vcfTable;
-  private final Geometry[] preparedGeometry = new Geometry[PREPARED_SIZES.length];
-  private final Searcher[] preparedSearcher = new Searcher[PREPARED_SIZES.length];
+  private final CallLimit limit = new CallLimit();
+  /** An opponent's turns or the time plan call for a look above the prior limit. */
+  private boolean probeUpward;
+  private boolean probedUpward;
+  private long lastReturn;
   private Geometry geometry;
   private Searcher searcher;
   private int calls;
@@ -76,13 +88,9 @@ public final class QcBot implements Algorithm {
   private int searchedCdOpp;
   private int searchedPly;
   private int searchedEmpty;
-  /** Last own turn of a cut stop, and how far the last first call ran past its stop. */
-  private int cutUntil;
-  private volatile long lastOverrun;
   /** Longest stall seen lately, fading per own turn (see {@link Timing#stallLimitNanos}). */
   private long stall;
   private volatile boolean building;
-  private WarmUp warmUp;
 
   public QcBot() {
     this(Searcher.Options.DEFAULT, Timing.DEFAULT);
@@ -99,18 +107,21 @@ public final class QcBot implements Algorithm {
   }
 
   public QcBot(Searcher.Options options, Timing timing) {
+    long constructed = Clock.nanos();
     this.options = options;
     this.timing = timing;
     tt = TranspositionTable.forBot();
     Weights.preload();
     vcfTable = new Vcf.Table(16);
-    for (int i = 0; i < PREPARED_SIZES.length; i++) {
-      preparedGeometry[i] = new Geometry(PREPARED_SIZES[i][0], PREPARED_SIZES[i][1]);
-      preparedSearcher[i] = newSearcher(preparedGeometry[i]);
-    }
+    probeUpward = timing.probeUpward;
     if (timing.warmupNanos > 0 && !warmedUp) {
       warmedUp = true;
-      new WarmUp(preparedGeometry, options).run(timing.warmupNanos);
+      // the whole constructor stays inside this time, also where loading the tables is slow
+      WarmUp warm = WarmUp.beforeTheGame(options);
+      long left = timing.warmupNanos - (Clock.nanos() - constructed);
+      if (left > 0) {
+        warm.run(left);
+      }
     }
   }
 
@@ -119,21 +130,9 @@ public final class QcBot implements Algorithm {
     return new Searcher(g, learned != null ? learned : new HandEval(g), tt, options, vcfTable);
   }
 
-  /** Selects the tables of a prepared size; false if this size has none. */
-  private boolean usePreparedSize(int rows, int cols) {
-    for (int i = 0; i < PREPARED_SIZES.length; i++) {
-      if (preparedGeometry[i].sameSize(rows, cols)) {
-        searcher = preparedSearcher[i];
-        geometry = preparedGeometry[i];
-        return true;
-      }
-    }
-    return false;
-  }
-
   /**
-   * Builds the tables of an unprepared size. This runs in the second call, where running late costs nothing: the
-   * first call of the turn played without search, and no blast can be due on the first turns of a size.
+   * Builds the tables of this board. This runs in the second call, where running late costs nothing: the first call of
+   * the turn played without search, and no blast can be due on the first turn.
    */
   private void buildBoardSize(int rows, int cols) {
     building = true;
@@ -155,18 +154,19 @@ public final class QcBot implements Algorithm {
     clock.beginTurn(t0, tracker.turn(), tracker.plyIndex());
     if (tracker.turn() == 1) {
       lastScore = 0;
-      cutUntil = 0;
-      lastOverrun = 0;
       stall = 0;
+    } else if (lastReturn > 0 && tracker.opponentMoved()
+        && t0 - lastReturn > limit.nanos() / 100 * HINT_PERCENT + HINT_SLACK_NANOS) {
+      probeUpward = true;
     }
-    int move = choose(s, t0, callId == 1);
+    int move = choose(s, t0);
     int col = move == Tactics.NONE ? -1 : Tactics.column(move);
     boolean special = move != Tactics.NONE && Tactics.isSpecial(move);
     if (col < 0 || col >= s.cols || field.isColumnFull(col)) {
       col = safeColumn(field);
       special = false;
     }
-    boolean inTime = Clock.nanos() - t0 <= SAFE_FINISH_NANOS;
+    boolean inTime = Clock.nanos() - t0 <= blastFinish();
     if (special && !inTime && lastResult != null) {
       // too late to ask for the blast: play the best drop, not a drop in the blast's column
       int drop = searcher.lastBestDrop();
@@ -181,40 +181,82 @@ public final class QcBot implements Algorithm {
 
   @Override
   public boolean useSpecialMove(QuantumField field) {
+    boolean special = secondCall(field);
+    lastReturn = Clock.nanos();
+    return special;
+  }
+
+  private boolean secondCall(QuantumField field) {
     long t0 = Clock.nanos();
     int rows = field.getNumberOfRows();
     int cols = field.getNumberOfColumns();
     if (!building && rows >= 1 && cols >= 1 && rows * cols <= MAX_MODEL_CELLS && cols <= MAX_SEARCH_COLS
-        && (geometry == null || !geometry.sameSize(rows, cols)) && !usePreparedSize(rows, cols)) {
+        && (geometry == null || !geometry.sameSize(rows, cols))) {
       buildBoardSize(rows, cols);
-      return false;
     }
     Decision d = decision;
-    if (d == null || !d.finishedInTime() || d.callId() != calls || !secondCallInTime(firstCallStart, t0)) {
+    if (d == null || d.callId() != calls || !secondCallInTime(firstCallStart, t0, limit.nanos())) {
       return false;
     }
     int col = d.column();
     if (col < 0 || col >= cols || field.isColumnFull(col) || Snapshot.fingerprint(field) != d.fingerprint()) {
       return false;
     }
-    if (d.special() && tracker.ownSpecialReady()) {
+    // only the blast needs the stricter limit: a search here cannot crash the engine, whatever the first call did
+    if (d.special() && d.finishedInTime() && tracker.ownSpecialReady()) {
       tracker.noteSpecialRequested();
       return true;
     }
-    if (tracker.turn() <= timing.warmTurns) {
-      if (warmUp == null) {
-        warmUp = new WarmUp(preparedGeometry, options);
-      }
-      warmUp.run(timing.ponderNanos - (Clock.nanos() - t0));
+    if (!limit.known()) {
+      probe(field, d, t0, PROBE_NANOS);
+    } else if (probeUpward && !probedUpward && limit.nanos() <= CallLimit.PRIOR_NANOS
+        && clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
+      probedUpward = true;
+      probe(field, d, t0, PROBE_UP_NANOS);
     } else {
       ponder(col, t0);
     }
     return false;
   }
 
+  /**
+   * Finds out where the call limit lies: the engine applies our move as soon as it gives up on this call, so a change of
+   * the field tells when that was. This thread touches the field only by reading it, as every call does, and it ends as
+   * soon as the field changes, so it takes nothing from the opponent's turn. A probe that ends at its own time leaves no
+   * timeout behind.
+   */
+  private void probe(QuantumField field, Decision d, long t0, long until) {
+    boolean upward = until > PROBE_NANOS;
+    if (!upward && !limit.known() && timing.probeUpward) {
+      until = PROBE_UP_NANOS;
+      upward = true;
+      probedUpward = true;
+    }
+    while (true) {
+      long now = Clock.nanos();
+      if (Snapshot.fingerprint(field) != d.fingerprint()) {
+        limit.measured(now - t0);
+        return;
+      }
+      if (now - t0 >= until) {
+        if (upward) {
+          limit.atLeast(until);
+        } else {
+          limit.assumePrior();
+        }
+        return;
+      }
+    }
+  }
+
   /** False if the second call starts so late that the first may have timed out. */
-  static boolean secondCallInTime(long firstCallStart, long secondCallStart) {
-    return secondCallStart - firstCallStart < SECOND_CALL_LATE_NANOS;
+  static boolean secondCallInTime(long firstCallStart, long secondCallStart, long callLimit) {
+    return secondCallStart - firstCallStart < CallLimit.scaled(SECOND_CALL_LATE_NANOS, 60, callLimit);
+  }
+
+  /** The measured call limit (harness only). */
+  public long callLimitNanos() {
+    return limit.nanos();
   }
 
   /**
@@ -235,10 +277,16 @@ public final class QcBot implements Algorithm {
     searcher.setStallLimit(0L);
     searcher.setBlastStop(0L);
     lastPonder = searcher.run(b, 3 - searchedMe, searchedCdOpp, Math.min(searchedCdMe + 1, TurnTracker.COOLDOWN),
-        searchedPly + 1, t0, timing.ponderNanos);
+        searchedPly + 1, t0, Math.min(limit.scaled(timing.ponderNanos, 40), clock.turnCap() / 5 * 2));
     if (searcher.lastMaxGapNanos() > stall) {
       stall = searcher.lastMaxGapNanos();
     }
+  }
+
+  /** How long a first call may take and still ask for a blast: the less the more this thread stalled lately. */
+  private long blastFinish() {
+    long limitNow = limit.nanos();
+    return Math.max(limitNow / 10, limit.scaled(timing.safeFinishNanos, 40) - stall);
   }
 
   /** Called once per own turn with the longest gap between clock polls in the first call. */
@@ -253,7 +301,12 @@ public final class QcBot implements Algorithm {
   public void observeScriptedTurn(QuantumField field) {
     ++calls;
     decision = null;
-    tracker.beginTurn(Snapshot.read(field));
+    Snapshot s = Snapshot.read(field);
+    tracker.beginTurn(s);
+    limit.assumePrior();
+    if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
+      buildBoardSize(s.rows, s.cols);
+    }
   }
 
   TurnTracker tracker() {
@@ -274,16 +327,17 @@ public final class QcBot implements Algorithm {
     return lastPonder;
   }
 
-  private int choose(Snapshot s, long t0, boolean firstCall) {
+  private int choose(Snapshot s, long t0) {
     lastResult = null;
     searchedBoard = null;
     if (s.rows < 1 || s.cols < 1 || s.rows * s.cols > MAX_MODEL_CELLS) {
       return Tactics.NONE;
     }
-    if (timing.centreOnEmpty && s.discs == 0) {
+    // with so few discs nothing can be lost by not searching, and a short limit may have cut the probe off once
+    if (s.discs == 0 || (s.discs <= NO_SEARCH_DISCS && !limit.known())) {
       return centreOrder(s.cols, 0);
     }
-    if ((geometry == null || !geometry.sameSize(s.rows, s.cols)) && !usePreparedSize(s.rows, s.cols)) {
+    if (geometry == null || !geometry.sameSize(s.rows, s.cols)) {
       return Tactics.NONE;
     }
     // a fresh board per call: a search that outlived its call may still be walking the previous one
@@ -297,12 +351,11 @@ public final class QcBot implements Algorithm {
     int cdOpp = tracker.opponentCooldownCounter();
     if (s.cols <= MAX_SEARCH_COLS) {
       int empty = s.rows * s.cols - s.discs;
-      long hard = clock.budget(t0, tracker.plyIndex(), stopNow(firstCall), lastScore, empty);
-      searcher.setStallLimit(timing.stallLimitNanos);
-      searcher.setBlastStop(BLAST_STOP_NANOS);
+      long hard = clock.budget(t0, tracker.plyIndex(), stopNow(), lastScore, empty, limit.nanos());
+      searcher.setStallLimit(limit.scaled(timing.stallLimitNanos, 50));
+      searcher.setBlastStop(Math.max(limit.nanos() / 20, limit.scaled(timing.blastStopNanos, 30) - stall));
       Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0, hard);
       lastResult = r;
-      lastOverrun = Clock.nanos() - t0 - hard;
       noteStall(searcher.lastMaxGapNanos());
       if (r.move() != Tactics.NONE) {
         lastScore = r.score();
@@ -315,25 +368,26 @@ public final class QcBot implements Algorithm {
         return r.move();
       }
     }
-    return new Tactics(geometry).choose(board, me, cdMe, cdOpp, Clock.nanos() + TACTICS_NANOS);
+    return new Tactics(geometry).choose(board, me, cdMe, cdOpp, Clock.nanos() + Math.min(TACTICS_NANOS, limit.nanos() / 10));
   }
 
-  /** The first-call stop on this turn: by own turn, the first call of an instance lower, and cut after trouble. */
-  private long stopNow(boolean firstCall) {
+  /** The first-call stop on this turn: by own turn and call limit, less the stalls seen lately; a lost turn is one. */
+  private long stopNow() {
     int turn = tracker.turn() - 1;
-    long stop = timing.stop(turn);
-    if (timing.cutTurns > 0) {
-      if (tracker.lostPreviousTurn() || lastOverrun >= timing.overrunNanos) {
-        cutUntil = turn + timing.cutTurns;
-      }
-      if (turn <= cutUntil) {
-        stop = Math.min(stop, timing.cutNanos);
-      }
+    if (tracker.lostPreviousTurn()) {
+      limit.distrustRaise();
+      stall = Math.min(stall + LOST_TURN_STALL_NANOS, limit.nanos() / 100 * MAX_STALL_PERCENT);
     }
+    long min = limit.nanos() / 100 * MIN_STOP_PERCENT;
+    long stop = limit.scaled(timing.stop(turn), MIN_STOP_PERCENT);
     if (timing.stallLimitNanos > 0) {
-      stop = Math.min(stop, Math.max(MIN_STOP_NANOS, timing.stallLimitNanos - stall / 100 * timing.stallWeightPercent));
+      long sensed = limit.scaled(timing.stallLimitNanos, 50) - stall / 100 * timing.stallWeightPercent;
+      stop = Math.min(stop, Math.max(min, sensed));
     }
-    return firstCall ? Math.min(stop, timing.firstCallNanos) : stop;
+    if (!limit.known()) {
+      stop = Math.min(stop, UNPROBED_STOP_NANOS);
+    }
+    return Math.min(stop, clock.turnCap() / 5 * 3);
   }
 
   /** Never returns a full column while one is free; works on the field alone. */

@@ -35,11 +35,13 @@ import java.util.regex.Pattern;
  * <pre>
  * ServerEval FILE.jsonl [--weights NAME=eval.qcw ...] [--strong REGEX] [--min-plies 16] [--nodes N] [--stride S]
  *     [--sizes 15x11,8x12] [--dump DIR --dump-weights W --dump-nodes N [--dump-holdout 5]]
- *     [--agree REGEX --nodes N]
+ *     [--agree REGEX --nodes N] [--held-out 5]
  * </pre>
  *
  * <p>With --agree only the moves of bots matching REGEX are looked at, and for each evaluation the share of those
  * moves that a fixed-node search with it plays too (column and blast flag) is printed per board size.
+ *
+ * <p>With --held-out N only the games left out by --dump-holdout N are measured.
  *
  * <p>With --dump every position of the selected games goes to DIR/ROWSxCOLS/shard-00.qcp, labelled with a fixed-node
  * search of --dump-weights ("hand" for the hand tables) and the real result; games whose hash modulo --dump-holdout is
@@ -64,6 +66,7 @@ public final class ServerEval {
     String dumpWeights = "hand";
     long dumpNodes = 4000;
     int holdout = 0;
+    int only5 = 0;
     String agree = null;
     for (int i = 1; i < args.length; i++) {
       switch (args[i]) {
@@ -77,6 +80,7 @@ public final class ServerEval {
         case "--dump-weights" -> dumpWeights = args[++i];
         case "--dump-nodes" -> dumpNodes = Long.parseLong(args[++i]);
         case "--dump-holdout" -> holdout = Integer.parseInt(args[++i]);
+        case "--held-out" -> only5 = Integer.parseInt(args[++i]);
         case "--agree" -> agree = args[++i];
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
@@ -125,6 +129,9 @@ public final class ServerEval {
       }
       boolean isStrong = strongNames.matcher(game.name()[0]).find() && strongNames.matcher(game.name()[1]).find();
       boolean held = holdout > 0 && Math.floorMod(game.key().hashCode(), holdout) == 0;
+      if (only5 > 0 && Math.floorMod(game.key().hashCode(), only5) != 0) {
+        continue;
+      }
       if (dumper != null && !held) {
         replay(geo, game, check.plies, 1, (b, stm, cdS, cdO, ply, turn) -> dumper.add(geo, b, stm, cdS, cdO, turn, game.winner(), ply));
         used++;

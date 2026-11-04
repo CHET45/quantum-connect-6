@@ -18,6 +18,8 @@ import java.util.SplittableRandom;
  * and competes with the compiler for CPU. Games like these show those branches before the first timed call.
  */
 final class WarmUp {
+  /** Boards of the constructor's warm-up: all that matters is that they show the code a range of shapes. */
+  private static final int[][] SIZES = {{8, 12}, {15, 11}, {15, 22}};
   private static final long MOVE_NANOS = 8_000_000L;
   private static final int COOLDOWN = 10;
 
@@ -29,6 +31,15 @@ final class WarmUp {
   private final int[][] counter;
   private final SplittableRandom rnd = new SplittableRandom(0x5EEDL);
   private int round;
+
+  /** The warm-up of the constructor, before the board is known. */
+  static WarmUp beforeTheGame(Searcher.Options options) {
+    Geometry[] sizes = new Geometry[SIZES.length];
+    for (int i = 0; i < SIZES.length; i++) {
+      sizes[i] = new Geometry(SIZES[i][0], SIZES[i][1]);
+    }
+    return new WarmUp(sizes, options);
+  }
 
   WarmUp(Geometry[] sizes, Searcher.Options options) {
     this.sizes = sizes;

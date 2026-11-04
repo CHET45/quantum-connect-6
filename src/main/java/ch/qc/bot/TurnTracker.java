@@ -22,6 +22,7 @@ public final class TurnTracker {
   private int ownPlaced;
   private int forfeits;
   private boolean lostPrevious;
+  private boolean opponentMoved;
 
   /** Starts own turn k + 1 from the snapshot read at the start of accelerateQuark. */
   public void beginTurn(Snapshot s) {
@@ -45,12 +46,16 @@ public final class TurnTracker {
         lastMySpecial = turn - 1;
       }
       ownPlaced = turn - 1 - forfeits;
+      opponentMoved = false;
     } else if (myColour != 0) {
+      opponentMoved = false;
       for (int i = historySeen; i < history.size(); i++) {
         Move m = history.get(i);
         boolean mine = Snapshot.encode(m.player()) == myColour;
         if (mine) {
           ownPlaced++;
+        } else {
+          opponentMoved = true;
         }
         if (!m.isSpecialMove()) {
           continue;
@@ -91,6 +96,11 @@ public final class TurnTracker {
   /** Own turns of this game the engine forfeited so far: the ones with no move of ours in the history. */
   public int ownForfeits() {
     return forfeits;
+  }
+
+  /** True if the opponent got a move on the board since the previous own turn, so it did not lose that turn. */
+  public boolean opponentMoved() {
+    return opponentMoved;
   }
 
   /** True if the history shows a turn of ours lost since the previous own turn. */

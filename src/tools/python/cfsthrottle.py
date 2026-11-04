@@ -12,8 +12,14 @@ from ctypes import wintypes
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 nt = ctypes.WinDLL("ntdll")
 k32.OpenProcess.restype = wintypes.HANDLE
+k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 k32.GetCurrentProcess.restype = wintypes.HANDLE
 k32.GetCurrentThread.restype = wintypes.HANDLE
+k32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+k32.SetProcessAffinityMask.argtypes = [wintypes.HANDLE, ctypes.c_size_t]
+k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+nt.NtSuspendProcess.argtypes = [wintypes.HANDLE]
+nt.NtResumeProcess.argtypes = [wintypes.HANDLE]
 PROCESS_SUSPEND_RESUME = 0x0800
 PROCESS_QUERY_INFORMATION = 0x0400
 SYNCHRONIZE = 0x00100000
@@ -24,7 +30,7 @@ def main():
     pid, quota_ms, period_ms, cpu = int(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3]), int(sys.argv[4])
     me = k32.GetCurrentProcess()
     k32.SetPriorityClass(me, HIGH_PRIORITY_CLASS)
-    k32.SetProcessAffinityMask(me, ctypes.c_size_t(1 << cpu))
+    k32.SetProcessAffinityMask(me, 1 << cpu)
     h = k32.OpenProcess(PROCESS_SUSPEND_RESUME | PROCESS_QUERY_INFORMATION | SYNCHRONIZE, False, pid)
     if not h:
         sys.exit("cannot open process")

@@ -97,6 +97,16 @@ class GenericEvalTest {
   }
 
   @Test
+  void heightStageEqualsFillStageOn8x12() {
+    Geometry g = new Geometry(8, 12);
+    SplittableRandom rnd = new SplittableRandom(11);
+    for (int n = 0; n < 200; n++) {
+      Board b = randomBoard(g, rnd, rnd.nextInt(g.cells));
+      assertEquals(Features.stage(b), Features.heightStage(b));
+    }
+  }
+
+  @Test
   void fineScaleIsReportedInTheUsualUnits() throws Exception {
     Geometry g = new Geometry(15, 11);
     GenericEval coarse = GenericTables.fromBlob(WeightFiles.parse(genericBlob(1, 7, 256))).forGeometry(g);

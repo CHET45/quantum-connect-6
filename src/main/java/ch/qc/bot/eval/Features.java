@@ -22,6 +22,15 @@ public final class Features {
     return Math.min(STAGES - 1, STAGES * b.discs() / b.g.cells);
   }
 
+  /**
+   * The stage by how high the discs pile up, which means the same on every board: average column height below 2, 4, 6,
+   * or above. On 8x12 it equals {@link #stage}. On wide boards {@link #stage} stays at 0 for most of a game, on small
+   * boards it runs through all four.
+   */
+  public static int heightStage(Board b) {
+    return Math.min(STAGES - 1, b.discs() / (2 * b.g.cols));
+  }
+
   /** Bit 0: the side to move's special is ready; bit 1: the other side's special is ready. */
   public static int cdContext(int cdStm, int cdOpp) {
     return (cdStm >= COOLDOWN ? 1 : 0) | (cdOpp >= COOLDOWN ? 2 : 0);

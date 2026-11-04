@@ -33,19 +33,20 @@ import java.util.concurrent.atomic.AtomicInteger;
  * --threads N             parallel games (default cores - 1)
  * --seed S                random-opening seed and pool offset (default 1)
  * --out FILE              one JSON line per game, written as pairs finish
+ * --affinity HEXMASK      restrict this process to these logical CPUs (to provoke late thread starts)
  * </pre>
  */
 public final class MatchMain {
   public record Result(int pair, int game, int opening, int rows, int cols, boolean aFirst, int scoreA2,
       String reason, int plies, int timeoutsA, int timeoutsB, int invalidA, int invalidB, int badSpecialsA,
-      int badSpecialsB) {
+      int badSpecialsB, int blastsA, int blastsB) {
     String json() {
       return String.format(java.util.Locale.ROOT,
           "{\"pair\":%d,\"game\":%d,\"opening\":%d,\"rows\":%d,\"cols\":%d,\"aFirst\":%b,\"scoreA\":%.1f,"
               + "\"reason\":\"%s\",\"plies\":%d,\"timeoutsA\":%d,\"timeoutsB\":%d,\"invalidA\":%d,\"invalidB\":%d,"
-              + "\"badSpecialsA\":%d,\"badSpecialsB\":%d}",
+              + "\"badSpecialsA\":%d,\"badSpecialsB\":%d,\"blastsA\":%d,\"blastsB\":%d}",
           pair, game, opening, rows, cols, aFirst, scoreA2 / 2.0, reason, plies, timeoutsA, timeoutsB, invalidA,
-          invalidB, badSpecialsA, badSpecialsB);
+          invalidB, badSpecialsA, badSpecialsB, blastsA, blastsB);
     }
   }
 
@@ -60,6 +61,7 @@ public final class MatchMain {
     String out = null;
     double[] sprt = null;
     String openings = null;
+    String affinity = null;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--a" -> a = args[++i];
@@ -75,8 +77,13 @@ public final class MatchMain {
           sprt = new double[] {Double.parseDouble(e[0]), Double.parseDouble(e[1])};
         }
         case "--openings" -> openings = args[++i];
+        case "--affinity" -> affinity = args[++i];
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
+    }
+    if (affinity != null) {
+      new ProcessBuilder("powershell", "-NoProfile", "-Command", "(Get-Process -Id " + ProcessHandle.current().pid()
+          + ").ProcessorAffinity=" + Long.parseLong(affinity, 16)).inheritIO().start().waitFor();
     }
     Match m = new Match(a, b, parseSizes(sizes), opening, seed);
     if (openings != null) {
@@ -250,11 +257,15 @@ public final class MatchMain {
       }
       int placedA = 0;
       int placedB = 0;
+      int blastsA = 0;
+      int blastsB = 0;
       for (Move mv : history) {
         if (mv.player() == aColour) {
           placedA++;
+          blastsA += mv.isSpecialMove() ? 1 : 0;
         } else {
           placedB++;
+          blastsB += mv.isSpecialMove() ? 1 : 0;
         }
       }
       latencyA.merge(pa.accelerate);
@@ -277,7 +288,7 @@ public final class MatchMain {
       }
       return new Result(pair, game, openingId, rows, cols, aFirst, scoreA2, reason, plies(exp),
           Math.max(0, pa.expectedPlacements() - placedA), Math.max(0, pb.expectedPlacements() - placedB),
-          pa.invalidColumns(), pb.invalidColumns(), pa.invalidSpecials(), pb.invalidSpecials());
+          pa.invalidColumns(), pb.invalidColumns(), pa.invalidSpecials(), pb.invalidSpecials(), blastsA, blastsB);
     }
 
     /** Columns of an opening line split into the first player's and the second player's scripted turns. */

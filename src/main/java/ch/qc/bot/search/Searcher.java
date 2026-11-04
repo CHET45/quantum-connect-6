@@ -29,7 +29,6 @@ public final class Searcher {
   /** blastWinMinDepth that keeps the winning-blast scan at every node. */
   private static final int ALL_DEPTHS = -1000;
   /** The clock is read every 64 nodes at most: each reading allocates (see {@link ch.qc.bot.Clock}). */
-  private static final int CLOCK_MASK = 63;
 
   /** Search outcome; vcfNodes and vcfProofs count the threat-search work of this call. */
   public static final class Result {
@@ -274,6 +273,8 @@ public final class Searcher {
   private final Options options;
   private final boolean leafVcf;
   private final int pollMask;
+  /** The clock is read at the polls where these node-count bits are 0: often enough that a slow node cannot run late. */
+  private final int clockMask;
   private final long zStm;
   private final long[][] zCd = new long[3][COOLDOWN + 1];
   private final long[] zTurn = new long[MAX_PLY + 1];
@@ -402,7 +403,8 @@ public final class Searcher {
     this.options = options;
     this.leafVcf = options.leafVcf && g.cells <= LEAF_VCF_MAX_CELLS;
     // a node costs about the window count (full sums, blast copies), so the polling interval follows it
-    this.pollMask = g.windows <= 200 ? 63 : g.windows <= 500 ? 31 : 15;
+    this.pollMask = g.windows <= 200 ? 63 : g.windows <= 500 ? 31 : g.windows <= 3000 ? 15 : 3;
+    this.clockMask = g.windows <= 1000 ? 63 : pollMask;
     this.vcfTable = vcfTable;
     SplittableRandom rnd = new SplittableRandom(0x7C0FFEE5EA4C4L);
     zStm = rnd.nextLong();
@@ -1047,7 +1049,7 @@ public final class Searcher {
 
   /** Checks the limits; returns true (and sets the stop flag) once the search must end. */
   private boolean poll(Ctx x) {
-    if ((x.nodes & CLOCK_MASK) == 0) {
+    if ((x.nodes & clockMask) == 0) {
       long now = Clock.nanos();
       long gap = now - x.lastPoll;
       x.lastPoll = now;
