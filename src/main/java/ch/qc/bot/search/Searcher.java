@@ -335,6 +335,8 @@ public final class Searcher {
     boolean stop;
     /** Time of the last clock poll, the longest gap between polls, and the start of the call. */
     long lastPoll;
+    /** The node count at which poll next reads the clock; node VCF adds many nodes at once, so a mask test would skip. */
+    long nextPoll;
     long maxGap;
     long start;
     long stallLimit;
@@ -518,6 +520,7 @@ public final class Searcher {
     }
     x.start = startNanos;
     x.lastPoll = startNanos;
+    x.nextPoll = 0;
     x.maxGap = 0;
     x.stallLimit = stallLimit;
     x.bestDrop = Tactics.NONE;
@@ -1162,7 +1165,8 @@ public final class Searcher {
 
   /** Checks the limits; returns true (and sets the stop flag) once the search must end. */
   private boolean poll(Ctx x) {
-    if ((x.nodes & clockMask) == 0) {
+    if (x.nodes >= x.nextPoll) {
+      x.nextPoll = x.nodes + clockMask + 1;
       long now = Clock.nanos();
       long gap = now - x.lastPoll;
       x.lastPoll = now;
