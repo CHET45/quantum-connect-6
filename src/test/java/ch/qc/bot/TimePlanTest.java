@@ -121,12 +121,36 @@ class TimePlanTest {
     assertNull(bot.lastPonder());
   }
 
+  /** Draw mode: both calls of a quiet turn stay until their burn time, inside the call limit. */
+  @Test
+  void drawModeSpendsTheTurn() {
+    QcBot bot = new QcBot("draw=1,db=70@60");
+    QuantumField f = FieldFactory.create(8, 12, bot, new RandomBot());
+    for (int turn = 0; turn < 4; turn++) {
+      long t0 = System.nanoTime();
+      int col = bot.accelerateQuark(f);
+      long first = (System.nanoTime() - t0) / 1_000_000L;
+      long t1 = System.nanoTime();
+      boolean special = bot.useSpecialMove(f);
+      long second = (System.nanoTime() - t1) / 1_000_000L;
+      assertTrue(first >= 60 && first < 90, "turn " + turn + ": first call took " + first + " ms");
+      if (turn >= 1) {
+        assertTrue(second >= 50 && second < 90, "turn " + turn + ": second call took " + second + " ms");
+      }
+      FieldFactory.play(f, col, special);
+      if (FieldFactory.status(f) != ExperimentStatus.INCOMPLETE) {
+        return;
+      }
+      FieldFactory.play(f, (turn * 5 + 3) % 12, false);
+    }
+  }
+
   /** Any size: the first call plays without search, the second builds, then search runs. */
   @Test
   void everySizeBuildsInTheSecondCall() {
     for (int[] size : new int[][] {{1, 1}, {1, 12}, {12, 1}, {3, 3}, {5, 5}, {6, 6}, {7, 9}, {10, 10}, {12, 16},
         {8, 12}, {15, 11}, {15, 22}, {20, 20}, {25, 25}, {40, 40}}) {
-      QcBot bot = new QcBot("s=20,p=10");
+      QcBot bot = new QcBot("s=20,p=10,draw=0");
       Algorithm other = new RandomBot();
       QuantumField f = FieldFactory.create(size[0], size[1], bot, other);
       long t0 = System.nanoTime();

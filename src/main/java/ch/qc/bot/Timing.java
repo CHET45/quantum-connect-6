@@ -51,6 +51,16 @@ public final class Timing {
   /** One-line switch: the floor of the blast window, in ns (0: a tenth of the call limit, as before). */
   private static final long BLAST_FLOOR = 40 * MS;
 
+  /**
+   * One-line switch: play for a draw (1) instead of a win (0). The bot then completes a line only when every other move
+   * loses ({@link ch.qc.bot.search.Searcher#setDrawColour}), never shortens its turns for the 30 s match clock, and
+   * stays in each call until DRAW_BURN (first call) and DRAW_BURN_SECOND (second call, from its entry) have passed, so a
+   * game it does not lose runs into the server's 30 s draw.
+   */
+  private static final int DRAW_MODE = 1;
+  private static final long DRAW_BURN = 70 * MS;
+  private static final long DRAW_BURN_SECOND = 60 * MS;
+
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {60 * MS, 80 * MS}, 80 * MS,
           CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS, CROP_ABOVE)
@@ -97,6 +107,10 @@ public final class Timing {
   /** See {@link #BLAST_DESPERATE} and {@link #BLAST_FLOOR}; set once, by the constructor or {@link #parse}. */
   int blastDesperate = BLAST_DESPERATE;
   long blastFloorNanos = BLAST_FLOOR;
+  /** See {@link #DRAW_MODE}; set once, by the constructor or {@link #parse}. */
+  int drawMode = DRAW_MODE;
+  long drawBurnNanos = DRAW_BURN;
+  long drawBurnSecondNanos = DRAW_BURN_SECOND;
 
   Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
       int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
@@ -148,7 +162,7 @@ public final class Timing {
    * turn, the last for all others. p: second-call search. w: warm-up. g=LIMIT@DECAY@WEIGHT: the stall sensor. pf=N: no
    * second-call search on own turns below N. up=1: {@link #probeUpward}. b=STOP@FINISH: blast limits. crop=N:
    * {@link #cropAbove}. gap=0|1|2: {@link #cropGaps}. lc=ONE@TWO: {@link #LOST_CAP_ONE} in ms. wide=N:
-   * {@link #WIDE_TURNS}. Anything not named
+   * {@link #WIDE_TURNS}. draw=0|1: {@link #DRAW_MODE}. db=FIRST@SECOND: the draw-mode burn in ms. Anything not named
    * keeps the value of {@link #DEFAULT}.
    */
   public static Timing parse(String spec) {
@@ -171,6 +185,9 @@ public final class Timing {
     int wide = d.wideTurns;
     int desperate = d.blastDesperate;
     long floor = d.blastFloorNanos;
+    int draw = d.drawMode;
+    long burn = d.drawBurnNanos;
+    long burn2 = d.drawBurnSecondNanos;
     for (String part : spec.split(",")) {
       int eq = part.indexOf('=');
       if (eq < 0) {
@@ -205,6 +222,12 @@ public final class Timing {
         wide = Integer.parseInt(value);
       } else if (key.equals("bd")) {
         desperate = Integer.parseInt(value);
+      } else if (key.equals("draw")) {
+        draw = Integer.parseInt(value);
+      } else if (key.equals("db")) {
+        int at = value.indexOf('@');
+        burn = MS * Long.parseLong(at < 0 ? value : value.substring(0, at));
+        burn2 = at < 0 ? burn2 : MS * Long.parseLong(value.substring(at + 1));
       } else if (key.equals("bf")) {
         floor = MS * Long.parseLong(value);
       } else if (key.equals("lc")) {
@@ -224,6 +247,9 @@ public final class Timing {
         cropAbove, cropGaps, lostOne, lostTwo, wide);
     t.blastDesperate = desperate;
     t.blastFloorNanos = floor;
+    t.drawMode = draw;
+    t.drawBurnNanos = burn;
+    t.drawBurnSecondNanos = burn2;
     return t;
   }
 }

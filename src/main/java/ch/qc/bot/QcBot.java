@@ -96,6 +96,9 @@ public final class QcBot implements Algorithm {
   /** The crop that what {@link #choose} returns is a column of; null when none was used. */
   private Crop moveCrop;
   private Crop searchedCrop;
+  /** Draw mode ({@link Timing#drawMode}): the first call's search stop of this turn, 0 when none ran. */
+  private long drawHard;
+  private static volatile int burnSink;
   /** Far drops played this game ({@link Timing#wideTurns}). */
   private int widePlayed;
   private int calls;
@@ -207,6 +210,11 @@ public final class QcBot implements Algorithm {
       }
     }
     decision = new Decision(callId, s.fingerprint, col, special, inTime);
+    if (drawMode() && !special) {
+      // a blast must leave the call early (blastFinish); every other turn stays for the shared 30 s clock
+      long burn = Math.max(0L, limit.scaled(timing.drawBurnNanos, 30) - stall);
+      burnUntil(t0 + (drawHard > 0 ? Math.min(drawHard, burn) : burn));
+    }
     return col;
   }
 
@@ -251,12 +259,35 @@ public final class QcBot implements Algorithm {
     }
     if (!limit.known()) {
       probe(field, d, t0, PROBE_NANOS);
-    } else if (probeUpward && limit.upwardOpen() && clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
+    } else if (probeUpward && limit.upwardOpen() && ponderClock(t0)) {
       probe(field, d, t0, PROBE_UP_NANOS);
     } else {
       ponder(col, t0);
+      if (drawMode()) {
+        burnUntil(t0 + Math.max(0L, limit.scaled(timing.drawBurnSecondNanos, 30) - stall));
+      }
     }
     return false;
+  }
+
+  private boolean drawMode() {
+    return timing.drawMode == 1;
+  }
+
+  /** May the second call search? In draw mode always: the shared clock running out is the goal. */
+  private boolean ponderClock(long t0) {
+    return drawMode() || clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty);
+  }
+
+  /** Stays in the call until the clock reaches end, reading it only now and then (each reading allocates). */
+  static void burnUntil(long end) {
+    int sink = 0;
+    while (Clock.nanos() < end) {
+      for (int i = 0; i < 20_000; i++) {
+        sink = sink * 31 + i;
+      }
+    }
+    burnSink = sink;
   }
 
   /**
@@ -327,7 +358,7 @@ public final class QcBot implements Algorithm {
     int modelCol = searchedCrop == null ? -1 : searchedCrop.model(col);
     if (timing.ponderNanos <= 0 || tracker.turn() <= timing.ponderFromTurn || b == null || modelCol < 0
         || modelCol >= b.g.cols || b.isFull(modelCol)
-        || !clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
+        || !ponderClock(t0)) {
       return;
     }
     if (b.make(modelCol, searchedMe) || b.topRowFull()) {
@@ -414,6 +445,7 @@ public final class QcBot implements Algorithm {
   }
 
   private int choose(Snapshot s, long t0) {
+    drawHard = 0;
     lastResult = null;
     searchedBoard = null;
     moveOffset = 0;
@@ -448,7 +480,10 @@ public final class QcBot implements Algorithm {
     int cdOpp = tracker.opponentCooldownCounter();
     if (c.cols <= MAX_SEARCH_COLS) {
       int empty = s.rows * s.cols - s.discs;
-      long hard = clock.budget(t0, tracker.plyIndex(), stopNow(), lastScore, empty, limit.nanos());
+      long base = stopNow();
+      long hard = drawMode() ? base : clock.budget(t0, tracker.plyIndex(), base, lastScore, empty, limit.nanos());
+      drawHard = hard;
+      searcher.setDrawColour(drawMode() ? me : 0);
       searcher.setStallLimit(limit.scaled(timing.stallLimitNanos, 50));
       searcher.setBlastStop(Math.max(limit.nanos() / 20, limit.scaled(timing.blastStopNanos, 30) - stall));
       Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0, hard);
@@ -474,7 +509,9 @@ public final class QcBot implements Algorithm {
         return r.move();
       }
     }
-    return new Tactics(geometry).choose(board, me, cdMe, cdOpp, Clock.nanos() + Math.min(TACTICS_NANOS, limit.nanos() / 10));
+    Tactics tactics = new Tactics(geometry);
+    tactics.noWin = drawMode();
+    return tactics.choose(board, me, cdMe, cdOpp, Clock.nanos() + Math.min(TACTICS_NANOS, limit.nanos() / 10));
   }
 
   /**

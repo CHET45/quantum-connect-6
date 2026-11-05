@@ -34,6 +34,11 @@ public final class Tactics {
   /** potential[colour][code]: weight of a window that still can become a line of colour. */
   private final int[][] potential;
   private long deadline;
+  /**
+   * Draw mode: never complete an own line by a drop or a blast unless every other move loses at once, and do not aim
+   * for a forced win in two.
+   */
+  public boolean noWin;
 
   public Tactics(Geometry g) {
     this.g = g;
@@ -73,17 +78,25 @@ public final class Tactics {
     int cols = g.cols;
     boolean mySp = myCounter >= COOLDOWN;
     boolean oppSp = oppCounter >= COOLDOWN;
+    // draw mode: an own win is kept for the case that every other move loses at once
+    int winMove = NONE;
     for (int i = 0; i < cols; i++) {
       int c = centre(i);
       if (!b.isFull(c) && b.threats(me, g.index(c, b.height(c))) > 0) {
-        return c;
+        if (!noWin) {
+          return c;
+        }
+        winMove = winMove == NONE ? c : winMove;
       }
     }
     if (mySp) {
       for (int i = 0; i < cols; i++) {
         int c = centre(i);
         if (b.blastWins(c)) {
-          return c | SPECIAL;
+          if (!noWin) {
+            return c | SPECIAL;
+          }
+          winMove = winMove == NONE ? c | SPECIAL : winMove;
         }
       }
     }
@@ -99,13 +112,15 @@ public final class Tactics {
       }
       int score = moveScore(b, c, me);
       child.copyFrom(b);
-      child.make(c, me);
+      if (child.make(c, me) && noWin) {
+        continue;
+      }
       int cls;
       if (winsNow(child, opp, oppSp)) {
         cls = LOSES_NOW;
       } else if (!deep || ch.qc.bot.Clock.nanos() > deadline) {
         cls = NEUTRAL;
-      } else if (forcesWin(child, me, mySpNext, oppCounter)) {
+      } else if (!noWin && forcesWin(child, me, mySpNext, oppCounter)) {
         cls = WINS_IN_TWO;
       } else if (opponentForcesWin(child, me, mySpNext, oppCounter)) {
         cls = LOSES_IN_TWO;
@@ -118,18 +133,23 @@ public final class Tactics {
         bestScore = score;
       }
     }
-    if (bestClass == LOSES_NOW && mySp) {
+    if (bestClass <= LOSES_NOW && mySp) {
       for (int i = 0; i < cols; i++) {
         int c = centre(i);
         if (b.isFull(c)) {
           continue;
         }
         child.copyFrom(b);
-        child.blast(c);
+        if (child.blast(c) && noWin) {
+          continue;
+        }
         if (!winsNow(child, opp, oppSp)) {
           return c | SPECIAL;
         }
       }
+    }
+    if (bestClass <= LOSES_NOW && winMove != NONE) {
+      return winMove;
     }
     if (bestClass == LOSES_NOW) {
       // every move loses at once: at least take away one of the opponent's playable threat cells

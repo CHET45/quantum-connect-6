@@ -26,6 +26,13 @@ public final class Searcher {
   private static final int COOLDOWN = 10;
   private static final int MAX_TURNS = 1000;
   private static final int EBF = 3;
+  /**
+   * Draw mode ({@link #setDrawColour}): the value of a line the draw colour completes itself, from its view. Below
+   * every draw and most evaluations, above every loss: the bot wins only when every other move loses.
+   */
+  public static final int DRAW_WIN = -2_000;
+  /** Draw mode: a game that ends drawn (full board, turn cap) is worth this to the draw colour, above any evaluation. */
+  public static final int DRAW_SURE = 14_500;
   /** blastWinMinDepth that keeps the winning-blast scan at every node. */
   private static final int ALL_DEPTHS = -1000;
   /** The clock is read every 64 nodes at most: each reading allocates (see {@link ch.qc.bot.Clock}). */
@@ -322,6 +329,8 @@ public final class Searcher {
   private volatile long lastMaxGap;
   /** Best drop of the last finished search, NONE if it stopped before it had one. */
   private volatile int lastBestDrop = Tactics.NONE;
+  /** See {@link #setDrawColour}; 0 is off. */
+  private volatile int drawColour;
 
   /** Mutable state of one search call. */
   private static final class Ctx {
@@ -343,6 +352,8 @@ public final class Searcher {
     /** The move this search would play now is a blast; past blastDeadline that ends the search. */
     boolean leadingBlast;
     long blastDeadline;
+    /** Draw colour of this call ({@link #setDrawColour}), 0 for none. */
+    int dc;
     final int[][] moves = new int[MAX_PLY][];
     final int[][] order = new int[MAX_PLY][];
     final int[][] killers = new int[MAX_PLY][2];
@@ -479,6 +490,18 @@ public final class Searcher {
     blastStop = nanos;
   }
 
+  /**
+   * Draw mode: this colour plays for a draw. Its own completed line (by a drop or a blast) scores {@link #DRAW_WIN}
+   * instead of a win, and its threat searches are off, so it completes a line only when every other move loses. The
+   * opponent is still modelled as blocking a single threat of ours, as a winning bot does; if it does not, the threat
+   * stays, so that model can turn a draw into a win but never into a loss. Two of our threats score DRAW_WIN for us.
+   * The rule follows the colour, not the ply, so a search for the opponent (the second call) fills the transposition
+   * table consistently. 0 turns it off.
+   */
+  public void setDrawColour(int colour) {
+    drawColour = colour;
+  }
+
   /** Longest time between two clock polls of the last finished search. */
   public long lastMaxGapNanos() {
     return lastMaxGap;
@@ -523,6 +546,9 @@ public final class Searcher {
     x.bestDrop = Tactics.NONE;
     x.leadingBlast = false;
     x.blastDeadline = blastStop > 0 ? startNanos + blastStop : Long.MAX_VALUE;
+    x.dc = drawColour;
+    // draw mode: a winning move is searched like any other and scores DRAW_WIN
+    boolean noWin = x.dc == me;
     int opp = 3 - me;
     cdMe = Math.min(cdMe, COOLDOWN);
     cdOpp = Math.min(cdOpp, COOLDOWN);
@@ -532,7 +558,7 @@ public final class Searcher {
     int n = 0;
     for (int c = 0; c < g.cols; c++) {
       if (!root.isFull(c)) {
-        if (root.threats(me, g.index(c, root.height(c))) > 0) {
+        if (!noWin && root.threats(me, g.index(c, root.height(c))) > 0) {
           return result(x, c, MATE - 1, 1, startNanos);
         }
         moves[n++] = c;
@@ -544,7 +570,7 @@ public final class Searcher {
     if (cdMe >= COOLDOWN) {
       for (int c = 0; c < g.cols; c++) {
         if (!root.isFull(c)) {
-          if (root.blastWins(c)) {
+          if (!noWin && root.blastWins(c)) {
             return result(x, c | Tactics.SPECIAL, MATE - 1, 1, startNanos);
           }
           moves[n++] = c | Tactics.SPECIAL;
@@ -561,7 +587,7 @@ public final class Searcher {
     long hardDeadline = startNanos + hardNanos;
     long budgetMs = Math.max(1, Math.min(Math.min(hardNanos / 1_000_000L, maxNodes / NODES_PER_MS), MAX_BUDGET_MS));
     x.vcf.attackerBlasts = options.vcfBlast >= 1;
-    if (options.rootVcf) {
+    if (options.rootVcf && !noWin) {
       int m = x.vcf.attack(root, me, cdMe, cdOpp, ROOT_VCF_MOVES, turnIndex,
           Math.min(hardDeadline, Clock.nanos() + hardNanos / options.rootVcfShare), budgetMs * ROOT_VCF_NODES_PER_MS);
       if (m != Tactics.NONE) {
@@ -719,8 +745,8 @@ public final class Searcher {
     if (!Tactics.isSpecial(m)) {
       x.prevCell[0] = g.index(c, root.height(c));
       boolean win = root.make(c, me);
-      int s = win ? MATE - 1
-          : root.topRowFull() ? draw(0)
+      int s = win ? winScore(x, me, 0)
+          : root.topRowFull() ? drawScore(x, me, 0)
           : pvsChild(x, root, opp, cdOpp, Math.min(cdMe + 1, COOLDOWN), depth - 1, alpha, INF, 0, first);
       root.unmake(c);
       return s;
@@ -728,7 +754,7 @@ public final class Searcher {
     Board child = x.pool(0);
     child.copyFrom(root);
     if (child.blast(c)) {
-      return MATE - 1;
+      return winScore(x, me, 0);
     }
     x.prevCell[0] = -1;
     return pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, INF, 0, first);
@@ -764,15 +790,21 @@ public final class Searcher {
       return 0;
     }
     if (x.turnBase + ply >= MAX_TURNS) {
-      return draw(ply);
+      return drawScore(x, stm, ply);
     }
     int opp = 3 - stm;
+    // draw mode, the draw colour to move: an own win is only a floor of DRAW_WIN under the value of this node
+    boolean mine = x.dc == stm;
+    boolean hasWin = false;
     int oppThreats = 0;
     int threatCol = -1;
     for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
       int cell = g.index(c, b.height(c));
       if (b.threats(stm, cell) > 0) {
-        return MATE - ply - 1;
+        if (!mine) {
+          return MATE - ply - 1;
+        }
+        hasWin = true;
       }
       if (b.threats(opp, cell) > 0) {
         oppThreats++;
@@ -786,19 +818,28 @@ public final class Searcher {
     if (ready && depth >= Math.max(1, options.blastWinMinDepth)) {
       abw = anyBlastWins(x, b, ply) ? 1 : 0;
       if (abw == 1) {
-        return MATE - ply - 1;
+        if (!mine) {
+          return MATE - ply - 1;
+        }
+        hasWin = true;
       }
     }
     if (oppThreats >= 2 && !ready) {
-      return -(MATE - ply - 2);
+      return lossOrForcedWin(x, stm, ply, hasWin);
     }
     if (b.topRowFull()) {
-      return draw(ply);
+      return drawScore(x, stm, ply);
     }
     alpha = Math.max(alpha, -(MATE - ply - 2));
     beta = Math.min(beta, MATE - ply - 1);
     if (alpha >= beta) {
       return alpha;
+    }
+    if (hasWin) {
+      if (DRAW_WIN >= beta) {
+        return DRAW_WIN;
+      }
+      alpha = Math.max(alpha, DRAW_WIN);
     }
     boolean forced = oppThreats == 1;
     // the opponent wins with a blast next ply unless this move breaks it (a ready side to move has already won above)
@@ -811,7 +852,7 @@ public final class Searcher {
     x.abwAt[ply] = abw;
     if (depth <= 0 || ply >= MAX_PLY - 2) {
       if ((!forced && !oppBlast) || ply >= MAX_PLY - 2) {
-        if (leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0) {
+        if (leafVcf && !mine && cdOpp < COOLDOWN && b.live3(stm) > 0) {
           int v = leafProof(x, b, stm, cdStm, cdOpp, ply);
           if (v != 0) {
             return v;
@@ -821,10 +862,13 @@ public final class Searcher {
           x.stats[11]++;
         }
         int v = eval.evaluate(b, stm, cdStm, cdOpp);
+        if (mine) {
+          return hasWin ? Math.max(v, DRAW_WIN) : v;
+        }
         // the scan can only raise the value, so a leaf already at beta needs none
         return leafBlast && ready && v < beta && (abw >= 0 ? abw == 1 : anyBlastWins(x, b, ply)) ? MATE - ply - 1 : v;
       } else {
-        if (leafBlast && ready && (abw >= 0 ? abw == 1 : anyBlastWins(x, b, ply))) {
+        if (!mine && leafBlast && ready && (abw >= 0 ? abw == 1 : anyBlastWins(x, b, ply))) {
           return MATE - ply - 1;
         }
         depth = 1;
@@ -835,8 +879,8 @@ public final class Searcher {
     if (options.razor && !pv && !forced && !oppBlast && depth <= 2) {
       int ev = eval.evaluate(b, stm, cdStm, cdOpp);
       if (ev + RAZOR_MARGIN[depth] < alpha) {
-        int v = leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0 ? leafProof(x, b, stm, cdStm, cdOpp, ply) : 0;
-        return v != 0 ? v : ev;
+        int v = leafVcf && !mine && cdOpp < COOLDOWN && b.live3(stm) > 0 ? leafProof(x, b, stm, cdStm, cdOpp, ply) : 0;
+        return v != 0 ? v : hasWin ? Math.max(ev, DRAW_WIN) : ev;
       }
     }
 
@@ -858,7 +902,7 @@ public final class Searcher {
       }
     }
 
-    if (options.nodeVcf > 0 && depth >= options.nodeVcf && oppThreats == 0 && beta > -MATE_BOUND) {
+    if (options.nodeVcf > 0 && !mine && depth >= options.nodeVcf && oppThreats == 0 && beta > -MATE_BOUND) {
       // a threat search costs a few dozen nodes on most positions and looks far past the horizon of this node
       long before = x.vcf.nodes;
       int proof = x.vcf.attack(b, stm, cdStm, cdOpp, NODE_VCF_MOVES, x.turnBase + ply, x.deadline, options.nodeVcfNodes);
@@ -910,7 +954,7 @@ public final class Searcher {
       }
     }
     if (n == 0) {
-      return oppThreats >= 2 ? -(MATE - ply - 2) : draw(ply);
+      return oppThreats >= 2 ? lossOrForcedWin(x, stm, ply, hasWin) : drawScore(x, stm, ply);
     }
     int[] kill = x.killers[ply];
     int[] hist = x.history[stm];
@@ -999,9 +1043,9 @@ public final class Searcher {
         int red = lmr > 0 && oppThreats == 0 && !oppBlast && !win && i >= (pv ? 2 * lmr : lmr)
             && depth >= options.lmrDepth && tactic[i] == 0 ? 2 : 0;
         if (win) {
-          s = MATE - ply - 1;
+          s = winScore(x, stm, ply);
         } else if (b.topRowFull()) {
-          s = draw(ply);
+          s = drawScore(x, stm, ply);
         } else if (red > 0) {
           s = -search(x, b, opp, cdOpp, nextCdOpp, depth - 1 - red, -alpha - 1, -alpha, ply + 1, false);
           if (!x.stop && s > alpha) {
@@ -1028,7 +1072,7 @@ public final class Searcher {
         child.copyFrom(b);
         x.prevCell[ply] = -1;
         if (child.blast(c)) {
-          s = MATE - ply - 1;
+          s = winScore(x, stm, ply);
         } else if (options.lmrBlast > 0 && oppThreats == 0 && i > 0 && depth - 1 - options.lmrBlast >= 0) {
           s = -search(x, child, opp, cdOpp, 1, depth - 1 - options.lmrBlast, -alpha - 1, -alpha, ply + 1, false);
           if (!x.stop && s > alpha) {
@@ -1064,6 +1108,10 @@ public final class Searcher {
           }
         }
       }
+    }
+    if (hasWin && best < DRAW_WIN) {
+      // a forced block that loses, say, while a line of ours waits elsewhere
+      best = DRAW_WIN;
     }
     int bound = best <= origAlpha ? TranspositionTable.UPPER : best >= beta ? TranspositionTable.LOWER
         : TranspositionTable.EXACT;
@@ -1149,6 +1197,33 @@ public final class Searcher {
 
   private int draw(int ply) {
     return (ply & 1) == 0 ? -options.contempt : options.contempt;
+  }
+
+  /** A drawn end for the side to move: DRAW_SURE for the draw colour, its negation for the other, else contempt. */
+  private int drawScore(Ctx x, int stm, int ply) {
+    if (x.dc == 0) {
+      return draw(ply);
+    }
+    return stm == x.dc ? DRAW_SURE : -DRAW_SURE;
+  }
+
+  /** A line the side to move completes now, from its view. */
+  private static int winScore(Ctx x, int stm, int ply) {
+    return stm == x.dc ? DRAW_WIN : MATE - ply - 1;
+  }
+
+  /**
+   * The side to move cannot stop two lines of its opponent: a loss, unless it can complete one of its own first
+   * (draw colour), or the opponent is the draw colour, which then has to win.
+   */
+  private static int lossOrForcedWin(Ctx x, int stm, int ply, boolean hasWin) {
+    if (x.dc != 0 && x.dc == stm && hasWin) {
+      return DRAW_WIN;
+    }
+    if (x.dc != 0 && x.dc == 3 - stm) {
+      return -DRAW_WIN;
+    }
+    return -(MATE - ply - 2);
   }
 
   /** Short VCF for the side to move at a leaf: a win score if it finds one, else 0. */
