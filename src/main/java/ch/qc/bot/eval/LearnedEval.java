@@ -13,21 +13,21 @@ public final class LearnedEval implements Evaluator {
   private final Geometry g;
   private final short[] swap12;
   private final int codes;
-  /** w[stage * cdContexts + cd][window * codes + relative code]. */
+  /** w[stage * cdContexts + cd][window * codes + relative code]; stage 0 only for a one-stage blob. */
   private final short[][] w;
+  private final boolean staged;
   private final short[] t1;
   private final short[] t2;
   private final short[] t3;
 
+  /** The blob must match the spec ({@link WeightBlob#matches}); callers check that first. */
   public LearnedEval(FeatureSpec spec, WeightBlob blob) {
-    if (!blob.matches(spec)) {
-      throw new IllegalArgumentException("weights were trained for another feature spec");
-    }
     this.g = spec.g;
     Tables t = g.tables;
     this.swap12 = t.swap12;
     this.codes = spec.codes;
-    int contexts = Features.STAGES * Features.CD_CONTEXTS;
+    this.staged = blob.stages == Features.STAGES;
+    int contexts = blob.stages * Features.CD_CONTEXTS;
     int params = spec.windowParams();
     w = new short[contexts][g.windows * codes];
     for (int ctx = 0; ctx < contexts; ctx++) {
@@ -56,7 +56,7 @@ public final class LearnedEval implements Evaluator {
   /** The unclamped integer sum (the quantity the Java-Python parity test compares). */
   public int rawSum(Board b, int stm, int cdStm, int cdOpp) {
     int cd = Features.cdContext(cdStm, cdOpp);
-    short[] table = w[Features.stage(b) * Features.CD_CONTEXTS + cd];
+    short[] table = w[staged ? Features.stage(b) * Features.CD_CONTEXTS + cd : cd];
     int sum = 0;
     int off = 0;
     if (stm == Board.FIRST) {

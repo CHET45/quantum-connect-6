@@ -46,9 +46,6 @@ public final class Geometry {
   }
 
   public Geometry(int rows, int cols, int k) {
-    if (rows < 1 || cols < 1) {
-      throw new IllegalArgumentException("board size " + rows + "x" + cols);
-    }
     this.rows = rows;
     this.cols = cols;
     this.k = k;

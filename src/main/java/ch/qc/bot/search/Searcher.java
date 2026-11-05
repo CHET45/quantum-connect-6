@@ -1,5 +1,6 @@
 package ch.qc.bot.search;
 
+import ch.qc.bot.Clock;
 import ch.qc.bot.eval.Evaluator;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
@@ -12,6 +13,8 @@ import java.util.SplittableRandom;
  * ordering with blasts last, mate-distance scores, and a zero-cost forced reply to a single playable threat.
  * Moves are encoded as in {@link Tactics}. Each {@link #run} gets its own context and a token, so a search that
  * outlived its call (the engine only interrupts it) aborts at its next clock poll instead of disturbing the next.
+ * Uploaded bots may not throw, so an abort sets {@code Ctx.stop} and every caller returns as soon as it sees it;
+ * values computed after the stop are never used or stored.
  */
 public final class Searcher {
   public static final int MATE = 30_000;
@@ -28,39 +31,93 @@ public final class Searcher {
   private static final int EBF = 3;
 
   /** Search outcome; vcfNodes and vcfProofs count the threat-search work of this call. */
-  public record Result(int move, int score, int depth, long nodes, long nanos, long vcfNodes, long vcfProofs,
-      long blastRefutations) {}
+  public static final class Result {
+    private final int move;
+    private final int score;
+    private final int depth;
+    private final long nodes;
+    private final long nanos;
+    private final long vcfNodes;
+    private final long vcfProofs;
+    private final long blastRefutations;
+
+    public Result(int move, int score, int depth, long nodes, long nanos, long vcfNodes, long vcfProofs,
+        long blastRefutations) {
+      this.move = move;
+      this.score = score;
+      this.depth = depth;
+      this.nodes = nodes;
+      this.nanos = nanos;
+      this.vcfNodes = vcfNodes;
+      this.vcfProofs = vcfProofs;
+      this.blastRefutations = blastRefutations;
+    }
+
+    public int move() {
+      return move;
+    }
+
+    public int score() {
+      return score;
+    }
+
+    public int depth() {
+      return depth;
+    }
+
+    public long nodes() {
+      return nodes;
+    }
+
+    public long nanos() {
+      return nanos;
+    }
+
+    public long vcfNodes() {
+      return vcfNodes;
+    }
+
+    public long vcfProofs() {
+      return vcfProofs;
+    }
+
+    public long blastRefutations() {
+      return blastRefutations;
+    }
+  }
 
   /**
    * Switches of the threat-search integration (design 2.5): own VCF at the root, the opponent's VCF check at the
    * root, VCF at the leaves (only while the defender's special is not ready), exact or tentative leaves [H1],
    * razoring into the VCF [H9]. Leaf VCF is off by default: unrestricted it cost 160 Elo through lost depth.
+   * Contempt (1/256 logit) scores a draw as that much worse than equal for the searching side and as that much
+   * better for its opponent, so the bot plays on from an unclear position rather than take a draw, but still takes
+   * a draw over a position clearly lost. A Searcher with contempt must search for one colour only (its TT keeps
+   * draw scores from that colour's view).
    */
-  public record Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor) {
+  public static final class Options {
     public static final Options DEFAULT = new Options(true, true, false, true, false);
     public static final Options NONE = new Options(false, false, false, true, false);
 
-    /** Applies a spec such as "+razor,-leafVcf" to the defaults. */
-    public static Options parse(String spec) {
-      Options o = DEFAULT;
-      for (String part : spec.split(",")) {
-        part = part.trim();
-        if (part.isEmpty()) {
-          continue;
-        }
-        boolean on = !part.startsWith("-");
-        String name = part.replaceFirst("^[+-]", "");
-        o = switch (name) {
-          case "rootVcf" -> new Options(on, o.opponentVcf, o.leafVcf, o.exactLeaves, o.razor);
-          case "opponentVcf" -> new Options(o.rootVcf, on, o.leafVcf, o.exactLeaves, o.razor);
-          case "leafVcf" -> new Options(o.rootVcf, o.opponentVcf, on, o.exactLeaves, o.razor);
-          case "exactLeaves" -> new Options(o.rootVcf, o.opponentVcf, o.leafVcf, on, o.razor);
-          case "razor" -> new Options(o.rootVcf, o.opponentVcf, o.leafVcf, o.exactLeaves, on);
-          case "noVcf" -> NONE;
-          default -> throw new IllegalArgumentException("unknown search option " + name);
-        };
-      }
-      return o;
+    public final boolean rootVcf;
+    public final boolean opponentVcf;
+    public final boolean leafVcf;
+    public final boolean exactLeaves;
+    public final boolean razor;
+    public final int contempt;
+
+    public Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor) {
+      this(rootVcf, opponentVcf, leafVcf, exactLeaves, razor, 0);
+    }
+
+    public Options(boolean rootVcf, boolean opponentVcf, boolean leafVcf, boolean exactLeaves, boolean razor,
+        int contempt) {
+      this.rootVcf = rootVcf;
+      this.opponentVcf = opponentVcf;
+      this.leafVcf = leafVcf;
+      this.exactLeaves = exactLeaves;
+      this.razor = razor;
+      this.contempt = contempt;
     }
   }
 
@@ -93,22 +150,22 @@ public final class Searcher {
   /** live[colour][code]: square of the colour's discs in a window without opponent discs, else 0. */
   private final int[][] live = new int[3][];
   private volatile int token;
-
-  private static final class Abort extends RuntimeException {
-    Abort() {
-      super(null, null, false, false);
-    }
-  }
-
-  private static final Abort ABORT = new Abort();
+  /**
+   * Context of the last finished call, reused by the next one so a call allocates almost nothing (the server
+   * limits the heap). A call that is still running (abandoned by the engine) keeps its own.
+   */
+  private volatile Ctx idle;
 
   /** Mutable state of one search call. */
-  private final class Ctx {
-    final int token;
-    final long deadline;
-    final long maxNodes;
-    final int turnBase;
+  private static final class Ctx {
+    final Geometry g;
+    int token;
+    long deadline;
+    long maxNodes;
+    int turnBase;
     long nodes;
+    /** Set by the first poll past a limit; from then on every search call returns at once. */
+    boolean stop;
     final int[][] moves = new int[MAX_PLY][];
     final int[][] order = new int[MAX_PLY][];
     final int[][] killers = new int[MAX_PLY][2];
@@ -117,7 +174,8 @@ public final class Searcher {
     final Vcf vcf;
     final Vcf leafVcf;
 
-    Ctx(int token, long deadline, long maxNodes, int turnBase) {
+    Ctx(Geometry g, Options options, Vcf.Table vcfTable, int token, long deadline, long maxNodes, int turnBase) {
+      this.g = g;
       this.token = token;
       this.deadline = deadline;
       this.maxNodes = maxNodes;
@@ -129,6 +187,23 @@ public final class Searcher {
       for (int[] k : killers) {
         k[0] = k[1] = Tactics.NONE;
       }
+    }
+
+    /** Puts a finished context back into the state of a new one. */
+    void reset(int token, long deadline, long maxNodes, int turnBase) {
+      this.token = token;
+      this.deadline = deadline;
+      this.maxNodes = maxNodes;
+      this.turnBase = turnBase;
+      nodes = 0;
+      stop = false;
+      java.util.Arrays.fill(history[1], 0);
+      java.util.Arrays.fill(history[2], 0);
+      for (int[] k : killers) {
+        k[0] = k[1] = Tactics.NONE;
+      }
+      vcf.resetStats();
+      leafVcf.resetStats();
     }
 
     int[] moves(int ply) {
@@ -215,7 +290,13 @@ public final class Searcher {
       long maxNodes) {
     int myToken = ++token;
     tt.newSearch();
-    Ctx x = new Ctx(myToken, startNanos + hardNanos, maxNodes, turnIndex);
+    Ctx x = idle;
+    idle = null;
+    if (x == null) {
+      x = new Ctx(g, options, vcfTable, myToken, startNanos + hardNanos, maxNodes, turnIndex);
+    } else {
+      x.reset(myToken, startNanos + hardNanos, maxNodes, turnIndex);
+    }
     int opp = 3 - me;
     cdMe = Math.min(cdMe, COOLDOWN);
     cdOpp = Math.min(cdOpp, COOLDOWN);
@@ -257,14 +338,14 @@ public final class Searcher {
     long hardDeadline = startNanos + hardNanos;
     if (options.rootVcf) {
       int m = x.vcf.attack(root, me, cdMe, cdOpp, ROOT_VCF_MOVES, turnIndex,
-          Math.min(hardDeadline, System.nanoTime() + ROOT_VCF_NANOS), ROOT_VCF_NODES);
+          Math.min(hardDeadline, Clock.nanos() + ROOT_VCF_NANOS), ROOT_VCF_NODES);
       if (m != Tactics.NONE) {
         return result(x, m, MATE_BOUND + 1, 0, startNanos);
       }
     }
     if (options.opponentVcf && n > 1) {
       n = dropMovesLosingToVcf(x, root, me, cdMe, cdOpp, turnIndex, moves, scores, n,
-          Math.min(hardDeadline, System.nanoTime() + OPP_VCF_NANOS));
+          Math.min(hardDeadline, Clock.nanos() + OPP_VCF_NANOS));
     }
 
     int best = moves[0];
@@ -274,20 +355,22 @@ public final class Searcher {
       int iterBest = Tactics.NONE;
       int iterScore = -INF;
       int alpha = -INF;
-      try {
-        for (int i = 0; i < n; i++) {
-          int m = moves[i];
-          int score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha, i == 0);
-          scores[i] = score;
-          if (score > iterScore) {
-            iterScore = score;
-            iterBest = m;
-          }
-          if (score > alpha) {
-            alpha = score;
-          }
+      for (int i = 0; i < n && !x.stop; i++) {
+        int m = moves[i];
+        int score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha, i == 0);
+        if (x.stop) {
+          break;
         }
-      } catch (Abort a) {
+        scores[i] = score;
+        if (score > iterScore) {
+          iterScore = score;
+          iterBest = m;
+        }
+        if (score > alpha) {
+          alpha = score;
+        }
+      }
+      if (x.stop) {
         // a move that beat the previous best with a completed score is still trustworthy
         if (iterBest != Tactics.NONE && iterBest != best && iterScore > bestScore && completed > 0) {
           best = iterBest;
@@ -299,7 +382,7 @@ public final class Searcher {
       bestScore = iterScore;
       completed = depth;
       sortByScore(moves, scores, n);
-      long elapsed = System.nanoTime() - startNanos;
+      long elapsed = Clock.nanos() - startNanos;
       if (Math.abs(bestScore) > MATE_BOUND || n == 1 || elapsed * EBF > hardNanos || x.nodes * EBF > maxNodes) {
         break;
       }
@@ -312,7 +395,9 @@ public final class Searcher {
     long vn = x.vcf.nodes + (two ? x.leafVcf.nodes : 0);
     long vp = x.vcf.proofs + (two ? x.leafVcf.proofs : 0);
     long br = x.vcf.blastRefutations + (two ? x.leafVcf.blastRefutations : 0);
-    return new Result(move, score, depth, x.nodes, System.nanoTime() - startNanos, vn, vp, br);
+    Result r = new Result(move, score, depth, x.nodes, Clock.nanos() - startNanos, vn, vp, br);
+    idle = x;
+    return r;
   }
 
   /**
@@ -354,8 +439,10 @@ public final class Searcher {
       m2[i] = moves[keep[i]];
       s2[i] = scores[keep[i]];
     }
-    System.arraycopy(m2, 0, moves, 0, kept);
-    System.arraycopy(s2, 0, scores, 0, kept);
+    for (int i = 0; i < kept; i++) {
+      moves[i] = m2[i];
+      scores[i] = s2[i];
+    }
     return kept;
   }
 
@@ -364,17 +451,11 @@ public final class Searcher {
     int c = Tactics.column(m);
     if (!Tactics.isSpecial(m)) {
       boolean win = root.make(c, me);
-      try {
-        if (win) {
-          return MATE - 1;
-        }
-        if (root.topRowFull()) {
-          return 0;
-        }
-        return pvsChild(x, root, opp, cdOpp, Math.min(cdMe + 1, COOLDOWN), depth - 1, alpha, INF, 0, first);
-      } finally {
-        root.unmake(c);
-      }
+      int s = win ? MATE - 1
+          : root.topRowFull() ? draw(0)
+          : pvsChild(x, root, opp, cdOpp, Math.min(cdMe + 1, COOLDOWN), depth - 1, alpha, INF, 0, first);
+      root.unmake(c);
+      return s;
     }
     Board child = x.pool(0);
     child.copyFrom(root);
@@ -391,6 +472,9 @@ public final class Searcher {
       return -search(x, b, stm, cdStm, cdOpp, depth, -beta, -alpha, ply + 1, true);
     }
     int s = -search(x, b, stm, cdStm, cdOpp, depth, -alpha - 1, -alpha, ply + 1, false);
+    if (x.stop) {
+      return 0;
+    }
     if (s > alpha && s < beta) {
       s = -search(x, b, stm, cdStm, cdOpp, depth, -beta, -alpha, ply + 1, true);
     }
@@ -399,11 +483,14 @@ public final class Searcher {
 
   private int search(Ctx x, Board b, int stm, int cdStm, int cdOpp, int depth, int alpha, int beta, int ply,
       boolean pv) {
-    if ((++x.nodes & pollMask) == 0) {
-      poll(x);
+    if (x.stop) {
+      return 0;
+    }
+    if ((++x.nodes & pollMask) == 0 && poll(x)) {
+      return 0;
     }
     if (x.turnBase + ply >= MAX_TURNS) {
-      return 0;
+      return draw(ply);
     }
     int opp = 3 - stm;
     int oppThreats = 0;
@@ -429,7 +516,7 @@ public final class Searcher {
       return -(MATE - ply - 2);
     }
     if (b.topRowFull()) {
-      return 0;
+      return draw(ply);
     }
     alpha = Math.max(alpha, -(MATE - ply - 2));
     beta = Math.min(beta, MATE - ply - 1);
@@ -492,7 +579,7 @@ public final class Searcher {
       }
     }
     if (n == 0) {
-      return oppThreats >= 2 ? -(MATE - ply - 2) : 0;
+      return oppThreats >= 2 ? -(MATE - ply - 2) : draw(ply);
     }
     int[] kill = x.killers[ply];
     int[] hist = x.history[stm];
@@ -539,17 +626,17 @@ public final class Searcher {
       int s;
       if (!Tactics.isSpecial(m)) {
         boolean win = b.make(c, stm);
-        try {
-          s = win ? MATE - ply - 1
-              : b.topRowFull() ? 0
-              : pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, i == 0);
-        } finally {
-          b.unmake(c);
-        }
+        s = win ? MATE - ply - 1
+            : b.topRowFull() ? draw(ply)
+            : pvsChild(x, b, opp, cdOpp, nextCdOpp, depth - 1, alpha, beta, ply, i == 0);
+        b.unmake(c);
       } else {
         Board child = x.pool(ply);
         child.copyFrom(b);
         s = child.blast(c) ? MATE - ply - 1 : pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, beta, ply, i == 0);
+      }
+      if (x.stop) {
+        return 0;
       }
       if (s > best) {
         best = s;
@@ -575,6 +662,11 @@ public final class Searcher {
     return best;
   }
 
+  /** Draw score for the side to move at a node of this ply (the searching colour moves at even plies). */
+  private int draw(int ply) {
+    return (ply & 1) == 0 ? -options.contempt : options.contempt;
+  }
+
   /** Short VCF for the side to move at a leaf: a win score if it finds one, else 0. */
   private int leafProof(Ctx x, Board b, int stm, int cdStm, int cdOpp, int ply) {
     int m = x.leafVcf.attack(b, stm, cdStm, cdOpp, LEAF_VCF_MOVES, x.turnBase + ply, x.deadline, LEAF_VCF_NODES);
@@ -597,11 +689,12 @@ public final class Searcher {
     return false;
   }
 
-  private void poll(Ctx x) {
-    if (x.nodes > x.maxNodes || System.nanoTime() > x.deadline || token != x.token
-        || Thread.currentThread().isInterrupted()) {
-      throw ABORT;
+  /** Checks the limits; returns true (and sets the stop flag) once the search must end. */
+  private boolean poll(Ctx x) {
+    if (x.nodes > x.maxNodes || Clock.nanos() > x.deadline || token != x.token) {
+      x.stop = true;
     }
+    return x.stop;
   }
 
   private long key(Board b, int stm, int cdStm, int cdOpp, int turn) {

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
+import ch.qc.tools.WeightFiles;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.nio.ByteBuffer;
@@ -26,6 +27,10 @@ class WeightsTest {
 
   /** A blob in the export.py format with random weights, for the loader tests. */
   static byte[] blob(FeatureSpec spec, long hash, long seed) throws Exception {
+    return blob(spec, hash, seed, Features.STAGES);
+  }
+
+  static byte[] blob(FeatureSpec spec, long hash, long seed, int stages) throws Exception {
     SplittableRandom rnd = new SplittableRandom(seed);
     ByteArrayOutputStream raw = new ByteArrayOutputStream();
     try (DataOutputStream out = new DataOutputStream(new DeflaterOutputStream(raw))) {
@@ -34,11 +39,11 @@ class WeightsTest {
         out.writeInt(x);
       }
       out.writeLong(hash);
-      for (int x : new int[] {256, Features.STAGES, Features.CD_CONTEXTS, spec.classes, spec.codes, Features.T1_SIZE,
+      for (int x : new int[] {256, stages, Features.CD_CONTEXTS, spec.classes, spec.codes, Features.T1_SIZE,
           Features.T2_SIZE, Features.T3_SIZE}) {
         out.writeInt(x);
       }
-      int n = Features.STAGES * Features.CD_CONTEXTS * spec.windowParams()
+      int n = stages * Features.CD_CONTEXTS * spec.windowParams()
           + Features.CD_CONTEXTS * (Features.T1_SIZE + Features.T2_SIZE) + Features.T3_SIZE;
       for (int i = 0; i < n; i++) {
         out.writeShort(rnd.nextInt(-300, 300));
@@ -50,7 +55,7 @@ class WeightsTest {
   @Test
   void validBlobLoadsAndEvaluates() throws Exception {
     FeatureSpec spec = new FeatureSpec(G);
-    LearnedEval e = new LearnedEval(spec, WeightBlob.parse(blob(spec, spec.specHash, 1)));
+    LearnedEval e = Weights.fromBlob(WeightFiles.parse(blob(spec, spec.specHash, 1)));
     Board b = new Board(G);
     b.make(5, 1);
     b.make(6, 2);
@@ -64,19 +69,67 @@ class WeightsTest {
   }
 
   @Test
+  void oneStageBlobIgnoresTheStage() throws Exception {
+    Geometry g = new Geometry(6, 7);
+    FeatureSpec spec = new FeatureSpec(g);
+    LearnedEval e = Weights.fromBlob(WeightFiles.parse(blob(spec, spec.specHash, 3, 1)));
+    assertTrue(e != null && e.fits(g));
+    SplittableRandom rnd = new SplittableRandom(9);
+    Board b = new Board(g);
+    for (int i = 0; i < 30; i++) {
+      int c = rnd.nextInt(g.cols);
+      if (!b.isFull(c) && !b.make(c, 1 + i % 2)) {
+        assertTrue(Math.abs(e.evaluate(b, 1 + i % 2, 3, 10)) <= Evaluator.MAX_EVAL);
+      }
+    }
+  }
+
+  @Test
+  void embeddedWeightsCoverTheDefaultBoard() {
+    assertTrue(Weights.forGeometry(G) != null, "weights/eval.qcw is not embedded or does not load");
+  }
+
+  @Test
   void brokenBlobsAreRejected() throws Exception {
     FeatureSpec spec = new FeatureSpec(G);
     byte[] good = blob(spec, spec.specHash, 2);
-    assertThrows(IllegalArgumentException.class, () -> WeightBlob.parse(java.util.Arrays.copyOf(good, good.length / 2)));
+    assertThrows(IllegalArgumentException.class, () -> WeightFiles.parse(java.util.Arrays.copyOf(good, good.length / 2)));
     byte[] corrupt = good.clone();
     for (int i = 10; i < 200; i++) {
       corrupt[i] ^= 0x5A;
     }
-    assertThrows(IllegalArgumentException.class, () -> WeightBlob.parse(corrupt));
-    WeightBlob wrongSpec = WeightBlob.parse(blob(spec, spec.specHash + 1, 3));
+    assertThrows(IllegalArgumentException.class, () -> WeightFiles.parse(corrupt));
+    WeightBlob wrongSpec = WeightFiles.parse(blob(spec, spec.specHash + 1, 3));
     assertTrue(!wrongSpec.matches(spec));
-    assertThrows(IllegalArgumentException.class, () -> new LearnedEval(spec, wrongSpec));
-    assertThrows(IllegalArgumentException.class, () -> WeightBlob.parse(new byte[] {1, 2, 3}));
+    assertEquals(null, Weights.fromBlob(wrongSpec));
+    assertThrows(IllegalArgumentException.class, () -> WeightFiles.parse(new byte[] {1, 2, 3}));
+    // the bot's own parser (inflated bytes) reports problems by returning null
+    byte[] raw = WeightFiles.inflate(good);
+    assertTrue(WeightBlob.parse(raw) != null);
+    assertEquals(null, WeightBlob.parse(java.util.Arrays.copyOf(raw, raw.length - 1)));
+    assertEquals(null, WeightBlob.parse(java.util.Arrays.copyOf(raw, raw.length + 2)));
+    assertEquals(null, WeightBlob.parse(java.util.Arrays.copyOf(raw, 30)));
+    assertEquals(null, WeightBlob.parse(new byte[] {1, 2, 3}));
+    byte[] badMagic = raw.clone();
+    badMagic[0] = 'X';
+    assertEquals(null, WeightBlob.parse(badMagic));
+  }
+
+  @Test
+  void base64DecoderMatchesTheJdk() {
+    SplittableRandom rnd = new SplittableRandom(7);
+    for (int len = 0; len < 300; len++) {
+      byte[] data = new byte[len];
+      for (int i = 0; i < len; i++) {
+        data[i] = (byte) rnd.nextInt(256);
+      }
+      String b64 = java.util.Base64.getEncoder().encodeToString(data);
+      int cut = b64.isEmpty() ? 0 : 4 * rnd.nextInt(b64.length() / 4 + 1);
+      String[] chunks = {b64.substring(0, cut), b64.substring(cut)};
+      assertTrue(java.util.Arrays.equals(data, Weights.decodeBase64(chunks)), "length " + len);
+    }
+    assertEquals(null, Weights.decodeBase64(new String[] {"abc"}));
+    assertEquals(null, Weights.decodeBase64(new String[] {"ab*d"}));
   }
 
   @Test
@@ -84,7 +137,7 @@ class WeightsTest {
     String dir = System.getProperty("qc.parity");
     assumeTrue(dir != null, "set -Pqc.parity=DIR to run the parity test");
     Path model = Path.of(dir);
-    LearnedEval e = Weights.fromFile(model.resolve("eval.qcw"), G);
+    LearnedEval e = (LearnedEval) WeightFiles.load(model.resolve("eval.qcw"), G);
     ByteBuffer bb = ByteBuffer.wrap(Files.readAllBytes(model.resolve("parity-8x12.qpv")))
         .order(ByteOrder.LITTLE_ENDIAN);
     assertEquals('Q', bb.get());

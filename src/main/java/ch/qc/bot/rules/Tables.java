@@ -18,9 +18,6 @@ public final class Tables {
   public final short[] swap12;
 
   public Tables(int k) {
-    if (k < 1 || k > 9) {
-      throw new IllegalArgumentException("window length out of range: " + k);
-    }
     this.k = k;
     pow3 = new int[k + 1];
     pow3[0] = 1;

@@ -127,7 +127,7 @@ class TacticsSuiteTest {
       Board copy = new Board(g);
       copy.copyFrom(b);
       return new Searcher(g, new HandEval(g), tt).run(copy, me, mySp ? 10 : 0, oppSp ? 10 : 0, ply,
-          System.nanoTime(), SEARCH_NANOS).move();
+          ch.qc.bot.Clock.nanos(), SEARCH_NANOS).move();
     }, false, POSITIONS, 512, "search 5 ms", 20);
   }
 

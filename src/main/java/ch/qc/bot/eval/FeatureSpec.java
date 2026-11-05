@@ -111,25 +111,25 @@ public final class FeatureSpec {
         return i;
       }
     }
-    throw new IllegalStateException("cell " + cell + " not in window " + w);
+    return 0; // unreachable: callers pass a cell of the window
   }
 
   private int findMirror(int w) {
     int k = g.k;
-    java.util.Set<Integer> target = new java.util.HashSet<>();
+    boolean[] target = new boolean[g.cells];
     for (int i = 0; i < k; i++) {
-      target.add(mirrorCell(g.winCells[w * k + i]));
+      target[mirrorCell(g.winCells[w * k + i])] = true;
     }
     for (int v = 0; v < g.windows; v++) {
       boolean all = true;
       for (int i = 0; i < k && all; i++) {
-        all = target.contains(g.winCells[v * k + i]);
+        all = target[g.winCells[v * k + i]];
       }
       if (all) {
         return v;
       }
     }
-    throw new IllegalStateException("window " + w + " has no mirror image");
+    return w; // unreachable: the board's mirror maps every window onto a window
   }
 
   /** Parameter count of one folded window table (all classes). */
