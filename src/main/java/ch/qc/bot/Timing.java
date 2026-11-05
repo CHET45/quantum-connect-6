@@ -58,8 +58,11 @@ public final class Timing {
    * fills the table deeper for our next turn. The next first call ends it at once (a new search bumps the Searcher token,
    * which every poll of the lingering search sees), so this is only the backstop for when no next call comes, e.g. at
    * the end of a game. 0 keeps the old within-turn budget. Scaled to the measured call limit like the other times here.
+   *
+   * <p>160 ms, not more: gated 2026-11-05, ps=160 vs rc8 scored +137 Elo [+52, +242] on 15x100 (40 pairs), neutral on
+   * 15x30 (+12) and 8x12 (+10); ps=320 cost -57 Elo on 15x30 (it floods the 2^18 table with the pondered line).
    */
-  private static final long PONDER_SPAN_NANOS = 320 * MS;
+  private static final long PONDER_SPAN_NANOS = 160 * MS;
 
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {60 * MS, 80 * MS}, 80 * MS,
