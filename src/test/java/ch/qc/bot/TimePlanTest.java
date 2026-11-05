@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import ch.cern.quantumconnect.core.Algorithm;
 import ch.cern.quantumconnect.core.ExperimentStatus;
@@ -30,6 +31,7 @@ class TimePlanTest {
 
   @Test
   void clockStopsTheSecondCallFirst() {
+    CoreEngine.assumeCoreTimes();
     assertTrue(MatchClock.ponderAllowedFor(1_000 * MS, 10, 0, 200));
     // 100 plies at 130 ms: 14 s left before the reserve, about 107 plies
     assertTrue(MatchClock.ponderAllowedFor(13_000 * MS, 100, 0, 50));
@@ -203,6 +205,7 @@ class TimePlanTest {
    */
   @Test
   void aChosenBlastIsDroppedIfTheFirstCallMayHaveTimedOut() throws Exception {
+    CoreEngine.assumeCoreRules();
     java.util.SplittableRandom rnd = new java.util.SplittableRandom(5);
     int prompt = 0;
     int late = 0;
@@ -275,7 +278,7 @@ class TimePlanTest {
     CallLimit n = new CallLimit();
     n.measured(40 * MS);
     n.assumePrior();
-    assertEquals(CallLimit.PRIOR_NANOS, n.nanos(), "a full probe overrules a short measurement");
+    assertEquals(CallLimit.ASSUMED_NANOS, n.nanos(), "a full probe overrules a short measurement");
     CallLimit m = new CallLimit();
     m.measured(30 * MS);
     m.measured(26 * MS);
@@ -287,6 +290,7 @@ class TimePlanTest {
 
   @Test
   void aLimitAboveThePriorNeedsThreeSamplesThatAgree() {
+    assumeTrue(CallLimit.ASSUMED_NANOS == CallLimit.PRIOR_NANOS, "written for an announced limit of 100 ms");
     CallLimit near = new CallLimit();
     near.assumePrior();
     near.upwardSample(104 * MS);
@@ -350,6 +354,7 @@ class TimePlanTest {
 
   @Test
   void noProbeResultMeansThePrior() {
+    assumeTrue(CallLimit.ASSUMED_NANOS == CallLimit.PRIOR_NANOS, "written for an announced limit of 100 ms");
     QcBot bot = new QcBot("s=20,p=0");
     QuantumField f = FieldFactory.create(15, 11, bot, new RandomBot());
     bot.accelerateQuark(f);
@@ -363,6 +368,7 @@ class TimePlanTest {
   /** The real engine, its real limit, a bot that looks for the limit from the first turn on: nothing else changes. */
   @Test
   void theUpwardProbeInTheRealEngine() throws Exception {
+    assumeTrue(CallLimit.ASSUMED_NANOS == CallLimit.PRIOR_NANOS, "written for an announced limit of 100 ms");
     QcBot bot = new QcBot("up=1,s=10,p=0");
     ch.qc.tools.BotProbe probe = new ch.qc.tools.BotProbe(bot);
     // the probe watches the field, so through the engine's real limit of 100 ms it must end at the prior

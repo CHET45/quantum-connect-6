@@ -50,6 +50,8 @@ public final class QcBot implements Algorithm {
   static final long UNPROBED_STOP_NANOS = 20_000_000L;
   /** The probe ends here: on a limit of 100 ms a late thread start can hardly turn this into a timeout. */
   static final long PROBE_NANOS = 85_000_000L;
+  /** The same end at the announced limit ({@link CallLimit#ASSUMED_NANOS}); PROBE_NANOS itself at 100 ms. */
+  static final long PROBE_END_NANOS = CallLimit.scaled(PROBE_NANOS, 50, CallLimit.ASSUMED_NANOS);
   /** The probe for a limit above 100 ms gives up here and takes this as the limit. */
   static final long PROBE_UP_NANOS = 2_000_000_000L;
   /**
@@ -278,7 +280,7 @@ public final class QcBot implements Algorithm {
       return true;
     }
     if (!limit.known()) {
-      probe(field, d, t0, PROBE_NANOS);
+      probe(field, d, t0, PROBE_END_NANOS);
     } else if (probeUpward && limit.upwardOpen() && clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
       probe(field, d, t0, PROBE_UP_NANOS);
     } else {
@@ -294,7 +296,7 @@ public final class QcBot implements Algorithm {
    * timeout behind.
    */
   private void probe(QuantumField field, Decision d, long t0, long until) {
-    boolean upward = until > PROBE_NANOS;
+    boolean upward = until > PROBE_END_NANOS;
     while (true) {
       long took = Clock.nanos() - t0;
       // first the time: a stall that ends after the engine gave up must not look like a limit of that length

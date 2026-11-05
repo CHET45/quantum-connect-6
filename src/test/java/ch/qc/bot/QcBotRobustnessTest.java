@@ -13,6 +13,7 @@ import ch.qc.tools.BotProbe;
 import ch.qc.tools.MatchMain;
 import java.util.List;
 import java.util.SplittableRandom;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -23,6 +24,12 @@ import org.junit.jupiter.api.Test;
  * -Pqc.robust.random=N.
  */
 class QcBotRobustnessTest {
+  /** The games run in the core-2.0 engine: the bot must be set for its rules and times. */
+  @BeforeEach
+  void coreEngineOnly() {
+    CoreEngine.assumeCore();
+  }
+
   private static final int CALLS = Integer.getInteger("qc.robust.calls", 3_000);
   private static final int RANDOM_CALLS = Integer.getInteger("qc.robust.random", 1_500);
   private static final int THREADS = 4;

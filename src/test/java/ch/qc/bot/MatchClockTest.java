@@ -3,11 +3,18 @@ package ch.qc.bot;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 class MatchClockTest {
   private static final long BASE = 62_000_000L;
   private static final long MS = 1_000_000L;
+
+  /** The numbers below are written for a 30 s game clock. */
+  @BeforeEach
+  void coreTimesOnly() {
+    CoreEngine.assumeCoreTimes();
+  }
 
   @Test
   void fullStopEarlyOrWithFewSamples() {

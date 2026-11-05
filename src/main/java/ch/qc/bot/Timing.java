@@ -14,7 +14,7 @@ public final class Timing {
    * the constructor is unknown (about 200 ms is known to work). Without a warm-up the code stays cold for longer, so the
    * plan below has lower stops for longer and a later second-call search.
    */
-  private static final long CONSTRUCTOR_WARMUP_NANOS = 1000 * MS;
+  private static final long CONSTRUCTOR_WARMUP_NANOS = Announced.WARMUP_MS * MS;
 
   /** A board dimension above this is modelled only around the discs ({@link Crop}). */
   private static final int CROP_ABOVE = 40;

@@ -9,7 +9,8 @@ package ch.qc.bot;
  * game that outlives the assumed clock proves it too short, and the clock then doubles.
  */
 final class MatchClock {
-  static final long MATCH_NANOS = 30_000_000_000L;
+  /** The announced game clock ({@link Announced#MATCH_SECONDS}); 30 s on the server so far. */
+  static final long MATCH_NANOS = Announced.MATCH_SECONDS * 1_000_000_000L;
   /** Kept back for what the clock cannot see: the opponent's first move, engine and server overhead. */
   static final long RESERVE_NANOS = 3_000_000_000L;
   /** Plies needed before the per-ply estimate is trusted. */

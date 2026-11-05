@@ -2,18 +2,22 @@ package ch.qc.bot;
 
 /**
  * The time limit of one engine call, as far as the bot knows it. The bot cannot read it (the engine's constant is
- * inlined at compile time, and reflection is forbidden), so it assumes {@link #PRIOR_NANOS} until it has measured
- * otherwise. Every budget of the bot is written as its value at the prior limit and comes through {@link #scaled}.
+ * inlined at compile time, and reflection is forbidden), so it assumes {@link #ASSUMED_NANOS} (the announced limit,
+ * {@link Announced#CALL_LIMIT_MS}) until it has measured otherwise. Every budget of the bot is written as its value at
+ * a limit of {@link #PRIOR_NANOS} (100 ms) and comes through {@link #scaled}.
  *
  * <p>What makes a call late does not grow with the limit: a thread start, a lost scheduler slice, a late clock poll. So
  * a budget keeps its distance from the limit in absolute time rather than as a fraction, with a floor for short limits,
  * where the distance would leave nothing, and a slow growth for long ones.
  */
 final class CallLimit {
+  /** The limit every budget of the bot is written for; {@link #scaled} turns it into the limit in force. */
   static final long PRIOR_NANOS = 100_000_000L;
   private static final long MS = 1_000_000L;
-  /** Above the prior: a sample must be this far above it, and within this share of the first sample. */
-  private static final long CLEARLY_ABOVE_NANOS = 130 * MS;
+  /** The limit assumed until measured otherwise: the announced one. */
+  static final long ASSUMED_NANOS = Announced.CALL_LIMIT_MS * MS;
+  /** Above the assumed limit: a sample must be this far above it, and within this share of the first sample. */
+  private static final long CLEARLY_ABOVE_NANOS = ASSUMED_NANOS / 10 * 13;
   private static final int AGREE_PERCENT = 15;
   /** Limits a server would plausibly set; a measurement just above one of them is that limit plus some delay. */
   private static final long[] ROUND_MS = {1, 2, 5, 10, 15, 20, 25, 30, 40, 50, 75, 100, 150, 200, 300, 500, 750, 1000,
@@ -22,7 +26,7 @@ final class CallLimit {
   /** Measurements below the prior, whose median counts: a stall lengthens one, a late thread start shortens it. */
   private final long[] samples = new long[3];
   private int count;
-  private volatile long nanos = PRIOR_NANOS;
+  private volatile long nanos = ASSUMED_NANOS;
   /** Measured or assumed to hold, so no probe is due any more. */
   private volatile boolean known;
   /** Samples for a limit above the prior; the question is closed for this game once they disagree or a turn is lost. */
@@ -43,7 +47,7 @@ final class CallLimit {
    * also overrules an earlier short measurement, which then came from a thread that started very late.
    */
   void assumePrior() {
-    nanos = PRIOR_NANOS;
+    nanos = ASSUMED_NANOS;
     known = true;
   }
 
@@ -97,8 +101,8 @@ final class CallLimit {
   /** A turn was lost: stay at or back to the prior for the rest of this game. */
   void closeUpward() {
     upClosed = true;
-    if (nanos > PRIOR_NANOS) {
-      nanos = PRIOR_NANOS;
+    if (nanos > ASSUMED_NANOS) {
+      nanos = ASSUMED_NANOS;
     }
   }
 
