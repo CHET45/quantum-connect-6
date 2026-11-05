@@ -51,6 +51,16 @@ public final class Timing {
   private static final int PASS_PRIOR_TURNS = 50;
   private static final int PASS_DOUBLE = 85;
 
+  /**
+   * One-line switch (organisers allowed it 2026-11-05): how long the second-call search may run, measured from the
+   * entry of the second call. The engine only interrupts the second call at the limit, so the thread runs on through the
+   * opponent's turn; a value above the limit keeps our real search going on the opponent's time (ordinary pondering) and
+   * fills the table deeper for our next turn. The next first call ends it at once (a new search bumps the Searcher token,
+   * which every poll of the lingering search sees), so this is only the backstop for when no next call comes, e.g. at
+   * the end of a game. 0 keeps the old within-turn budget. Scaled to the measured call limit like the other times here.
+   */
+  private static final long PONDER_SPAN_NANOS = 320 * MS;
+
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {60 * MS, 80 * MS}, 80 * MS,
           CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS, CROP_ABOVE)
@@ -62,6 +72,8 @@ public final class Timing {
   final long[] stopNanos;
   /** Stop of the second-call search, measured from the entry of the second call; 0 for no such search. */
   final long ponderNanos;
+  /** See {@link #PONDER_SPAN_NANOS}. Not a constructor parameter: it keeps the default unless {@link #parse} sets it. */
+  long ponderSpanNanos = PONDER_SPAN_NANOS;
   final long warmupNanos;
   /** First calls aim to end this long after their start, less the stalls seen lately; 0 turns the sensor off. */
   final long stallLimitNanos;
@@ -163,8 +175,8 @@ public final class Timing {
    * turn, the last for all others. p: second-call search. w: warm-up. g=LIMIT@DECAY@WEIGHT: the stall sensor. pf=N: no
    * second-call search on own turns below N. up=1: {@link #probeUpward}. b=STOP@FINISH: blast limits. crop=N:
    * {@link #cropAbove}. gap=0|1|2: {@link #cropGaps}. lc=ONE@TWO: {@link #LOST_CAP_ONE} in ms. wide=N:
-   * {@link #WIDE_TURNS}. pt=MODE@LOST@TURNS@DOUBLE: {@link #PASS_MODE} and its prior. Anything not named
-   * keeps the value of {@link #DEFAULT}.
+   * {@link #WIDE_TURNS}. pt=MODE@LOST@TURNS@DOUBLE: {@link #PASS_MODE} and its prior. ps=N: {@link #PONDER_SPAN_NANOS}
+   * in ms (0 = the old within-turn budget). Anything not named keeps the value of {@link #DEFAULT}.
    */
   public static Timing parse(String spec) {
     Timing d = DEFAULT;
@@ -188,6 +200,7 @@ public final class Timing {
     int passLost = d.passPriorLost;
     int passTurns = d.passPriorTurns;
     int passDouble = d.passDouble;
+    long span = d.ponderSpanNanos;
     for (String part : spec.split(",")) {
       int eq = part.indexOf('=');
       if (eq < 0) {
@@ -234,6 +247,8 @@ public final class Timing {
         if (v.length > 3) {
           passDouble = Integer.parseInt(v[3]);
         }
+      } else if (key.equals("ps")) {
+        span = MS * Long.parseLong(value);
       } else if (key.equals("pf")) {
         ponderFrom = Integer.parseInt(value);
       } else if (key.equals("g")) {
@@ -243,7 +258,9 @@ public final class Timing {
         weight = Integer.parseInt(g[2]);
       }
     }
-    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish, cropAbove,
-        cropGaps, lostOne, lostTwo, wide, passMode, passLost, passTurns, passDouble);
+    Timing t = new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish,
+        cropAbove, cropGaps, lostOne, lostTwo, wide, passMode, passLost, passTurns, passDouble);
+    t.ponderSpanNanos = span;
+    return t;
   }
 }

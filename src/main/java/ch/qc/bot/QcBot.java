@@ -342,8 +342,15 @@ public final class QcBot implements Algorithm {
     searcher.setStallLimit(0L);
     searcher.setBlastStop(0L);
     searcher.setPassChance(0, 0, 0);
+    // The old budget stays inside our own turn; a span keeps the search running on the opponent's time (the engine only
+    // interrupts this call, so the thread lives on). The next first call's search ends it at once through the token. The
+    // span is given at a 100 ms limit and scales linearly with the measured limit, since a shorter limit shortens the
+    // opponent's turn too; it is only a backstop, so the exact multiple does not matter.
+    long budget = timing.ponderSpanNanos > 0
+        ? timing.ponderSpanNanos * Math.max(limit.nanos(), 1) / CallLimit.PRIOR_NANOS
+        : Math.min(limit.scaled(timing.ponderNanos, 40), clock.turnCap() / 5 * 2);
     lastPonder = searcher.run(b, 3 - searchedMe, searchedCdOpp, Math.min(searchedCdMe + 1, TurnTracker.COOLDOWN),
-        searchedPly + 1, t0, Math.min(limit.scaled(timing.ponderNanos, 40), clock.turnCap() / 5 * 2));
+        searchedPly + 1, t0, budget);
     if (searcher.lastMaxGapNanos() > stall) {
       stall = searcher.lastMaxGapNanos();
     }
