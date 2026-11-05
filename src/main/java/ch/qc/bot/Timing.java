@@ -19,6 +19,27 @@ public final class Timing {
   /** A board dimension above this is modelled only around the discs ({@link Crop}). */
   private static final int CROP_ABOVE = 40;
 
+  /**
+   * One-line switch for a cropped dimension ({@link Crop}): 0 contiguous, 1 leaves out empty stretches between groups of
+   * discs, 2 also leaves out far groups too small to make a line soon.
+   */
+  private static final int CROP_GAPS = 2;
+
+  /**
+   * One-line switch: the first-call stop after one and after two own lost turns in the game (0 for no cap). A lost turn on
+   * a slow server comes from time the bot cannot see (its thread starts late or is frozen), so the remembered stall fades
+   * too fast to keep the next one away.
+   */
+  private static final long LOST_CAP_ONE = 0L;
+  private static final long LOST_CAP_TWO = 0L;
+
+  /**
+   * One-line switch: on a board wider than {@link #CROP_ABOVE}, this many quiet own turns early in the game drop a disc
+   * far from all others, near an edge. A bot that models one stretch from the leftmost to the rightmost disc then has to
+   * search a much wider board; this bot's own gap crop leaves such single discs out. 0 for none.
+   */
+  private static final int WIDE_TURNS = 0;
+
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {60 * MS, 80 * MS}, 80 * MS,
           CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS, CROP_ABOVE)
@@ -55,10 +76,25 @@ public final class Timing {
   final long safeFinishNanos;
   /** See {@link Crop}. */
   final int cropAbove;
+  /** See {@link #CROP_GAPS} and {@link Crop#refit}. */
+  final int cropGaps;
+  /** See {@link #LOST_CAP_ONE}. */
+  final long lostCapOneNanos;
+  final long lostCapTwoNanos;
+  /** See {@link #WIDE_TURNS}. */
+  final int wideTurns;
 
   Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
       int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
       long safeFinishNanos, int cropAbove) {
+    this(untilTurn, stopNanos, ponderNanos, warmupNanos, stallLimitNanos, stallDecayPercent, stallWeightPercent,
+        ponderFromTurn, probeUpward, blastStopNanos, safeFinishNanos, cropAbove, CROP_GAPS, LOST_CAP_ONE, LOST_CAP_TWO,
+        WIDE_TURNS);
+  }
+
+  Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
+      int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
+      long safeFinishNanos, int cropAbove, int cropGaps, long lostCapOneNanos, long lostCapTwoNanos, int wideTurns) {
     this.untilTurn = untilTurn;
     this.stopNanos = stopNanos;
     this.ponderNanos = ponderNanos;
@@ -71,6 +107,16 @@ public final class Timing {
     this.blastStopNanos = blastStopNanos;
     this.safeFinishNanos = safeFinishNanos;
     this.cropAbove = cropAbove;
+    this.cropGaps = cropGaps;
+    this.lostCapOneNanos = lostCapOneNanos;
+    this.lostCapTwoNanos = lostCapTwoNanos;
+    this.wideTurns = wideTurns;
+  }
+
+  /** The cap on the first-call stop after this many own lost turns in the game; Long.MAX_VALUE for none. */
+  long lostCap(int ownLost) {
+    long cap = ownLost >= 2 && lostCapTwoNanos > 0 ? lostCapTwoNanos : ownLost >= 1 ? lostCapOneNanos : 0L;
+    return cap > 0 ? cap : Long.MAX_VALUE;
   }
 
   /** Stop of the first call on this own turn (0-based). */
@@ -87,7 +133,8 @@ public final class Timing {
    * Harness only: "s=55@10/65@30/80,p=85,w=1000,g=96@85@100,up=1,b=70@75". s: first-call stop in ms, each until an own
    * turn, the last for all others. p: second-call search. w: warm-up. g=LIMIT@DECAY@WEIGHT: the stall sensor. pf=N: no
    * second-call search on own turns below N. up=1: {@link #probeUpward}. b=STOP@FINISH: blast limits. crop=N:
-   * {@link #cropAbove}. Anything not named
+   * {@link #cropAbove}. gap=0|1|2: {@link #cropGaps}. lc=ONE@TWO: {@link #LOST_CAP_ONE} in ms. wide=N:
+   * {@link #WIDE_TURNS}. Anything not named
    * keeps the value of {@link #DEFAULT}.
    */
   public static Timing parse(String spec) {
@@ -104,6 +151,10 @@ public final class Timing {
     long blastStop = d.blastStopNanos;
     long safeFinish = d.safeFinishNanos;
     int cropAbove = d.cropAbove;
+    int cropGaps = d.cropGaps;
+    long lostOne = d.lostCapOneNanos;
+    long lostTwo = d.lostCapTwoNanos;
+    int wide = d.wideTurns;
     for (String part : spec.split(",")) {
       int eq = part.indexOf('=');
       if (eq < 0) {
@@ -132,6 +183,14 @@ public final class Timing {
         safeFinish = MS * Long.parseLong(value.substring(at + 1));
       } else if (key.equals("crop")) {
         cropAbove = Integer.parseInt(value);
+      } else if (key.equals("gap")) {
+        cropGaps = Integer.parseInt(value);
+      } else if (key.equals("wide")) {
+        wide = Integer.parseInt(value);
+      } else if (key.equals("lc")) {
+        int at = value.indexOf('@');
+        lostOne = MS * Long.parseLong(at < 0 ? value : value.substring(0, at));
+        lostTwo = at < 0 ? lostOne : MS * Long.parseLong(value.substring(at + 1));
       } else if (key.equals("pf")) {
         ponderFrom = Integer.parseInt(value);
       } else if (key.equals("g")) {
@@ -141,6 +200,7 @@ public final class Timing {
         weight = Integer.parseInt(g[2]);
       }
     }
-    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish, cropAbove);
+    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish, cropAbove,
+        cropGaps, lostOne, lostTwo, wide);
   }
 }

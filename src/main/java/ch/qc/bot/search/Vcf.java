@@ -47,6 +47,13 @@ public final class Vcf {
   }
 
   private static final long TENTATIVE_KEY = 0x7E47A71BE5EEDL;
+  private static final long BLAST_KEY = 0x3B1A57A77ACCL;
+
+  /**
+   * The attacker may also play a ready blast that does not win at once but leaves it a playable threat and the
+   * defender none (a blast that breaks a block). Its results use separate table keys.
+   */
+  public boolean attackerBlasts;
 
   private final Geometry g;
   private final Table table;
@@ -142,6 +149,9 @@ public final class Vcf {
     if (!exact) {
       key ^= TENTATIVE_KEY;
     }
+    if (attackerBlasts) {
+      key ^= BLAST_KEY;
+    }
     if (MAX_TURNS - turnBase < 4 * MAX_VPLY) {
       key ^= (long) (MAX_TURNS - turnBase - vply) * 0x9E3779B97F4A7C15L;
     }
@@ -181,6 +191,30 @@ public final class Vcf {
       }
       if (aborted) {
         return false;
+      }
+    }
+    if (attackerBlasts && cdA >= COOLDOWN) {
+      // on a copy, like the defender's blasts; a blast that wins at once was found above
+      Board r = pool(vply);
+      for (int i = 0; i < g.cols; i++) {
+        int c = centre(i);
+        if (b.isFull(c)) {
+          continue;
+        }
+        r.copyFrom(b);
+        if (r.blast(c)) {
+          continue;
+        }
+        if (forcingDropWins(r, a, def, 1, cdD, defReady, d, vply)) {
+          if (vply == 0) {
+            winMove = c | Tactics.SPECIAL;
+          }
+          store(key, idx, WIN, d, c | Tactics.SPECIAL);
+          return true;
+        }
+        if (aborted) {
+          return false;
+        }
       }
     }
     if (!aborted) {

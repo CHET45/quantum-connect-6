@@ -381,6 +381,20 @@ public final class Board {
         || (col + 1 < cols && height[col + 1] >= h + 3 && fallingLine(col + 1, 1, h));
   }
 
+  /**
+   * {@link #anyBlastWins} for a position reached by a drop in column c from one where no blast won: a blast's test in
+   * a column reads only the columns within K of it, so only those near c can have changed.
+   */
+  public boolean anyBlastWinsNear(int c) {
+    int hi = Math.min(cols - 1, c + k);
+    for (int col = Math.max(0, c - k); col <= hi; col++) {
+      if (blastWins(col)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** True if a blast in some column would win (see {@link #blastWins}). */
   public boolean anyBlastWins() {
     int last = cols - 1;
