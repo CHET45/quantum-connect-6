@@ -59,8 +59,10 @@ public final class Timing {
    * which every poll of the lingering search sees), so this is only the backstop for when no next call comes, e.g. at
    * the end of a game. 0 keeps the old within-turn budget. Scaled to the measured call limit like the other times here.
    *
-   * <p>160 ms, not more: gated 2026-11-05, ps=160 vs rc8 scored +137 Elo [+52, +242] on 15x100 (40 pairs), neutral on
-   * 15x30 (+12) and 8x12 (+10); ps=320 cost -57 Elo on 15x30 (it floods the 2^18 table with the pondered line).
+   * <p>160 ms, not more: gated 2026-11-05, ps=160 vs rc8 scored 54.7% over 230 pairs (~+33 Elo, about 2 sigma),
+   * strongest on 15x100 (57.5% over 120 pairs) and about +10 on 15x30 and 8x12, with no regression or crash. A single
+   * 40-pair 15x100 run read +137 but an 80-pair rerun only +13, so the real gain is modest. ps=320 cost -57 Elo on
+   * 15x30 (a long search there floods the 2^18 table with the pondered, usually-not-played line).
    */
   private static final long PONDER_SPAN_NANOS = 160 * MS;
 
