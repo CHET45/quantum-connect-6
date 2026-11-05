@@ -40,6 +40,17 @@ public final class Timing {
    */
   private static final int WIDE_TURNS = 0;
 
+  /**
+   * One-line switch: a blast the search wants is kept even when the first call ran past the blast window, if the
+   * opponent can win at once in two or more columns, so no drop saves the game. On a loaded server the window
+   * (safeFinishNanos less the stall) often shrinks to its floor; a crash is possible only if this call already timed
+   * out unseen, and then the game is lost anyway. 0 off, 1 on.
+   */
+  private static final int BLAST_DESPERATE = 1;
+
+  /** One-line switch: the floor of the blast window, in ns (0: a tenth of the call limit, as before). */
+  private static final long BLAST_FLOOR = 40 * MS;
+
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {60 * MS, 80 * MS}, 80 * MS,
           CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS, CROP_ABOVE)
@@ -83,6 +94,9 @@ public final class Timing {
   final long lostCapTwoNanos;
   /** See {@link #WIDE_TURNS}. */
   final int wideTurns;
+  /** See {@link #BLAST_DESPERATE} and {@link #BLAST_FLOOR}; set once, by the constructor or {@link #parse}. */
+  int blastDesperate = BLAST_DESPERATE;
+  long blastFloorNanos = BLAST_FLOOR;
 
   Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
       int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
@@ -155,6 +169,8 @@ public final class Timing {
     long lostOne = d.lostCapOneNanos;
     long lostTwo = d.lostCapTwoNanos;
     int wide = d.wideTurns;
+    int desperate = d.blastDesperate;
+    long floor = d.blastFloorNanos;
     for (String part : spec.split(",")) {
       int eq = part.indexOf('=');
       if (eq < 0) {
@@ -187,6 +203,10 @@ public final class Timing {
         cropGaps = Integer.parseInt(value);
       } else if (key.equals("wide")) {
         wide = Integer.parseInt(value);
+      } else if (key.equals("bd")) {
+        desperate = Integer.parseInt(value);
+      } else if (key.equals("bf")) {
+        floor = MS * Long.parseLong(value);
       } else if (key.equals("lc")) {
         int at = value.indexOf('@');
         lostOne = MS * Long.parseLong(at < 0 ? value : value.substring(0, at));
@@ -200,7 +220,10 @@ public final class Timing {
         weight = Integer.parseInt(g[2]);
       }
     }
-    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish, cropAbove,
-        cropGaps, lostOne, lostTwo, wide);
+    Timing t = new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish,
+        cropAbove, cropGaps, lostOne, lostTwo, wide);
+    t.blastDesperate = desperate;
+    t.blastFloorNanos = floor;
+    return t;
   }
 }

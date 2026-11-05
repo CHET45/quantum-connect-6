@@ -191,7 +191,12 @@ public final class QcBot implements Algorithm {
       col = safeColumn(field);
       special = false;
     }
-    boolean inTime = Clock.nanos() - t0 <= blastFinish();
+    long took = Clock.nanos() - t0;
+    boolean inTime = took <= blastFinish();
+    // the blast is the only defence: keep it while the call is still well inside the limit by our own clock
+    if (special && !inTime && took <= limit.nanos() / 10 * 8 && onlyBlastSaves()) {
+      inTime = true;
+    }
     if (special && !inTime && lastResult != null) {
       // too late to ask for the blast: play the best drop, not a drop in the blast's column
       int drop = searcher.lastBestDrop();
@@ -340,7 +345,31 @@ public final class QcBot implements Algorithm {
   /** How long a first call may take and still ask for a blast: the less the more this thread stalled lately. */
   private long blastFinish() {
     long limitNow = limit.nanos();
-    return Math.max(limitNow / 10, limit.scaled(timing.safeFinishNanos, 40) - stall);
+    long floor = timing.blastFloorNanos > 0 ? Math.min(limit.scaled(timing.blastFloorNanos, 10), limitNow / 10 * 9)
+        : limitNow / 10;
+    return Math.max(floor, limit.scaled(timing.safeFinishNanos, 40) - stall);
+  }
+
+  /**
+   * True if the opponent wins at once in two or more columns of the searched model, so no drop saves the game and a
+   * blast is the only defence ({@link Timing#blastDesperate}).
+   */
+  private boolean onlyBlastSaves() {
+    Board b = searchedBoard;
+    if (timing.blastDesperate == 0 || b == null) {
+      return false;
+    }
+    int opp = 3 - searchedMe;
+    int wins = 0;
+    for (int c = 0; c < geometry.cols && wins < 2; c++) {
+      if (!b.isFull(c)) {
+        if (b.make(c, opp)) {
+          wins++;
+        }
+        b.unmake(c);
+      }
+    }
+    return wins >= 2;
   }
 
   /** Called once per own turn with the longest gap between clock polls in the first call. */
