@@ -1,0 +1,312 @@
+package ch.qc.bot.rules;
+
+/**
+ * Game position with incrementally maintained window codes, threat cells and Zobrist hash of the cells.
+ * Rules follow design section 1 (R1-R7): gravity drops, colour-blind six-in-a-row, 3x3 blast plus gravity.
+ * Side to move and cooldowns are not part of this class.
+ */
+public final class Board {
+  public static final byte EMPTY = 0;
+  public static final byte FIRST = 1;
+  public static final byte SECOND = 2;
+
+  public final Geometry g;
+  private final Tables t;
+  private final int rows;
+  private final int k;
+
+  private final byte[] cell;
+  private final int[] height;
+  private final short[] wc;
+  /** thr[colour][cell]: windows with K-1 discs of colour and their single empty cell here. */
+  private final byte[][] thr;
+  private final int[] live3 = new int[3];
+  private long hash;
+  private int discs;
+
+  private final int[] stamp;
+  private int stampGen;
+
+  public Board(Geometry g) {
+    this.g = g;
+    this.t = g.tables;
+    this.rows = g.rows;
+    this.k = g.k;
+    cell = new byte[g.cells];
+    height = new int[g.cols];
+    wc = new short[g.windows];
+    thr = new byte[3][g.cells];
+    stamp = new int[g.windows];
+  }
+
+  public void clear() {
+    java.util.Arrays.fill(cell, EMPTY);
+    rebuild();
+  }
+
+  public void copyFrom(Board o) {
+    if (o.g != g) {
+      throw new IllegalArgumentException("geometry mismatch");
+    }
+    System.arraycopy(o.cell, 0, cell, 0, cell.length);
+    System.arraycopy(o.height, 0, height, 0, height.length);
+    System.arraycopy(o.wc, 0, wc, 0, wc.length);
+    System.arraycopy(o.thr[1], 0, thr[1], 0, cell.length);
+    System.arraycopy(o.thr[2], 0, thr[2], 0, cell.length);
+    live3[1] = o.live3[1];
+    live3[2] = o.live3[2];
+    hash = o.hash;
+    discs = o.discs;
+  }
+
+  /** Loads cells in this class's index order; every column must be compact (no disc above a hole). */
+  public void load(byte[] cells) {
+    System.arraycopy(cells, 0, cell, 0, cell.length);
+    rebuild();
+  }
+
+  /** Recomputes all derived state from the cells. */
+  public void rebuild() {
+    hash = 0;
+    discs = 0;
+    for (int c = 0; c < g.cols; c++) {
+      int h = 0;
+      for (int y = 0; y < rows; y++) {
+        int v = cell[c * rows + y];
+        if (v == EMPTY) {
+          continue;
+        }
+        if (y != h) {
+          throw new IllegalStateException("column " + c + " has a hole below row " + y);
+        }
+        h++;
+        discs++;
+        hash ^= g.zobrist[v][c * rows + y];
+      }
+      height[c] = h;
+    }
+    java.util.Arrays.fill(thr[1], (byte) 0);
+    java.util.Arrays.fill(thr[2], (byte) 0);
+    live3[1] = live3[2] = 0;
+    for (int w = 0; w < g.windows; w++) {
+      int code = codeFromCells(w);
+      wc[w] = (short) code;
+      account(w, code, 1);
+    }
+  }
+
+  private int codeFromCells(int w) {
+    int code = 0;
+    int base = w * k;
+    for (int i = 0; i < k; i++) {
+      code += cell[g.winCells[base + i]] * t.pow3[i];
+    }
+    return code;
+  }
+
+  private void account(int w, int code, int sign) {
+    for (int x = 1; x <= 2; x++) {
+      int p = t.thrPos[x][code];
+      if (p >= 0) {
+        thr[x][g.winCells[w * k + p]] += (byte) sign;
+      }
+      if (t.live3[x][code]) {
+        live3[x] += sign;
+      }
+    }
+  }
+
+  public boolean isFull(int col) {
+    return height[col] >= rows;
+  }
+
+  /** Drops a disc of colour into a non-full column; returns true if it completes a K-line. */
+  public boolean make(int col, int colour) {
+    int i = col * rows + height[col];
+    cell[i] = (byte) colour;
+    height[col]++;
+    discs++;
+    hash ^= g.zobrist[colour][i];
+    boolean win = false;
+    int target = t.six[colour];
+    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
+      int w = g.cellWin[j];
+      int old = wc[w];
+      int nw = old + colour * t.pow3[g.cellPos[j]];
+      account(w, old, -1);
+      account(w, nw, 1);
+      wc[w] = (short) nw;
+      if (nw == target) {
+        win = true;
+      }
+    }
+    return win;
+  }
+
+  /** Takes back the top disc of a column, the exact inverse of {@link #make}. */
+  public void unmake(int col) {
+    height[col]--;
+    int i = col * rows + height[col];
+    int colour = cell[i];
+    cell[i] = EMPTY;
+    discs--;
+    hash ^= g.zobrist[colour][i];
+    for (int j = g.cellStart[i]; j < g.cellStart[i + 1]; j++) {
+      int w = g.cellWin[j];
+      int old = wc[w];
+      int nw = old - colour * t.pow3[g.cellPos[j]];
+      account(w, old, -1);
+      account(w, nw, 1);
+      wc[w] = (short) nw;
+    }
+  }
+
+  /**
+   * Special move in place (R5-R7): the disc lands at height h, the 3x3 block around it is cleared and the
+   * three columns are compacted. A full column is a no-op. Returns true if any K-line of either colour exists
+   * in a window touching the three columns afterwards (the mover wins it, R3-R4).
+   */
+  public boolean blast(int col) {
+    int h = height[col];
+    if (h >= rows) {
+      return false;
+    }
+    int lo = Math.max(h - 1, 0);
+    for (int n = Math.max(col - 1, 0); n <= Math.min(col + 1, g.cols - 1); n++) {
+      // the placed disc vanishes with the band, so column col keeps its own height h as the top
+      int top = height[n];
+      int hi = Math.min(h + 1, top - 1);
+      if (lo > hi) {
+        continue;
+      }
+      int cleared = hi - lo + 1;
+      int base = n * rows;
+      for (int y = lo; y < top; y++) {
+        int src = y + cleared;
+        setCell(base + y, src < top ? cell[base + src] : EMPTY);
+      }
+      height[n] = top - cleared;
+    }
+    boolean win = false;
+    if (stampGen == Integer.MAX_VALUE) {
+      java.util.Arrays.fill(stamp, 0);
+      stampGen = 0;
+    }
+    int gen = ++stampGen;
+    for (int n = Math.max(col - 1, 0); n <= Math.min(col + 1, g.cols - 1); n++) {
+      for (int j = g.colStart[n]; j < g.colStart[n + 1]; j++) {
+        int w = g.colWin[j];
+        if (stamp[w] == gen) {
+          continue;
+        }
+        stamp[w] = gen;
+        int old = wc[w];
+        int nw = codeFromCells(w);
+        if (nw != old) {
+          account(w, old, -1);
+          account(w, nw, 1);
+          wc[w] = (short) nw;
+        }
+        if (nw == t.six[1] || nw == t.six[2]) {
+          win = true;
+        }
+      }
+    }
+    return win;
+  }
+
+  private void setCell(int i, int v) {
+    int old = cell[i];
+    if (old == v) {
+      return;
+    }
+    if (old != EMPTY) {
+      hash ^= g.zobrist[old][i];
+      discs--;
+    }
+    if (v != EMPTY) {
+      hash ^= g.zobrist[v][i];
+      discs++;
+    }
+    cell[i] = (byte) v;
+  }
+
+  /**
+   * Sound prefilter: a blast in col can only create a line if some disc falls, which needs a neighbour at
+   * least three discs taller than col (design 2.4). False means no blast in col can win for either side.
+   */
+  public boolean blastMayWin(int col) {
+    int h = height[col];
+    if (h >= rows) {
+      return false;
+    }
+    return (col > 0 && height[col - 1] >= h + 3) || (col + 1 < g.cols && height[col + 1] >= h + 3);
+  }
+
+  /** Full scan for a K-line of the given colour (1 or 2), or of either colour when colour is 0. */
+  public boolean hasLine(int colour) {
+    for (int w = 0; w < g.windows; w++) {
+      int code = wc[w];
+      if ((colour != 2 && code == t.six[1]) || (colour != 1 && code == t.six[2])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public boolean topRowFull() {
+    for (int c = 0; c < g.cols; c++) {
+      if (height[c] < rows) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  public int cell(int col, int y) {
+    return cell[col * rows + y];
+  }
+
+  public int height(int col) {
+    return height[col];
+  }
+
+  public int discs() {
+    return discs;
+  }
+
+  public long hash() {
+    return hash;
+  }
+
+  public int windowCode(int w) {
+    return wc[w];
+  }
+
+  public int threats(int colour, int cellIndex) {
+    return thr[colour][cellIndex];
+  }
+
+  public int live3(int colour) {
+    return live3[colour];
+  }
+
+  /** Copy of the cells in this class's index order. */
+  public byte[] cells() {
+    return cell.clone();
+  }
+
+  /** True if every derived field equals a rebuild from the cells (test helper). */
+  public boolean consistent() {
+    Board fresh = new Board(g);
+    fresh.load(cell);
+    return fresh.hash == hash
+        && fresh.discs == discs
+        && java.util.Arrays.equals(fresh.height, height)
+        && java.util.Arrays.equals(fresh.wc, wc)
+        && java.util.Arrays.equals(fresh.thr[1], thr[1])
+        && java.util.Arrays.equals(fresh.thr[2], thr[2])
+        && fresh.live3[1] == live3[1]
+        && fresh.live3[2] == live3[2];
+  }
+}
