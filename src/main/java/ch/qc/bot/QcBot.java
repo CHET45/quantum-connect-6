@@ -94,6 +94,8 @@ public final class QcBot implements Algorithm {
   private Rules rules = Rules.DEFAULT;
   /** Rules set by a harness, used instead of asking the engine; null in a real game. */
   private Rules forcedRules;
+  /** This game proved k at least this ({@link RulesInference}); 0 when nothing was learnt. */
+  private int kAtLeast;
   private Geometry geometry;
   private Searcher searcher;
   /** The part of the board that geometry and searcher cover; set last, so a set crop means a usable model. */
@@ -180,9 +182,10 @@ public final class QcBot implements Algorithm {
     firstCallStart = t0;
     int callId = ++calls;
     decision = null;
-    noteRules(field);
     Snapshot s = Snapshot.read(field);
     tracker.beginTurn(s);
+    noteLines(s);
+    noteRules(field);
     clock.beginTurn(t0, tracker.turn(), tracker.plyIndex());
     if (tracker.turn() == 1) {
       widePlayed = 0;
@@ -218,14 +221,32 @@ public final class QcBot implements Algorithm {
    * dropped and built again for the new rules, exactly as for a new board size: in the second call of this turn.
    */
   private void noteRules(QuantumField field) {
-    Rules r = forcedRules != null ? forcedRules : EngineRules.read(field);
-    if (r == null || r.equals(rules)) {
+    Rules base = forcedRules != null ? forcedRules : EngineRules.read(field);
+    if (base == null) {
+      return;
+    }
+    Rules r = RulesInference.adjust(base, kAtLeast, tracker.cooldownAtLeast(), tracker.cooldownAtMost());
+    if (r.equals(rules)) {
       return;
     }
     rules = r;
     tracker.setCooldown(r.cooldown);
     if (!building) {
       crop = null;
+    }
+  }
+
+  /**
+   * A line as long as the k we play by, on the board while the game goes on, proves a longer k (RulesInference).
+   * Forgotten at the start of each game.
+   */
+  private void noteLines(Snapshot s) {
+    if (tracker.turn() == 1) {
+      kAtLeast = 0;
+    }
+    int longest = RulesInference.longestLine(s.cells, s.rows, s.cols);
+    if (longest >= Math.max(rules.k, kAtLeast)) {
+      kAtLeast = longest + 1;
     }
   }
 
@@ -390,9 +411,10 @@ public final class QcBot implements Algorithm {
   public void observeScriptedTurn(QuantumField field) {
     ++calls;
     decision = null;
-    noteRules(field);
     Snapshot s = Snapshot.read(field);
     tracker.beginTurn(s);
+    noteLines(s);
+    noteRules(field);
     limit.assumePrior();
     if (crop == null || !crop.isFor(s.rows, s.cols)) {
       Crop c = Crop.start(s.rows, s.cols, timing.cropAbove, rules.k);

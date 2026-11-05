@@ -81,6 +81,7 @@ class QcBotRobustnessTest {
       QuantumField field = FieldFactory.create(size[0], size[1], bot, other);
       boolean botToMove = true;
       int botCounter = 0; // the engine's cooldown counter for the bot, replayed independently (R11)
+      int otherCounter = 0; // the same for the random opponent: the engine turns its early specials into drops
       for (int ply = 0; ply < 3 * size[0] * size[1] && FieldFactory.status(field) == ExperimentStatus.INCOMPLETE; ply++) {
         int col;
         boolean special;
@@ -96,7 +97,8 @@ class QcBotRobustnessTest {
           checked++;
         } else {
           col = rnd.nextInt(size[1]);
-          special = rnd.nextInt(4) == 0;
+          special = rnd.nextInt(4) == 0 && otherCounter >= 10;
+          otherCounter = special ? 1 : otherCounter + 1;
         }
         FieldFactory.play(field, col, special);
         botToMove = !botToMove;

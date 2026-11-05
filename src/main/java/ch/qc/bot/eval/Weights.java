@@ -4,8 +4,8 @@ import ch.qc.bot.rules.Geometry;
 
 /**
  * Where the learned evaluation comes from (design 3.7): the blobs compiled into {@code EvalBlob}. A board uses the
- * blob trained for its size if there is one, else the size-independent blob ({@link GenericSpec}) if there is one,
- * else the hand tables. The blobs are decoded and expanded once per JVM; the results are immutable and shared by
+ * blob trained for its size if there is one, else the size-independent blob ({@link GenericSpec}) of the board's
+ * line length k if there is one (one generic blob per k), else the hand tables. The blobs are decoded and expanded once per JVM; the results are immutable and shared by
  * all bots. Harness tools load .qcw files themselves (ch.qc.tools.WeightFiles) and pass the evaluator in.
  */
 public final class Weights {
@@ -14,12 +14,12 @@ public final class Weights {
   private static final class Holder {
     static final WeightBlob[] BLOBS = parseAll();
     static final LearnedEval[] EVALS = sized(BLOBS);
-    static final GenericTables GENERIC = generic(BLOBS);
+    static final GenericTables[] GENERIC = generic(BLOBS);
   }
 
   /** Decodes the weights now (call from a constructor, outside any timed call). */
   public static void preload() {
-    GenericTables ignored = Holder.GENERIC;
+    GenericTables[] ignored = Holder.GENERIC;
   }
 
   /** The learned evaluation for this board size if weights are available, else null. */
@@ -29,8 +29,13 @@ public final class Weights {
         return e;
       }
     }
-    GenericTables t = Holder.GENERIC;
-    return t == null ? null : t.forGeometry(g);
+    for (GenericTables t : Holder.GENERIC) {
+      Evaluator e = t.forGeometry(g);
+      if (e != null) {
+        return e;
+      }
+    }
+    return null;
   }
 
   /** A learned evaluation from an inflated blob, or null if the blob is broken or does not match its spec. */
@@ -59,14 +64,21 @@ public final class Weights {
     return evals;
   }
 
-  private static GenericTables generic(WeightBlob[] blobs) {
+  /** Every generic blob that decodes; the first one for a k wins (the embedded files are sorted by name). */
+  private static GenericTables[] generic(WeightBlob[] blobs) {
+    GenericTables[] found = new GenericTables[blobs.length];
+    int n = 0;
     for (WeightBlob b : blobs) {
       GenericTables t = GenericTables.fromBlob(b);
       if (t != null) {
-        return t;
+        found[n++] = t;
       }
     }
-    return null;
+    GenericTables[] out = new GenericTables[n];
+    for (int i = 0; i < n; i++) {
+      out[i] = found[i];
+    }
+    return out;
   }
 
   /** Decodes concatenated standard Base64 chunks; null on a malformed input. */

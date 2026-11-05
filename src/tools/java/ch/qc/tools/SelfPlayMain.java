@@ -57,6 +57,7 @@ public final class SelfPlayMain {
     int generation = 0;
     int rows = 8;
     int cols = 12;
+    int k = ch.qc.bot.rules.Rules.K_DEFAULT;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--out" -> out = args[++i];
@@ -69,6 +70,7 @@ public final class SelfPlayMain {
         case "--prev" -> prev = args[++i];
         case "--rows" -> rows = Integer.parseInt(args[++i]);
         case "--cols" -> cols = Integer.parseInt(args[++i]);
+        case "--k" -> k = Integer.parseInt(args[++i]);
         case "--mix" -> {
           String[] m = args[++i].split(",");
           mix = new double[] {Double.parseDouble(m[0]), Double.parseDouble(m[1]), Double.parseDouble(m[2])};
@@ -76,7 +78,7 @@ public final class SelfPlayMain {
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
-    Geometry g = new Geometry(rows, cols);
+    Geometry g = new Geometry(rows, cols, k);
     FeatureSpec spec = new FeatureSpec(g);
     Function<Geometry, Evaluator> evalFactory = Evaluators.factory(weights);
     Function<Geometry, Evaluator> prevFactory = Evaluators.factory(prev);

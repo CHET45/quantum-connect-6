@@ -26,6 +26,9 @@ public final class TurnTracker {
   private int forfeits;
   private boolean lostPrevious;
   private boolean opponentMoved;
+  /** What this game proved about the cooldown ({@link RulesInference}): at least / at most this; -1 at most = unknown. */
+  private int cooldownAtLeast;
+  private int cooldownAtMost = -1;
 
   /** Starts own turn k + 1 from the snapshot read at the start of accelerateQuark. */
   public void beginTurn(Snapshot s) {
@@ -61,12 +64,20 @@ public final class TurnTracker {
           opponentMoved = true;
         }
         if (!m.isSpecialMove()) {
+          if (mine && requestedLast) {
+            // the engine refused the special we asked for: the cooldown is above our counter of that turn
+            int before = lastMySpecial < 0 ? turn - 2 : turn - 1 - lastMySpecial;
+            cooldownAtLeast = Math.max(cooldownAtLeast, before + 1);
+          }
           continue;
         }
         if (mine) {
           lastMySpecial = turn - 1;
         } else {
-          lastOppSpecial = opponentTurnsDone();
+          int done = opponentTurnsDone();
+          int before = lastOppSpecial < 0 ? done - 1 : done - lastOppSpecial;
+          cooldownAtMost = cooldownAtMost < 0 ? before : Math.min(cooldownAtMost, before);
+          lastOppSpecial = done;
         }
       }
     }
@@ -87,6 +98,16 @@ public final class TurnTracker {
     return cooldown;
   }
 
+  /** The cooldown is above every counter at which the engine refused our special in this game; 0 if none was. */
+  public int cooldownAtLeast() {
+    return cooldownAtLeast;
+  }
+
+  /** The cooldown is at most the opponent's counter at its specials in this game; -1 before the first. */
+  public int cooldownAtMost() {
+    return cooldownAtMost;
+  }
+
   public void noteSpecialRequested() {
     requestedLast = true;
   }
@@ -103,6 +124,8 @@ public final class TurnTracker {
     ownPlaced = 0;
     forfeits = 0;
     lostPrevious = false;
+    cooldownAtLeast = 0;
+    cooldownAtMost = -1;
   }
 
   /** Own turns of this game the engine forfeited so far: the ones with no move of ours in the history. */
