@@ -36,7 +36,9 @@ placed disc, so it is a pass move; the search handles it as such.
 * Fixed-node self-play, old build (`b571b55`) against new build, same seed: 50 pairs each on 8x12, 15x11, 6x7 and
   15x22 at 20,000 nodes with the shipped generic tables. All 400 games identical (winner, reason, plies), compared
   game by game (`night/logs/dyn/base` and `night/logs/dyn/new`).
-* The whole test suite passes (see the summary at the end of this file).
+* The whole test suite passes: 21 test classes, including the upload rules, the engine conformance test and both
+  differential tests (300,000 positions each). The identity run was repeated on the final build: again 400 of 400
+  games identical.
 
 ## Tests added
 
@@ -53,13 +55,61 @@ placed disc, so it is a pass move; the search handles it as such.
 `FastMatch --k K --blast R --cooldown C` (or `--blastW/--blastH`) plays any rules through `FastGame`. `@auto` weights
 are what the bot uses (tables where they fit, else hand); a side spec `tactics` is the bot's three-ply fallback as a
 baseline. The summary line counts per side missed wins in one and one-ply blunders (the move let the opponent win at
-once although another move did not). Opening lines are cut before a move that would already make a line of k.
+once although another move did not). Opening lines are cut before a move that would already make a line of k;
+`--openingPlies N` cuts them shorter.
 Runner: `night/tools/dynfm.ps1` (E-cores, below normal priority).
 
 `MatchMain` and the real-time gates run the real core-2.0 engine, which knows only k = 6 and 3x3: they cannot test
 other rules until the new jar exists.
 
-MEASUREMENTS
+## Measurements (2026-11-05, fixed nodes)
+
+Bot = default search, 20,000 nodes per move, `@auto` evaluation (tables at k = 6, `HandEval` at any other k).
+Baseline = `tactics`, the bot's three-ply fallback. 100 colour-swapped pairs (200 games) per cell, openings from
+`suites/openings-RxC.txt` cut before a line of k; "2-ply" = openings cut to two plies. Score is the bot's; draws are
+full boards (no game reached the 1,000-turn cap). Logs: `night/logs/dyn/measure`.
+
+| Rules | 8x12 score | 8x12 draws | 15x11 score | 15x11 draws |
+|---|---|---|---|---|
+| k 6, 3x3, cooldown 10 (today) | 96.3% | 7.5% | 98.0% | 0% |
+| k 6, 3x3, 2-ply openings | 97.0% | 4.0% | 97.5% | 1.0% |
+| k 4, 3x3 | 79.5% | 0% | 78.5% | 0% |
+| k 4, 3x3, 2-ply openings | 93.5% | 0% | 97.5% | 0% |
+| k 4, 5x5 | 76.5% | 0% | 78.5% | 0% |
+| k 4, 5x5, 2-ply openings | 98.5% | 0% | 97.0% | 0% |
+| k 5, 3x3 | 89.3% | 3.5% | 90.5% | 0% |
+| k 5, 3x3, 2-ply openings | 95.8% | 0.5% | 92.0% | 0% |
+| k 7, 3x3 | 80.0% | 36% | 89.0% | 15% |
+| k 8, 3x3 | 73.0% | 54% | 88.0% | 20% |
+| k 8, 1x1 | 78.5% | 41% | 93.0% | 14% |
+| k 6, 1x1 (the blast is a pass) | 84.0% | 22% | 93.0% | 7% |
+| k 6, 5x5 | 95.5% | 6% | 96.5% | 0% |
+| k 6, 3x3, cooldown 5 | 99.3% | 1.5% | 98.0% | 0% |
+| k 6, 3x3, cooldown 20 | 88.5% | 16% | 90.8% | 3.5% |
+| reference: tables vs `HandEval`, both 20,000 nodes, k 6 | 83.0% | 23% | 87.0% | 3% |
+
+Missed wins in one and one-ply blunders: 0 for the bot and 0 for the baseline in all 32 runs (311,310 bot moves,
+308,869 baseline moves). No crash, no exception, no illegal move.
+
+Where it breaks or plays badly:
+
+* **Nothing breaks.** Every rule set plays legal, sound games; the threat logic, blast tests and cooldown hold at k 4-8
+  and blast radius 0-2 (also proven position by position in `BoardDifferentialTest`).
+* **k 4 and 5 with the k = 6 openings**: the bot loses 20-24% of its games, but every one of those pairs (41 of 41 on
+  8x12, 43 of 43 on 15x11 at k 4) was won by the same colour in both games: the opening, made for six in a row,
+  already hands one side a forced win at k 4 that even the baseline finds. From 2-ply openings the bot scores 92-98%,
+  as at k 6. Openings for short k must be regenerated (or kept very short) before any real comparison.
+* **k 7 and 8 on 8x12**: 73-80%, almost all of the gap is draws (36-54% full boards); the bot lost 4 of 200 games at
+  k 7 and 0 at k 8. Eight rows leave little room for a line of 7 or 8, and the hand evaluation does not know how to
+  steer towards a win there. On 15x11 the draws fall to 15-20%.
+* **Blast of radius 0** (a pass): more draws (22% on 8x12); nothing wrong in the play, but every column is generated
+  as its own pass move, which wastes nodes.
+* **Strength without tables**: the tables beat `HandEval` by about +275 to +330 Elo at k 6. At any other k the bot
+  plays at hand-eval strength, so roughly that much below what per-k tables would give.
+* **Speed**: per move at fixed nodes (bot and baseline together, one E-core, 15x11): 3x3 7.3 ms, 5x5 21 ms, 1x1 12 ms,
+  k 8 17 ms. Under the real 100 ms limit those rules give the search about a third to a half of today's nodes. The
+  generic blast test (`blastWinsGeneric`) and the larger blast copies cost the most; a fast exact test for the size
+  the organisers pick, and a single pass move for radius 0, would win most of it back.
 
 ## How the bot should learn k and the blast
 
@@ -114,5 +164,9 @@ Candidate ways, best first:
 * Learned tables exist for k = 6 only. Other k play with `HandEval`; train per-k tables (k 4, 5, 7, 8) on the same
   generic feature set, or a k-generic table set, once the range of k is known.
 * `WarmUp` warms only the 3x3 path; the generic blast test gets compiled during the first real searches.
+* Openings for k 4 and 5 (today's suites hand one side a forced win), and real-time gates under other rules once the
+  new engine exists.
+* Speed of other blast sizes (see Measurements): a fast exact blast-win test for the chosen size, one pass move for
+  radius 0.
 * Blast shapes other than rectangles need a mask in `Board.blast`, `blastWinsGeneric`, `blastMayWin` and
   `Searcher.blastLeavesDouble`.

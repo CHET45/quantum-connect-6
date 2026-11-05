@@ -38,7 +38,8 @@ import java.util.concurrent.Executors;
  *                          chosen column: M = 1 may only cancel a blast, M = 2 may also start one
  * --k K --blast R --cooldown C   match rules (default 6, 1 = the 3x3 blast, 10); --blastW / --blastH for a
  *                          rectangular blast (half width, half height). Opening lines are cut before a move that would
- *                          already make a line of K.
+ *                          already make a line of K. --openingPlies N cuts every opening line to at most N plies
+ *                          (the k = 6 openings can hand one side a forced win at a shorter K).
  * </pre>
  *
  * <p>A side spec "tactics" is the bot's three-ply fallback ({@link Tactics}) instead of a search. Weights "@auto" are
@@ -237,6 +238,7 @@ public final class FastMatch {
     int blastW = Rules.BLAST_DEFAULT;
     int blastH = Rules.BLAST_DEFAULT;
     int cooldown = Rules.COOLDOWN_DEFAULT;
+    int openingPlies = Integer.MAX_VALUE;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--a" -> a = args[++i];
@@ -269,6 +271,7 @@ public final class FastMatch {
         case "--blastW" -> blastW = Integer.parseInt(args[++i]);
         case "--blastH" -> blastH = Integer.parseInt(args[++i]);
         case "--cooldown" -> cooldown = Integer.parseInt(args[++i]);
+        case "--openingPlies" -> openingPlies = Integer.parseInt(args[++i]);
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
@@ -285,7 +288,9 @@ public final class FastMatch {
     }
     Rules rules = Rules.of(k, blastW, blastH, cooldown);
     Geometry g = new Geometry(rows, cols, rules);
-    List<int[]> pool = fitOpenings(g, MatchMain.readOpenings(Path.of(openings)));
+    final int cap = openingPlies;
+    List<int[]> pool = fitOpenings(g, MatchMain.readOpenings(Path.of(openings))).stream()
+        .map(l -> java.util.Arrays.copyOf(l, Math.min(l.length, cap))).toList();
     Blunders blunders = new Blunders(g, 1);
     Sprt sprt = bounds == null ? new Sprt(0, 10) : new Sprt(bounds[0], bounds[1]);
     PrintWriter w = out == null ? null : new PrintWriter(Files.newBufferedWriter(Path.of(out), StandardCharsets.UTF_8));
