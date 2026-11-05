@@ -23,7 +23,8 @@ public final class Searcher {
   private static final int INF = 32_000;
   private static final int MAX_PLY = 96;
   private static final int MAX_DEPTH = 64;
-  private static final int COOLDOWN = 10;
+  /** Counter values of the default rules that the Zobrist keys are drawn for first (see the constructor). */
+  private static final int COOLDOWN_KEYS = ch.qc.bot.rules.Rules.COOLDOWN_DEFAULT;
   private static final int MAX_TURNS = 1000;
   private static final int EBF = 3;
   /** blastWinMinDepth that keeps the winning-blast scan at every node. */
@@ -297,7 +298,11 @@ public final class Searcher {
   /** The clock is read at the polls where these node-count bits are 0: often enough that a slow node cannot run late. */
   private final int clockMask;
   private final long zStm;
-  private final long[][] zCd = new long[3][COOLDOWN + 1];
+  private final long[][] zCd;
+  /** The rules: special honoured at this counter; counter after a blast; counters on the evaluation scale. */
+  private final int cooldown;
+  private final int cdAfterBlast;
+  private final int[] evalCd;
   private final long[] zTurn = new long[MAX_PLY + 1];
   private final int[] centreBonus;
   /**
@@ -431,15 +436,29 @@ public final class Searcher {
     this.pollMask = g.windows <= 200 ? 63 : g.windows <= 500 ? 31 : g.windows <= 3000 ? 15 : 3;
     this.clockMask = g.windows <= 1000 ? 63 : pollMask;
     this.vcfTable = vcfTable;
+    this.cooldown = g.rules.cooldown;
+    this.cdAfterBlast = g.rules.cdAfterBlast();
+    this.evalCd = new int[cooldown + 1];
+    for (int c = 0; c <= cooldown; c++) {
+      evalCd[c] = g.rules.evalCounter(c);
+    }
+    // the keys of counters 0..10 come first, in the order of the fixed cooldown of ten, so the default rules keep
+    // exactly the keys (and the fixed-node results) they always had; a longer cooldown draws its keys after the rest
+    zCd = new long[3][Math.max(cooldown, COOLDOWN_KEYS) + 1];
     SplittableRandom rnd = new SplittableRandom(0x7C0FFEE5EA4C4L);
     zStm = rnd.nextLong();
     for (int colour = 1; colour <= 2; colour++) {
-      for (int c = 0; c <= COOLDOWN; c++) {
+      for (int c = 0; c <= COOLDOWN_KEYS; c++) {
         zCd[colour][c] = rnd.nextLong();
       }
     }
     for (int i = 0; i <= MAX_PLY; i++) {
       zTurn[i] = rnd.nextLong();
+    }
+    for (int colour = 1; colour <= 2; colour++) {
+      for (int c = COOLDOWN_KEYS + 1; c <= cooldown; c++) {
+        zCd[colour][c] = rnd.nextLong();
+      }
     }
     for (int colour = 1; colour <= 2; colour++) {
       gain[colour] = new int[t.codes];
@@ -524,8 +543,8 @@ public final class Searcher {
     x.leadingBlast = false;
     x.blastDeadline = blastStop > 0 ? startNanos + blastStop : Long.MAX_VALUE;
     int opp = 3 - me;
-    cdMe = Math.min(cdMe, COOLDOWN);
-    cdOpp = Math.min(cdOpp, COOLDOWN);
+    cdMe = Math.min(cdMe, cooldown);
+    cdOpp = Math.min(cdOpp, cooldown);
 
     int[] moves = new int[2 * g.cols];
     int[] scores = new int[2 * g.cols];
@@ -541,7 +560,7 @@ public final class Searcher {
     if (n == 0) {
       return result(x, Tactics.NONE, 0, 0, startNanos);
     }
-    if (cdMe >= COOLDOWN) {
+    if (cdMe >= cooldown) {
       for (int c = 0; c < g.cols; c++) {
         if (!root.isFull(c)) {
           if (root.blastWins(c)) {
@@ -687,10 +706,10 @@ public final class Searcher {
       int cdNext;
       if (Tactics.isSpecial(m)) {
         child.blast(c);
-        cdNext = 1;
+        cdNext = cdAfterBlast;
       } else {
         child.make(c, me);
-        cdNext = Math.min(cdMe + 1, COOLDOWN);
+        cdNext = Math.min(cdMe + 1, cooldown);
       }
       if (x.vcf.attack(child, opp, cdOpp, cdNext, OPP_VCF_MOVES, turnIndex + 1, deadline,
           budgetMs * OPP_VCF_REPLY_NODES_PER_MS) == Tactics.NONE) {
@@ -721,7 +740,7 @@ public final class Searcher {
       boolean win = root.make(c, me);
       int s = win ? MATE - 1
           : root.topRowFull() ? draw(0)
-          : pvsChild(x, root, opp, cdOpp, Math.min(cdMe + 1, COOLDOWN), depth - 1, alpha, INF, 0, first);
+          : pvsChild(x, root, opp, cdOpp, Math.min(cdMe + 1, cooldown), depth - 1, alpha, INF, 0, first);
       root.unmake(c);
       return s;
     }
@@ -731,7 +750,7 @@ public final class Searcher {
       return MATE - 1;
     }
     x.prevCell[0] = -1;
-    return pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, INF, 0, first);
+    return pvsChild(x, child, opp, cdOpp, cdAfterBlast, depth - 1, alpha, INF, 0, first);
   }
 
   /** Searches a child at ply + 1 with a null window first unless it is the first move. Returns our score. */
@@ -779,7 +798,7 @@ public final class Searcher {
         threatCol = c;
       }
     }
-    boolean ready = cdStm >= COOLDOWN;
+    boolean ready = cdStm >= cooldown;
     boolean leafBlast = options.blastWinMinDepth <= 0;
     // anyBlastWins does not depend on the side to move: computed at most once per node (-1 not yet, 0 no, 1 yes)
     int abw = -1;
@@ -802,16 +821,16 @@ public final class Searcher {
     }
     boolean forced = oppThreats == 1;
     // the opponent wins with a blast next ply unless this move breaks it (a ready side to move has already won above)
-    if (options.blastQs && cdOpp >= COOLDOWN && abw < 0) {
+    if (options.blastQs && cdOpp >= cooldown && abw < 0) {
       abw = anyBlastWins(x, b, ply) ? 1 : 0;
     }
-    boolean oppBlast = options.blastQs && cdOpp >= COOLDOWN
+    boolean oppBlast = options.blastQs && cdOpp >= cooldown
         && (abw == 1 || (options.blastDbl && depth <= 1 && !ready && oppThreats == 0
             && blastLeavesDouble(x, b, stm, ply)));
     x.abwAt[ply] = abw;
     if (depth <= 0 || ply >= MAX_PLY - 2) {
       if ((!forced && !oppBlast) || ply >= MAX_PLY - 2) {
-        if (leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0) {
+        if (leafVcf && cdOpp < cooldown && b.live3(stm) > 0) {
           int v = leafProof(x, b, stm, cdStm, cdOpp, ply);
           if (v != 0) {
             return v;
@@ -820,7 +839,7 @@ public final class Searcher {
         if (options.trace) {
           x.stats[11]++;
         }
-        int v = eval.evaluate(b, stm, cdStm, cdOpp);
+        int v = eval.evaluate(b, stm, evalCd[cdStm], evalCd[cdOpp]);
         // the scan can only raise the value, so a leaf already at beta needs none
         return leafBlast && ready && v < beta && (abw >= 0 ? abw == 1 : anyBlastWins(x, b, ply)) ? MATE - ply - 1 : v;
       } else {
@@ -833,9 +852,9 @@ public final class Searcher {
       depth++;
     }
     if (options.razor && !pv && !forced && !oppBlast && depth <= 2) {
-      int ev = eval.evaluate(b, stm, cdStm, cdOpp);
+      int ev = eval.evaluate(b, stm, evalCd[cdStm], evalCd[cdOpp]);
       if (ev + RAZOR_MARGIN[depth] < alpha) {
-        int v = leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0 ? leafProof(x, b, stm, cdStm, cdOpp, ply) : 0;
+        int v = leafVcf && cdOpp < cooldown && b.live3(stm) > 0 ? leafProof(x, b, stm, cdStm, cdOpp, ply) : 0;
         return v != 0 ? v : ev;
       }
     }
@@ -872,9 +891,9 @@ public final class Searcher {
         return v;
       }
     }
-    if (options.nullR > 0 && !pv && !forced && !oppBlast && oppThreats == 0 && depth >= 3 && cdOpp < COOLDOWN
+    if (options.nullR > 0 && !pv && !forced && !oppBlast && oppThreats == 0 && depth >= 3 && cdOpp < cooldown
         && Math.abs(beta) < MATE_BOUND) {
-      int staticEval = eval.evaluate(b, stm, cdStm, cdOpp);
+      int staticEval = eval.evaluate(b, stm, evalCd[cdStm], evalCd[cdOpp]);
       x.nodes++;
       if (staticEval >= beta) {
         // a pass: the opponent moves, nothing else changes
@@ -937,7 +956,7 @@ public final class Searcher {
     int best = -INF;
     int bestMove = Tactics.NONE;
     int origAlpha = alpha;
-    int nextCdOpp = Math.min(cdStm + 1, COOLDOWN);
+    int nextCdOpp = Math.min(cdStm + 1, cooldown);
     for (int i = 0; i < n; i++) {
       if (i == front) {
         for (int k = i; k < n; k++) {
@@ -1030,12 +1049,13 @@ public final class Searcher {
         if (child.blast(c)) {
           s = MATE - ply - 1;
         } else if (options.lmrBlast > 0 && oppThreats == 0 && i > 0 && depth - 1 - options.lmrBlast >= 0) {
-          s = -search(x, child, opp, cdOpp, 1, depth - 1 - options.lmrBlast, -alpha - 1, -alpha, ply + 1, false);
+          s = -search(x, child, opp, cdOpp, cdAfterBlast, depth - 1 - options.lmrBlast, -alpha - 1, -alpha, ply + 1,
+              false);
           if (!x.stop && s > alpha) {
-            s = pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, beta, ply, false);
+            s = pvsChild(x, child, opp, cdOpp, cdAfterBlast, depth - 1, alpha, beta, ply, false);
           }
         } else {
-          s = pvsChild(x, child, opp, cdOpp, 1, depth - 1, alpha, beta, ply, i == 0);
+          s = pvsChild(x, child, opp, cdOpp, cdAfterBlast, depth - 1, alpha, beta, ply, i == 0);
         }
       }
       if (x.stop) {
@@ -1089,9 +1109,9 @@ public final class Searcher {
         continue;
       }
       boolean ours = false;
-      for (int cc = Math.max(c - 1, 0); cc <= Math.min(c + 1, g.cols - 1) && !ours; cc++) {
+      for (int cc = Math.max(c - g.rules.blastW, 0); cc <= Math.min(c + g.rules.blastW, g.cols - 1) && !ours; cc++) {
         int top = b.height(cc);
-        for (int y = Math.max(h - 1, 0); y <= Math.min(h + 1, top - 1); y++) {
+        for (int y = Math.max(h - g.rules.blastH, 0); y <= Math.min(h + g.rules.blastH, top - 1); y++) {
           if (b.cell(cc, y) == stm) {
             ours = true;
             break;

@@ -14,6 +14,13 @@ final class Evaluators {
     if (weights == null || weights.equals("hand")) {
       return HandEval::new;
     }
+    if (weights.equals("auto")) {
+      // what the bot uses: the embedded tables where they fit the geometry (its k), else the hand tables
+      return g -> {
+        Evaluator e = ch.qc.bot.eval.Weights.forGeometry(g);
+        return e != null ? e : new HandEval(g);
+      };
+    }
     // decode once; the expanded tables are immutable and shared by every engine
     java.util.Map<String, Evaluator> cache = new java.util.concurrent.ConcurrentHashMap<>();
     return g -> cache.computeIfAbsent(g.rows + "x" + g.cols, key -> {

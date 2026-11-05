@@ -34,6 +34,14 @@ final class Crop {
   static final int GROUP_MIN = 3;
   private static final int GROUP_SPAN = 5;
 
+  /**
+   * The margins of this crop for the match's line length k: KEEP, GROW, GAP_REACH and GROUP_SPAN are those of k = 6, and
+   * a longer line widens them (a shorter one keeps them: wider than needed is only slower).
+   */
+  final int keep;
+  private final int grow;
+  private final int gapReach;
+  private final int groupSpan;
   final int realRows;
   final int realCols;
   /** Real column of model column 0. */
@@ -43,7 +51,11 @@ final class Crop {
   /** Real column of each model column, ascending; null when the model columns are contiguous from col0. */
   private final int[] map;
 
-  private Crop(int realRows, int realCols, int col0, int cols, int rows) {
+  private Crop(int realRows, int realCols, int col0, int cols, int rows, int keep) {
+    this.keep = keep;
+    this.grow = growFor(keep);
+    this.gapReach = keep + 2;
+    this.groupSpan = Math.max(GROUP_SPAN, keep - 1);
     this.realRows = realRows;
     this.realCols = realCols;
     this.col0 = col0;
@@ -52,7 +64,11 @@ final class Crop {
     this.map = null;
   }
 
-  private Crop(int realRows, int realCols, int[] map, int rows) {
+  private Crop(int realRows, int realCols, int[] map, int rows, int keep) {
+    this.keep = keep;
+    this.grow = growFor(keep);
+    this.gapReach = keep + 2;
+    this.groupSpan = Math.max(GROUP_SPAN, keep - 1);
     this.realRows = realRows;
     this.realCols = realCols;
     this.col0 = map[0];
@@ -83,15 +99,26 @@ final class Crop {
 
   /** The crop before any disc is known, around the centre column the bot opens in; null if it cannot be modelled. */
   static Crop start(int realRows, int realCols, int above) {
-    int cols = realCols <= above ? realCols : Math.min(realCols, 2 * GROW + 1);
-    int rows = realRows <= above ? realRows : Math.min(realRows, GROW);
-    int col0 = realCols <= above ? 0 : Math.max(0, (realCols - 1) / 2 - GROW);
-    return checked(realRows, realCols, Math.min(col0, realCols - cols), cols, rows);
+    return start(realRows, realCols, above, KEEP);
   }
 
-  private static Crop checked(int realRows, int realCols, int col0, int cols, int rows) {
+  /** As {@link #start(int, int, int)} for lines of k. */
+  static Crop start(int realRows, int realCols, int above, int k) {
+    int keep = Math.max(KEEP, k);
+    int grow = growFor(keep);
+    int cols = realCols <= above ? realCols : Math.min(realCols, 2 * grow + 1);
+    int rows = realRows <= above ? realRows : Math.min(realRows, grow);
+    int col0 = realCols <= above ? 0 : Math.max(0, (realCols - 1) / 2 - grow);
+    return checked(realRows, realCols, Math.min(col0, realCols - cols), cols, rows, keep);
+  }
+
+  private static int growFor(int keep) {
+    return Math.max(GROW, 2 * keep);
+  }
+
+  private static Crop checked(int realRows, int realCols, int col0, int cols, int rows, int keep) {
     boolean fits = cols <= QcBot.MAX_SEARCH_COLS && (long) rows * cols <= MAX_CELLS;
-    return fits ? new Crop(realRows, realCols, col0, cols, rows) : null;
+    return fits ? new Crop(realRows, realCols, col0, cols, rows, keep) : null;
   }
 
   boolean isFor(int rows, int cols) {
@@ -146,15 +173,15 @@ final class Crop {
     int newCol0 = col0;
     int newCols = cols;
     if (cropCols) {
-      int wantLo = Math.max(0, lo - GROW);
-      int wantHi = Math.min(realCols - 1, hi + GROW);
+      int wantLo = Math.max(0, lo - grow);
+      int wantHi = Math.min(realCols - 1, hi + grow);
       int want = wantHi - wantLo + 1;
       if (want > MAX_COLS) {
         newCols = MAX_COLS;
         newCol0 = densest(cells);
       } else {
-        boolean loOk = col0 == 0 || lo - KEEP >= col0;
-        boolean hiOk = col0 + cols == realCols || hi + KEEP < col0 + cols;
+        boolean loOk = col0 == 0 || lo - keep >= col0;
+        boolean hiOk = col0 + cols == realCols || hi + keep < col0 + cols;
         // also when the discs are gone from most of the crop, as after a new game: a smaller one searches better
         if (!loOk || !hiOk || cols > MAX_COLS || 2 * want <= cols) {
           newCol0 = wantLo;
@@ -165,7 +192,7 @@ final class Crop {
     if (newRows == rows && newCol0 == col0 && newCols == cols) {
       return this;
     }
-    return checked(realRows, realCols, newCol0, newCols, newRows);
+    return checked(realRows, realCols, newCol0, newCols, newRows, keep);
   }
 
   private Crop refitGaps(byte[] cells, int above, boolean dropSmall) {
@@ -190,20 +217,20 @@ final class Crop {
       dropSmallGroups(cells, occupied);
     }
     int newRows = cropRows ? fitRows(top) : realRows;
-    int[] want = gapMap(occupied, realCols);
+    int[] want = gapMap(occupied, realCols, gapReach);
     if (want.length > MAX_COLS) {
       // too spread even with gaps: the densest stretch, as without them
       return refit(cells, above, 0);
     }
-    boolean keep = covers(occupied) && 2 * want.length > cols;
-    if (keep && newRows == rows) {
+    boolean stay = covers(occupied) && 2 * want.length > cols;
+    if (stay && newRows == rows) {
       return this;
     }
-    if (keep) {
-      return map == null ? checked(realRows, realCols, col0, cols, newRows) : checkedMap(map, newRows);
+    if (stay) {
+      return map == null ? checked(realRows, realCols, col0, cols, newRows, keep) : checkedMap(map, newRows);
     }
     if (isContiguous(want)) {
-      return checked(realRows, realCols, want[0], want.length, newRows);
+      return checked(realRows, realCols, want[0], want.length, newRows, keep);
     }
     return checkedMap(want, newRows);
   }
@@ -227,7 +254,7 @@ final class Crop {
       int last = c;
       int first = 0;
       int second = 0;
-      for (int x = c; x < n && x - last <= GROUP_SPAN; x++) {
+      for (int x = c; x < n && x - last <= groupSpan; x++) {
         if (occupied[x]) {
           last = x;
           hi = x;
@@ -265,7 +292,7 @@ final class Crop {
 
   private Crop checkedMap(int[] m, int newRows) {
     boolean fits = m.length <= QcBot.MAX_SEARCH_COLS && (long) newRows * m.length <= MAX_CELLS;
-    return fits ? new Crop(realRows, realCols, m, newRows) : null;
+    return fits ? new Crop(realRows, realCols, m, newRows, keep) : null;
   }
 
   private static boolean isContiguous(int[] m) {
@@ -278,8 +305,8 @@ final class Crop {
       if (!occupied[c]) {
         continue;
       }
-      int lo = Math.max(0, c - KEEP);
-      int hi = Math.min(realCols - 1, c + KEEP);
+      int lo = Math.max(0, c - keep);
+      int hi = Math.min(realCols - 1, c + keep);
       int m = model(lo);
       if (m < 0 || m + (hi - lo) >= cols || real(m + (hi - lo)) != hi) {
         return false;
@@ -290,10 +317,14 @@ final class Crop {
 
   /** The columns within GAP_REACH of a disc, with empty stretches up to GAP_FILL wide between them filled in. */
   static int[] gapMap(boolean[] occupied, int realCols) {
+    return gapMap(occupied, realCols, GAP_REACH);
+  }
+
+  static int[] gapMap(boolean[] occupied, int realCols, int reach) {
     boolean[] keep = new boolean[realCols];
     for (int c = 0; c < realCols; c++) {
       if (occupied[c]) {
-        for (int x = Math.max(0, c - GAP_REACH); x <= Math.min(realCols - 1, c + GAP_REACH); x++) {
+        for (int x = Math.max(0, c - reach); x <= Math.min(realCols - 1, c + reach); x++) {
           keep[x] = true;
         }
       }
@@ -323,13 +354,13 @@ final class Crop {
   }
 
   private int fitRows(int top) {
-    if (top + KEEP <= rows && 2 * (top + GROW) > rows) {
+    if (top + keep <= rows && 2 * (top + grow) > rows) {
       return rows;
     }
-    if (rows == realRows && top + KEEP >= realRows) {
+    if (rows == realRows && top + keep >= realRows) {
       return rows;
     }
-    return Math.min(realRows, top + GROW);
+    return Math.min(realRows, top + grow);
   }
 
   /** First column of the MAX_COLS columns holding the most discs; stays where it is unless clearly better. */

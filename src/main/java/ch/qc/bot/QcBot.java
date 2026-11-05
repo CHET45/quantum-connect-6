@@ -7,6 +7,7 @@ import ch.qc.bot.eval.HandEval;
 import ch.qc.bot.eval.Weights;
 import ch.qc.bot.rules.Board;
 import ch.qc.bot.rules.Geometry;
+import ch.qc.bot.rules.Rules;
 import ch.qc.bot.search.Searcher;
 import ch.qc.bot.search.Tactics;
 import ch.qc.bot.search.TranspositionTable;
@@ -87,6 +88,10 @@ public final class QcBot implements Algorithm {
   private boolean hintClosed;
   /** Own lost turns at the last measurement of the limit. */
   private int forfeitsMeasured;
+  /** The rules of the current match ({@link EngineRules}); the model is rebuilt when they change. */
+  private Rules rules = Rules.DEFAULT;
+  /** Rules set by a harness, used instead of asking the engine; null in a real game. */
+  private Rules forcedRules;
   private Geometry geometry;
   private Searcher searcher;
   /** The part of the board that geometry and searcher cover; set last, so a set crop means a usable model. */
@@ -159,7 +164,7 @@ public final class QcBot implements Algorithm {
    */
   private void buildModel(Crop c) {
     building = true;
-    Geometry g = new Geometry(c.rows, c.cols);
+    Geometry g = new Geometry(c.rows, c.cols, rules);
     Searcher s = newSearcher(g);
     searcher = s;
     geometry = g;
@@ -173,6 +178,7 @@ public final class QcBot implements Algorithm {
     firstCallStart = t0;
     int callId = ++calls;
     decision = null;
+    noteRules(field);
     Snapshot s = Snapshot.read(field);
     tracker.beginTurn(s);
     clock.beginTurn(t0, tracker.turn(), tracker.plyIndex());
@@ -205,6 +211,32 @@ public final class QcBot implements Algorithm {
     return col;
   }
 
+  /**
+   * Takes the rules of this match from the engine (or the harness). When they differ from the model's, the model is
+   * dropped and built again for the new rules, exactly as for a new board size: in the second call of this turn.
+   */
+  private void noteRules(QuantumField field) {
+    Rules r = forcedRules != null ? forcedRules : EngineRules.read(field);
+    if (r == null || r.equals(rules)) {
+      return;
+    }
+    rules = r;
+    tracker.setCooldown(r.cooldown);
+    if (!building) {
+      crop = null;
+    }
+  }
+
+  /** Plays under these rules instead of asking the engine (harness and tests). */
+  public void forceRules(Rules r) {
+    forcedRules = r;
+  }
+
+  /** The rules the bot plays by now. */
+  public Rules rules() {
+    return rules;
+  }
+
   /** The real column of a column of what {@link #choose} returned; -1 if there is none. */
   private int realColumn(int modelCol) {
     Crop c = moveCrop;
@@ -225,8 +257,9 @@ public final class QcBot implements Algorithm {
     long t0 = Clock.nanos();
     int rows = field.getNumberOfRows();
     int cols = field.getNumberOfColumns();
+    noteRules(field);
     if (!building && rows >= 1 && cols >= 1 && (crop == null || !crop.isFor(rows, cols))) {
-      Crop c = Crop.start(rows, cols, timing.cropAbove);
+      Crop c = Crop.start(rows, cols, timing.cropAbove, rules.k);
       if (c != null) {
         buildModel(c);
       }
@@ -330,7 +363,7 @@ public final class QcBot implements Algorithm {
     }
     searcher.setStallLimit(0L);
     searcher.setBlastStop(0L);
-    lastPonder = searcher.run(b, 3 - searchedMe, searchedCdOpp, Math.min(searchedCdMe + 1, TurnTracker.COOLDOWN),
+    lastPonder = searcher.run(b, 3 - searchedMe, searchedCdOpp, Math.min(searchedCdMe + 1, rules.cooldown),
         searchedPly + 1, t0, Math.min(limit.scaled(timing.ponderNanos, 40), clock.turnCap() / 5 * 2));
     if (searcher.lastMaxGapNanos() > stall) {
       stall = searcher.lastMaxGapNanos();
@@ -355,11 +388,12 @@ public final class QcBot implements Algorithm {
   public void observeScriptedTurn(QuantumField field) {
     ++calls;
     decision = null;
+    noteRules(field);
     Snapshot s = Snapshot.read(field);
     tracker.beginTurn(s);
     limit.assumePrior();
     if (crop == null || !crop.isFor(s.rows, s.cols)) {
-      Crop c = Crop.start(s.rows, s.cols, timing.cropAbove);
+      Crop c = Crop.start(s.rows, s.cols, timing.cropAbove, rules.k);
       if (c != null) {
         buildModel(c);
       }

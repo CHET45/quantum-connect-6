@@ -13,7 +13,8 @@ public final class Features {
   public static final int T1_SIZE = 81;
   public static final int T2_SIZE = 729;
   public static final int T3_SIZE = 11 * 11 * 3;
-  private static final int COOLDOWN = 10;
+  /** Counters are on this scale here; the search maps other cooldowns onto it ({@link ch.qc.bot.rules.Rules#evalCounter}). */
+  private static final int COOLDOWN = ch.qc.bot.rules.Rules.COOLDOWN_DEFAULT;
 
   private Features() {}
 
@@ -80,14 +81,21 @@ public final class Features {
     int last = g.cols - 1;
     int left = 0;
     int h = b.height(0);
-    for (int c = 0; c <= last; c++) {
-      int here = h;
-      int right = c < last ? b.height(c + 1) : 0;
-      if (((c > 0 && left >= here + 3) || right >= here + 3) && here < rows) {
-        valleys++;
+    if (b.g.rules.defaultBlast()) {
+      for (int c = 0; c <= last; c++) {
+        int here = h;
+        int right = c < last ? b.height(c + 1) : 0;
+        if (((c > 0 && left >= here + 3) || right >= here + 3) && here < rows) {
+          valleys++;
+        }
+        left = here;
+        h = right;
       }
-      left = here;
-      h = right;
+    } else {
+      // another blast size: the columns where a blast can make discs fall, as the 3x3 loop above counts them
+      for (int c = 0; c <= last; c++) {
+        valleys += b.blastMayWin(c) ? 1 : 0;
+      }
     }
     for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
       h = b.height(c);

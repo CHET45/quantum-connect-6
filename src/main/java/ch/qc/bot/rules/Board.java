@@ -2,7 +2,8 @@ package ch.qc.bot.rules;
 
 /**
  * Game position with incrementally maintained window codes, threat cells and Zobrist hash of the cells.
- * Rules follow design section 1 (R1-R7): gravity drops, colour-blind six-in-a-row, 3x3 blast plus gravity.
+ * Rules follow design section 1 (R1-R7): gravity drops, colour-blind K-in-a-row, a blast plus gravity. K and the blast
+ * size come from {@link Geometry#rules}; the default 3x3 blast has fast exact tests, other sizes a generic one.
  * Side to move and cooldowns are not part of this class.
  */
 public final class Board {
@@ -26,6 +27,12 @@ public final class Board {
   private final int[] cellPow;
   private final int[] winCells;
   private final long[][] zobrist;
+  /** Blast half sizes ({@link Rules#blastW}, {@link Rules#blastH}) and whether they are the default 3x3. */
+  private final int blastW;
+  private final int blastH;
+  private final boolean blast3;
+  /** Rows cleared in each column of the blast band, for {@link #blastWinsGeneric}. */
+  private final int[] bandCleared;
 
   private final byte[] cell;
   private final int[] height;
@@ -74,6 +81,10 @@ public final class Board {
     this.cellPow = g.cellPow;
     this.winCells = g.winCells;
     this.zobrist = g.zobrist;
+    this.blastW = g.rules.blastW;
+    this.blastH = g.rules.blastH;
+    this.blast3 = g.rules.defaultBlast();
+    this.bandCleared = new int[2 * blastW + 1];
     cell = new byte[g.cells];
     height = new int[g.cols];
     wc = new short[g.windows];
@@ -273,8 +284,8 @@ public final class Board {
   }
 
   /**
-   * Special move in place (R5-R7): the disc lands at height h, the 3x3 block around it is cleared and the
-   * three columns are compacted. A full column is a no-op. Returns true if a window the blast changed now holds a
+   * Special move in place (R5-R7): the disc lands at height h, the block around it (3x3 by default, see {@link Rules})
+   * is cleared and its columns are compacted. A full column is a no-op. Returns true if a window the blast changed now holds a
    * K-line of either colour (the mover wins it, R3-R4); a position in play holds no other line.
    */
   public boolean blast(int col) {
@@ -292,11 +303,11 @@ public final class Board {
     int gen = ++stampGen;
     resetLevels();
     int n = 0;
-    int lo = Math.max(h - 1, 0);
-    for (int x = Math.max(col - 1, 0); x <= Math.min(col + 1, g.cols - 1); x++) {
+    int lo = Math.max(h - blastH, 0);
+    for (int x = Math.max(col - blastW, 0); x <= Math.min(col + blastW, g.cols - 1); x++) {
       // the placed disc vanishes with the band, so column col keeps its own height h as the top
       int top = height[x];
-      int hi = Math.min(h + 1, top - 1);
+      int hi = Math.min(h + blastH, top - 1);
       if (lo > hi) {
         continue;
       }
@@ -358,14 +369,24 @@ public final class Board {
 
   /**
    * Sound prefilter: a blast in col can only create a line if some disc falls, which needs a neighbour at
-   * least three discs taller than col (design 2.4). False means no blast in col can win for either side.
+   * least three discs taller than col (design 2.4; in general a column within blastW at least blastH + 2 taller).
+   * False means no blast in col can win for either side.
    */
   public boolean blastMayWin(int col) {
     int h = height[col];
     if (h >= rows) {
       return false;
     }
-    return (col > 0 && height[col - 1] >= h + 3) || (col + 1 < g.cols && height[col + 1] >= h + 3);
+    if (blast3) {
+      return (col > 0 && height[col - 1] >= h + 3) || (col + 1 < g.cols && height[col + 1] >= h + 3);
+    }
+    int need = h + blastH + 2;
+    for (int x = Math.max(col - blastW, 0); x <= Math.min(col + blastW, cols - 1); x++) {
+      if (x != col && height[x] >= need) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -373,6 +394,9 @@ public final class Board {
    * A new line must contain a disc that falls, and only a neighbour at least three discs taller than col has one.
    */
   public boolean blastWins(int col) {
+    if (!blast3) {
+      return blastWinsGeneric(col);
+    }
     int h = height[col];
     if (h >= rows) {
       return false;
@@ -382,12 +406,71 @@ public final class Board {
   }
 
   /**
+   * {@link #blastWins} for any blast size, slower: it walks every disc that falls and counts the lines through it on the
+   * board as the blast would leave it, read through {@link #afterBlast} without changing anything. A new line must hold
+   * a changed cell with a disc, and every such cell holds a disc that fell.
+   */
+  public boolean blastWinsGeneric(int col) {
+    int h = height[col];
+    if (h >= rows || !blastMayWin(col)) {
+      return false;
+    }
+    int lo = Math.max(h - blastH, 0);
+    int x0 = Math.max(col - blastW, 0);
+    int x1 = Math.min(col + blastW, cols - 1);
+    for (int x = x0; x <= x1; x++) {
+      int hi = Math.min(h + blastH, height[x] - 1);
+      bandCleared[x - x0] = lo > hi ? 0 : hi - lo + 1;
+    }
+    for (int x = x0; x <= x1; x++) {
+      int cleared = bandCleared[x - x0];
+      int newTop = height[x] - cleared;
+      if (cleared == 0 || newTop <= lo) {
+        continue;
+      }
+      for (int y = lo; y < newTop; y++) {
+        int v = cell[x * rows + y + cleared];
+        if (lineAfter(x, y, 1, 0, v, x0, x1, lo) || lineAfter(x, y, 0, 1, v, x0, x1, lo)
+            || lineAfter(x, y, 1, 1, v, x0, x1, lo) || lineAfter(x, y, 1, -1, v, x0, x1, lo)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** True if the line through (x, y) in direction (dx, dy) holds K discs of colour v after the blast being tested. */
+  private boolean lineAfter(int x, int y, int dx, int dy, int v, int x0, int x1, int lo) {
+    int n = 1;
+    for (int i = 1; i < k && afterBlast(x + dx * i, y + dy * i, x0, x1, lo) == v; i++) {
+      n++;
+    }
+    for (int i = 1; i < k && afterBlast(x - dx * i, y - dy * i, x0, x1, lo) == v; i++) {
+      n++;
+    }
+    return n >= k;
+  }
+
+  /** A cell as the blast being tested would leave it (band columns x0..x1 from row lo up), -1 off the board. */
+  private int afterBlast(int x, int y, int x0, int x1, int lo) {
+    if (x < 0 || x >= cols || y < 0 || y >= rows) {
+      return -1;
+    }
+    if (x < x0 || x > x1 || y < lo) {
+      return cell[x * rows + y];
+    }
+    int src = y + bandCleared[x - x0];
+    return src < height[x] ? cell[x * rows + src] : EMPTY;
+  }
+
+  /**
    * {@link #anyBlastWins} for a position reached by a drop in column c from one where no blast won: a blast's test in
-   * a column reads only the columns within K of it, so only those near c can have changed.
+   * a column reads only the columns within K - 1 + blastW of it, so only those near c can have changed.
    */
   public boolean anyBlastWinsNear(int c) {
-    int hi = Math.min(cols - 1, c + k);
-    for (int col = Math.max(0, c - k); col <= hi; col++) {
+    int reach = k - 1 + blastW;
+    int hi = Math.min(cols - 1, c + reach);
+    for (int col = Math.max(0, c - reach); col <= hi; col++) {
       if (blastWins(col)) {
         return true;
       }
@@ -397,6 +480,14 @@ public final class Board {
 
   /** True if a blast in some column would win (see {@link #blastWins}). */
   public boolean anyBlastWins() {
+    if (!blast3) {
+      for (int c = 0; c < cols; c++) {
+        if (blastWinsGeneric(c)) {
+          return true;
+        }
+      }
+      return false;
+    }
     int last = cols - 1;
     int left = 0;
     int here = height[0];

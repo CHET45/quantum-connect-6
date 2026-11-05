@@ -18,6 +18,18 @@ public final class HandEval extends WindowSumEval {
   /** windowScore[stm][code]: contribution of one window seen by side to move stm. */
   private final short[][] windowScore = new short[3][];
 
+  /**
+   * Value of a live window with a discs, by the discs it still misses: K - 1 discs score VAL[5], one fewer VAL[4] and so
+   * on, a window missing more than five scores 1. For K = 6 this is VAL[min(a, 5)], the table as it was made.
+   */
+  static int val(int a, int k) {
+    if (a <= 0) {
+      return 0;
+    }
+    int missing = Math.max(1, k - a);
+    return missing >= VAL.length ? 1 : VAL[VAL.length - missing];
+  }
+
   public HandEval(Geometry g) {
     super(g);
     this.rows = g.rows;
@@ -29,14 +41,14 @@ public final class HandEval extends WindowSumEval {
         for (int i = 0, c = code; i < t.k; i++, c /= 3) {
           n[c % 3]++;
         }
-        int a = Math.min(n[stm], VAL.length - 1);
-        int b = Math.min(n[3 - stm], VAL.length - 1);
+        int a = n[stm];
+        int b = n[3 - stm];
         if (a > 0 && b > 0) {
           s[code] = 0;
         } else if (b == 0) {
-          s[code] = (short) VAL[a];
+          s[code] = (short) val(a, t.k);
         } else {
-          s[code] = (short) -Math.round(VAL[b] * 0.9);
+          s[code] = (short) -Math.round(val(b, t.k) * 0.9);
         }
       }
       windowScore[stm] = s;

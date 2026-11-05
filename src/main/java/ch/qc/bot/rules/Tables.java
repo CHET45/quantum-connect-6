@@ -12,7 +12,10 @@ public final class Tables {
   public final int[] six;
   /** thrPos[colour][code]: digit index of the single empty cell when the other K-1 digits are colour, else -1. */
   public final byte[][] thrPos;
-  /** live3[colour][code]: at least three digits of colour and none of the other colour. */
+  /**
+   * live3[colour][code]: at least K - 3 digits of colour (three for K = 6, at least one) and none of the other colour:
+   * a window a threat sequence can grow from (the prefilter of the leaf threat search).
+   */
   public final boolean[][] live3;
   /** info[code]: thrPos[1] + 1 and thrPos[2] + 1, four bits each; 0 for a window without a threat, by far the most common. */
   public final short[] info;
@@ -33,6 +36,7 @@ public final class Tables {
     swap12 = new short[codes];
     info = new short[codes];
     int[] count = new int[3];
+    int live = Math.max(1, k - 3);
     for (int code = 0; code < codes; code++) {
       count[0] = count[1] = count[2] = 0;
       int emptyAt = -1;
@@ -49,7 +53,7 @@ public final class Tables {
       for (int x = 1; x <= 2; x++) {
         int other = 3 - x;
         thrPos[x][code] = (byte) (count[x] == k - 1 && count[0] == 1 ? emptyAt : -1);
-        live3[x][code] = count[x] >= 3 && count[other] == 0;
+        live3[x][code] = count[x] >= live && count[other] == 0;
       }
       info[code] = (short) ((thrPos[1][code] + 1) | (thrPos[2][code] + 1) << 4);
     }

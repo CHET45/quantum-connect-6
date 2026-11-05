@@ -9,17 +9,27 @@ public final class NaiveRules {
   public final int rows;
   public final int cols;
   final int k;
+  /** Blast half width and half height: the engine clears rows r-1..r+1 and columns c-1..c+1, i.e. 1 and 1. */
+  final int blastW;
+  final int blastH;
   final int[][] f;
 
   public NaiveRules(int rows, int cols, int k) {
+    this(rows, cols, k, 1, 1);
+  }
+
+  /** The engine generalised to a blast of (2 blastW + 1) columns by (2 blastH + 1) rows. */
+  public NaiveRules(int rows, int cols, int k, int blastW, int blastH) {
     this.rows = rows;
     this.cols = cols;
     this.k = k;
+    this.blastW = blastW;
+    this.blastH = blastH;
     f = new int[rows][cols];
   }
 
   public NaiveRules copy() {
-    NaiveRules n = new NaiveRules(rows, cols, k);
+    NaiveRules n = new NaiveRules(rows, cols, k, blastW, blastH);
     for (int r = 0; r < rows; r++) {
       n.f[r] = f[r].clone();
     }
@@ -40,8 +50,8 @@ public final class NaiveRules {
     for (int r = rows - 1; r >= 0; r--) {
       if (f[r][col] == 0) {
         f[r][col] = colour;
-        for (int dr = -1; dr <= 1; dr++) {
-          for (int dc = -1; dc <= 1; dc++) {
+        for (int dr = -blastH; dr <= blastH; dr++) {
+          for (int dc = -blastW; dc <= blastW; dc++) {
             int rr = r + dr;
             int cc = col + dc;
             if (rr >= 0 && rr < rows && cc >= 0 && cc < cols) {

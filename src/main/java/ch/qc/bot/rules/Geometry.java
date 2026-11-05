@@ -9,7 +9,8 @@ import java.util.SplittableRandom;
  * <p>Cell index {@code i = col * rows + y} with {@code y = 0} the bottom row; engine row is {@code rows - 1 - y}.
  */
 public final class Geometry {
-  public static final int K_ENGINE = 6;
+  /** The line length of the core-2.0 engine; a match may use another ({@link Rules}). */
+  public static final int K_ENGINE = Rules.K_DEFAULT;
   public static final int DIR_H = 0;
   public static final int DIR_V = 1;
   public static final int DIR_D1 = 2;
@@ -20,6 +21,8 @@ public final class Geometry {
   public final int rows;
   public final int cols;
   public final int k;
+  /** The rules of the match this geometry serves; {@link #k} equals rules.k. */
+  public final Rules rules;
   public final int cells;
   public final Tables tables;
 
@@ -50,13 +53,19 @@ public final class Geometry {
   public final long[][] zobrist;
 
   public Geometry(int rows, int cols) {
-    this(rows, cols, K_ENGINE);
+    this(rows, cols, Rules.DEFAULT);
   }
 
+  /** The default rules with another line length (evaluation tables, tests). */
   public Geometry(int rows, int cols, int k) {
+    this(rows, cols, Rules.DEFAULT.withK(k));
+  }
+
+  public Geometry(int rows, int cols, Rules rules) {
     this.rows = rows;
     this.cols = cols;
-    this.k = k;
+    this.rules = rules;
+    this.k = rules.k;
     this.cells = rows * cols;
     this.tables = new Tables(k);
 
@@ -129,7 +138,7 @@ public final class Geometry {
     colWin = java.util.Arrays.copyOf(tmp, t);
 
     zobrist = new long[3][cells];
-    SplittableRandom rnd = new SplittableRandom(ZOBRIST_SEED);
+    SplittableRandom rnd = new SplittableRandom(ZOBRIST_SEED ^ rules.hashSalt());
     for (int colour = 1; colour <= 2; colour++) {
       for (int i = 0; i < cells; i++) {
         zobrist[colour][i] = rnd.nextLong();

@@ -18,7 +18,8 @@ import ch.qc.bot.rules.Geometry;
  * the heap a bot fills.
  */
 public final class Vcf {
-  private static final int COOLDOWN = 10;
+  /** Counter values of the default rules, whose table keys are drawn first. */
+  private static final int COOLDOWN_KEYS = ch.qc.bot.rules.Rules.COOLDOWN_DEFAULT;
   private static final int MAX_TURNS = 1000;
   private static final int MAX_VPLY = 64;
   private static final int WIN = 1;
@@ -29,7 +30,7 @@ public final class Vcf {
     final long[] keys;
     final long[] data;
     final int mask;
-    final long[][] zCd = new long[3][COOLDOWN + 1];
+    final long[][] zCd = new long[3][ch.qc.bot.rules.Rules.MAX_COOLDOWN + 1];
     final long[] zSide = new long[3];
 
     public Table(int log2) {
@@ -39,7 +40,13 @@ public final class Vcf {
       java.util.SplittableRandom rnd = new java.util.SplittableRandom(0x5EEDF00DCAFEL);
       for (int s = 1; s <= 2; s++) {
         zSide[s] = rnd.nextLong();
-        for (int c = 0; c <= COOLDOWN; c++) {
+        for (int c = 0; c <= COOLDOWN_KEYS; c++) {
+          zCd[s][c] = rnd.nextLong();
+        }
+      }
+      // counters above ten (a longer cooldown) after those, so the default keys stay what they were
+      for (int s = 1; s <= 2; s++) {
+        for (int c = COOLDOWN_KEYS + 1; c < zCd[s].length; c++) {
           zCd[s][c] = rnd.nextLong();
         }
       }
@@ -56,6 +63,9 @@ public final class Vcf {
   public boolean attackerBlasts;
 
   private final Geometry g;
+  /** The match rules: a special is honoured at this counter; the counter after a blast. */
+  private final int cooldown;
+  private final int cdAfterBlast;
   private final Table table;
   private final boolean exact;
   private final Board[] pool = new Board[MAX_VPLY + 2];
@@ -72,6 +82,8 @@ public final class Vcf {
 
   public Vcf(Geometry g, Table table, boolean exact) {
     this.g = g;
+    this.cooldown = g.rules.cooldown;
+    this.cdAfterBlast = g.rules.cdAfterBlast();
     this.table = table;
     this.exact = exact;
   }
@@ -89,7 +101,7 @@ public final class Vcf {
     aborted = false;
     for (int d = 0; d <= maxMoves && !aborted; d++) {
       winMove = Tactics.NONE;
-      if (attacker(b, a, Math.min(cdA, COOLDOWN), Math.min(cdD, COOLDOWN), d, 0)) {
+      if (attacker(b, a, Math.min(cdA, cooldown), Math.min(cdD, cooldown), d, 0)) {
         proofs++;
         return winMove;
       }
@@ -132,7 +144,7 @@ public final class Vcf {
         defCol = c;
       }
     }
-    if (cdA >= COOLDOWN) {
+    if (cdA >= cooldown) {
       for (int c = 0; c < g.cols; c++) {
         if (b.blastWins(c)) {
           if (vply == 0) {
@@ -171,8 +183,8 @@ public final class Vcf {
         return false;
       }
     }
-    int nextCdA = Math.min(cdA + 1, COOLDOWN);
-    boolean defReady = cdD >= COOLDOWN;
+    int nextCdA = Math.min(cdA + 1, cooldown);
+    boolean defReady = cdD >= cooldown;
     // drops are made and taken back in place; only blasts work on copies
     for (int i = 0; i < g.cols; i++) {
       int c = centre(i);
@@ -193,7 +205,7 @@ public final class Vcf {
         return false;
       }
     }
-    if (attackerBlasts && cdA >= COOLDOWN) {
+    if (attackerBlasts && cdA >= cooldown) {
       // on a copy, like the defender's blasts; a blast that wins at once was found above
       Board r = pool(vply);
       for (int i = 0; i < g.cols; i++) {
@@ -205,7 +217,7 @@ public final class Vcf {
         if (r.blast(c)) {
           continue;
         }
-        if (forcingDropWins(r, a, def, 1, cdD, defReady, d, vply)) {
+        if (forcingDropWins(r, a, def, cdAfterBlast, cdD, defReady, d, vply)) {
           if (vply == 0) {
             winMove = c | Tactics.SPECIAL;
           }
@@ -255,7 +267,7 @@ public final class Vcf {
       if (p.make(threatCol, def)) {
         refuted = true;
       } else {
-        refuted = p.topRowFull() || !attacker(p, a, cdA, Math.min(cdD + 1, COOLDOWN), d, vply + 1);
+        refuted = p.topRowFull() || !attacker(p, a, cdA, Math.min(cdD + 1, cooldown), d, vply + 1);
       }
       p.unmake(threatCol);
       if (refuted) {
@@ -263,13 +275,13 @@ public final class Vcf {
       }
     }
     Board r = pool(vply);
-    if (exact && cdD >= COOLDOWN) {
+    if (exact && cdD >= cooldown) {
       for (int c = 0; c < g.cols; c++) {
         if (p.isFull(c)) {
           continue;
         }
         r.copyFrom(p);
-        if (r.blast(c) || !attacker(r, a, cdA, 1, d, vply + 1)) {
+        if (r.blast(c) || !attacker(r, a, cdA, cdAfterBlast, d, vply + 1)) {
           if (!aborted) {
             blastRefutations++;
           }

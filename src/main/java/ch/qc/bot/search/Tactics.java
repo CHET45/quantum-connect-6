@@ -16,7 +16,8 @@ import ch.qc.bot.rules.Tables;
 public final class Tactics {
   public static final int SPECIAL = 1 << 16;
   public static final int NONE = -1;
-  public static final int COOLDOWN = 10;
+  /** The cooldown of the default rules; a match may use another ({@link ch.qc.bot.rules.Rules#cooldown}). */
+  public static final int COOLDOWN = ch.qc.bot.rules.Rules.COOLDOWN_DEFAULT;
 
   private static final int LOSES_NOW = 0;
   private static final int LOSES_IN_TWO = 1;
@@ -24,9 +25,10 @@ public final class Tactics {
   private static final int WINS_IN_TWO = 3;
   /** The three-ply check costs about cols^3 board updates; wider boards use the one-ply classes only. */
   private static final int DEEP_MAX_COLS = 16;
-  private static final int[] WEIGHT = {0, 1, 3, 9, 27, 81, 0, 0, 0, 0};
 
   private final Geometry g;
+  /** Special honoured iff the mover's counter is at least this (match rules). */
+  private final int cooldown;
   private final Tables t;
   private final Board child;
   private final Board grand;
@@ -37,6 +39,7 @@ public final class Tactics {
 
   public Tactics(Geometry g) {
     this.g = g;
+    this.cooldown = g.rules.cooldown;
     this.t = g.tables;
     this.child = new Board(g);
     this.grand = new Board(g);
@@ -47,9 +50,14 @@ public final class Tactics {
       for (int i = 0, c = code; i < t.k; i++, c /= 3) {
         n[c % 3]++;
       }
-      potential[1][code] = n[2] == 0 ? WEIGHT[n[1]] : 0;
-      potential[2][code] = n[1] == 0 ? WEIGHT[n[2]] : 0;
+      potential[1][code] = n[2] == 0 ? weight(n[1]) : 0;
+      potential[2][code] = n[1] == 0 ? weight(n[2]) : 0;
     }
+  }
+
+  /** Weight of a window with n discs of one colour and none of the other: 1, 3, 9, ... up to K - 1 discs, 0 when full. */
+  private int weight(int n) {
+    return n == 0 || n >= t.k ? 0 : t.pow3[n - 1];
   }
 
   public static int column(int move) {
@@ -63,7 +71,7 @@ public final class Tactics {
   /**
    * Best move for colour me, encoded as {@code col | SPECIAL}; NONE if every column is full.
    *
-   * @param myCounter the engine's cooldown counter for me before this turn (special honoured iff at least 10)
+   * @param myCounter the engine's cooldown counter for me before this turn (special honoured iff at least the cooldown)
    * @param oppCounter the opponent's counter before its next turn
    * @param deadlineNanos time of ch.qc.bot.Clock after which the three-ply check stops; unchecked moves count as neutral
    */
@@ -71,8 +79,8 @@ public final class Tactics {
     deadline = deadlineNanos;
     int opp = 3 - me;
     int cols = g.cols;
-    boolean mySp = myCounter >= COOLDOWN;
-    boolean oppSp = oppCounter >= COOLDOWN;
+    boolean mySp = myCounter >= cooldown;
+    boolean oppSp = oppCounter >= cooldown;
     for (int i = 0; i < cols; i++) {
       int c = centre(i);
       if (!b.isFull(c) && b.threats(me, g.index(c, b.height(c))) > 0) {
@@ -88,7 +96,7 @@ public final class Tactics {
       }
     }
     boolean deep = cols <= DEEP_MAX_COLS;
-    boolean mySpNext = myCounter + 1 >= COOLDOWN;
+    boolean mySpNext = myCounter + 1 >= cooldown;
     int best = NONE;
     int bestClass = -1;
     int bestScore = Integer.MIN_VALUE;
@@ -160,7 +168,7 @@ public final class Tactics {
       if (!winsNow(grand, me, mySpNext)) {
         return false;
       }
-      if (oppCounter >= COOLDOWN) {
+      if (oppCounter >= cooldown) {
         grand.copyFrom(a);
         grand.blast(r);
         if (!winsNow(grand, me, mySpNext)) {
@@ -183,10 +191,10 @@ public final class Tactics {
       }
       grand.copyFrom(a);
       grand.make(r, opp);
-      if (!survives(grand, me, mySpNext, oppCounter + 1 >= COOLDOWN)) {
+      if (!survives(grand, me, mySpNext, oppCounter + 1 >= cooldown)) {
         return true;
       }
-      if (oppCounter >= COOLDOWN) {
+      if (oppCounter >= cooldown) {
         grand.copyFrom(a);
         grand.blast(r);
         if (!survives(grand, me, mySpNext, false)) {

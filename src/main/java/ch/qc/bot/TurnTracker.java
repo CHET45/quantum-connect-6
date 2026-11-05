@@ -9,8 +9,11 @@ import java.util.List;
  * The engine calls accelerateQuark exactly once per own turn, so the own call count is the own turn index.
  */
 public final class TurnTracker {
-  public static final int COOLDOWN = 10;
+  /** The cooldown of the default rules. */
+  public static final int COOLDOWN = ch.qc.bot.rules.Rules.COOLDOWN_DEFAULT;
 
+  /** A special is honoured iff the counter is at least this (the match rules, {@link #setCooldown}). */
+  private int cooldown = COOLDOWN;
   private int turn;
   private int myColour;
   private int lastMySpecial = -1;
@@ -75,6 +78,15 @@ public final class TurnTracker {
     requestedLast = false;
   }
 
+  /** The cooldown of the match; the counters themselves do not depend on it. */
+  public void setCooldown(int cooldown) {
+    this.cooldown = cooldown;
+  }
+
+  public int cooldown() {
+    return cooldown;
+  }
+
   public void noteSpecialRequested() {
     requestedLast = true;
   }
@@ -126,7 +138,7 @@ public final class TurnTracker {
     return iAmFirst() ? turn - 1 : turn;
   }
 
-  /** Engine counter before the current own turn; a special is honoured iff it is at least 10. */
+  /** Engine counter before the current own turn; a special is honoured iff it is at least the cooldown. */
   public int myCooldownCounter() {
     return lastMySpecial < 0 ? turn - 1 : turn - lastMySpecial;
   }
@@ -138,7 +150,7 @@ public final class TurnTracker {
   }
 
   public boolean ownSpecialReady() {
-    return myCooldownCounter() >= COOLDOWN;
+    return myCooldownCounter() >= cooldown;
   }
 
   /** Engine iteration index (both players, forfeits included) of the current own turn, 0-based. */

@@ -6,7 +6,8 @@ import ch.qc.bot.search.Tactics;
 
 /**
  * In-process game loop with the engine's turn semantics (R11-R19, the same model the conformance test checks
- * against the official engine): per-player cooldown counters, honoured specials only at 10 or more, a special on a
+ * against the official engine): per-player cooldown counters, honoured specials only at the cooldown of the geometry's
+ * rules (10 by default) or more, a special on a
  * full column wastes the turn, an invalid column forfeits it, a line after a move wins for the mover, draws by a
  * full top row and at 1,000 turns. No threads and no clocks, so a game is reproducible given its engines.
  */
@@ -57,7 +58,7 @@ public final class FastGame {
       boolean special = move != Tactics.NONE && Tactics.isSpecial(move);
       boolean win = false;
       boolean blast = false;
-      if (special && counter[toMove] >= 10 && col >= 0 && col < g.cols) {
+      if (special && counter[toMove] >= g.rules.cooldown && col >= 0 && col < g.cols) {
         if (!b.isFull(col)) {
           win = b.blast(col);
           blast = true;

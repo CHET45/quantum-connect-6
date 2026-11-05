@@ -21,7 +21,8 @@ final class WarmUp {
   /** Boards of the constructor's warm-up: all that matters is that they show the code a range of shapes. */
   private static final int[][] SIZES = {{8, 12}, {15, 11}, {15, 22}};
   private static final long MOVE_NANOS = 8_000_000L;
-  private static final int COOLDOWN = 10;
+  /** The warm-up plays the default rules: it only has to get the code compiled. */
+  private static final int COOLDOWN = ch.qc.bot.rules.Rules.COOLDOWN_DEFAULT;
 
   private final Geometry[] sizes;
   private final Searcher[] searchers;
