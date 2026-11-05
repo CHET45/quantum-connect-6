@@ -29,6 +29,8 @@ public final class TurnTracker {
   /** What this game proved about the cooldown ({@link RulesInference}): at least / at most this; -1 at most = unknown. */
   private int cooldownAtLeast;
   private int cooldownAtMost = -1;
+  /** The history continued the one seen at the previous own turn (nobody cleared it). */
+  private boolean continuousHistory;
 
   /** Starts own turn k + 1 from the snapshot read at the start of accelerateQuark. */
   public void beginTurn(Snapshot s) {
@@ -46,6 +48,7 @@ public final class TurnTracker {
     // getMoveHistory copies the list but not the Move records, so identity shows whether the history continues
     boolean continuous = historySeen == 0
         || (history.size() >= historySeen && history.get(historySeen - 1) == lastSeen);
+    continuousHistory = continuous && historySeen > 0;
     if (!continuous) {
       // someone cleared the history: keep the local belief that a requested special went through
       if (requestedLast) {
@@ -96,6 +99,11 @@ public final class TurnTracker {
 
   public int cooldown() {
     return cooldown;
+  }
+
+  /** True if the history this turn continued the one of the previous own turn, so the moves between are known. */
+  public boolean continuousHistory() {
+    return continuousHistory;
   }
 
   /** The cooldown is above every counter at which the engine refused our special in this game; 0 if none was. */

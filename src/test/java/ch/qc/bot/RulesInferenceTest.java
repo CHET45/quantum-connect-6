@@ -68,6 +68,54 @@ class RulesInferenceTest {
     bot.useSpecialMove(field);
   }
 
+  /** The bare-cells blast used for the replay is Board.blast, for every candidate size. */
+  @Test
+  void replayBlastEqualsBoardBlast() {
+    SplittableRandom rnd = new SplittableRandom(11);
+    int rows = 8;
+    int cols = 12;
+    for (int round = 0; round < 3000; round++) {
+      int w = rnd.nextInt(RulesInference.MAX_TRY + 1);
+      int h = rnd.nextInt(RulesInference.MAX_TRY + 1);
+      ch.qc.bot.rules.Geometry g = new ch.qc.bot.rules.Geometry(rows, cols, Rules.of(6, w, h, 10));
+      byte[] cells = new byte[rows * cols];
+      for (int c = 0; c < cols; c++) {
+        int top = rnd.nextInt(rows + 1);
+        for (int y = 0; y < top; y++) {
+          cells[c * rows + y] = (byte) (1 + rnd.nextInt(2));
+        }
+      }
+      ch.qc.bot.rules.Board b = new ch.qc.bot.rules.Board(g);
+      assertTrue(b.load(cells));
+      int col = rnd.nextInt(cols);
+      b.blast(col);
+      byte[] mine = cells.clone();
+      RulesInference.blast(mine, rows, cols, col, w, h);
+      assertTrue(java.util.Arrays.equals(b.cells(), mine), "blast " + w + "/" + h + " in column " + col);
+    }
+  }
+
+  /** Told the blast is 1x1, the bot sees the engine's 3x3 blast clear a neighbour and learns 3x3. */
+  @Test
+  void aSeenBlastTeachesItsSize() {
+    QcBot bot = new QcBot("s=10,p=0");
+    bot.forceRules(Rules.of(6, 0, 0, 10));
+    QuantumField field = FieldFactory.create(8, 12, bot, new RandomBot());
+    bot.observeScriptedTurn(field);
+    FieldFactory.play(field, 4, false);
+    FieldFactory.play(field, 5, false);
+    bot.observeScriptedTurn(field);
+    FieldFactory.play(field, 6, false);
+    FieldFactory.play(field, 5, false);
+    bot.observeScriptedTurn(field);
+    FieldFactory.play(field, 4, false);
+    FieldFactory.play(field, 5, true); // the opponent's special: core-2.0 clears 3x3
+    bot.accelerateQuark(field);
+    assertEquals(1, bot.rules().blastW);
+    assertEquals(1, bot.rules().blastH);
+    bot.useSpecialMove(field);
+  }
+
   /** With the right rules nothing is learnt: the rules object stays the engine's. */
   @Test
   void rightRulesStayUntouched() throws Exception {

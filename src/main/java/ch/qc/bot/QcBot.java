@@ -96,6 +96,11 @@ public final class QcBot implements Algorithm {
   private Rules forcedRules;
   /** This game proved k at least this ({@link RulesInference}); 0 when nothing was learnt. */
   private int kAtLeast;
+  /** Blast sizes that agree with every special seen this game (RulesInference bits); ALL_BLASTS before any. */
+  private int blastMask = RulesInference.ALL_BLASTS;
+  /** The cells and history length at the start of the previous own turn of this game; null at a game's start. */
+  private byte[] prevCells;
+  private int prevHistory;
   private Geometry geometry;
   private Searcher searcher;
   /** The part of the board that geometry and searcher cover; set last, so a set crop means a usable model. */
@@ -225,7 +230,7 @@ public final class QcBot implements Algorithm {
     if (base == null) {
       return;
     }
-    Rules r = RulesInference.adjust(base, kAtLeast, tracker.cooldownAtLeast(), tracker.cooldownAtMost());
+    Rules r = RulesInference.adjust(base, kAtLeast, tracker.cooldownAtLeast(), tracker.cooldownAtMost(), blastMask);
     if (r.equals(rules)) {
       return;
     }
@@ -248,6 +253,34 @@ public final class QcBot implements Algorithm {
     if (longest >= Math.max(rules.k, kAtLeast)) {
       kAtLeast = longest + 1;
     }
+    noteBlasts(s);
+  }
+
+  /**
+   * A special among the moves since the previous own turn shows the blast size: the moves are replayed from that
+   * turn's board for each candidate size, and only sizes that give today's board stay. Needs the whole history since
+   * then; an inconsistent replay (no size agrees) teaches nothing.
+   */
+  private void noteBlasts(Snapshot s) {
+    if (tracker.turn() == 1) {
+      blastMask = RulesInference.ALL_BLASTS;
+      prevCells = null;
+    }
+    java.util.List<ch.cern.quantumconnect.core.Move> h = s.history;
+    if (prevCells != null && prevCells.length == s.cells.length && tracker.continuousHistory() && h.size() > prevHistory) {
+      boolean special = false;
+      for (int i = prevHistory; i < h.size(); i++) {
+        special |= h.get(i).isSpecialMove();
+      }
+      if (special) {
+        int m = RulesInference.blastCandidates(prevCells, s.cells, s.rows, s.cols, h, prevHistory);
+        if ((blastMask & m) != 0) {
+          blastMask &= m;
+        }
+      }
+    }
+    prevCells = s.cells;
+    prevHistory = h.size();
   }
 
   /** Plays under these rules instead of asking the engine (harness and tests). */
