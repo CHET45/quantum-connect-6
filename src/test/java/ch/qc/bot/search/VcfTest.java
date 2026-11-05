@@ -106,6 +106,36 @@ class VcfTest {
     assertTrue(deep > 20, "too few deep proofs to be meaningful");
   }
 
+  /** Same as above with attacker blasts that break a block (Vcf.attackerBlasts); the checker allows them too. */
+  @Test
+  void longProofsWithAttackerBlastsSurviveEveryDefence() {
+    Vcf.Table table = new Vcf.Table(18);
+    int claims = 0;
+    int viaBlast = 0;
+    int n = POSITIONS / 2;
+    for (Pos p : positions(n, 74)) {
+      Vcf v = new Vcf(p.b.g, table, true);
+      v.attackerBlasts = true;
+      int move = v.attack(p.b, p.stm, p.cdStm, p.cdOpp, 5, p.turn, Long.MAX_VALUE, 200_000);
+      if (move == Tactics.NONE) {
+        continue;
+      }
+      claims++;
+      int moves = 0;
+      while (moves <= 5 && !Checker.wins(p.b, p.stm, p.cdStm, p.cdOpp, moves, p.turn, true)) {
+        moves++;
+      }
+      assertTrue(moves <= 5, "false proof at " + describe(p));
+      Vcf plain = new Vcf(p.b.g, new Vcf.Table(16), true);
+      if (plain.attack(p.b, p.stm, p.cdStm, p.cdOpp, 5, p.turn, Long.MAX_VALUE, 200_000) == Tactics.NONE
+          && !plain.lastAborted()) {
+        viaBlast++;
+      }
+    }
+    System.out.printf("T7 blasts: %d positions, %d VCF proofs, %d only with an attacker blast%n", n, claims, viaBlast);
+    assertTrue(viaBlast > 5, "too few blast proofs to be meaningful");
+  }
+
   @Test
   void resultsDoNotDependOnTheTable() {
     Vcf.Table shared = new Vcf.Table(16);
@@ -143,6 +173,11 @@ class VcfTest {
    */
   static final class Checker {
     static boolean wins(Board b, int a, int cdA, int cdD, int d, int turn) {
+      return wins(b, a, cdA, cdD, d, turn, false);
+    }
+
+    /** With blasts: the attacker may also blast (when ready) if that leaves it a playable threat. */
+    static boolean wins(Board b, int a, int cdA, int cdD, int d, int turn, boolean blasts) {
       if (turn >= 1000) {
         return false;
       }
@@ -165,14 +200,28 @@ class VcfTest {
         if (x.topRowFull() || !hasPlayableThreat(x, a)) {
           continue;
         }
-        if (everyDefenceLoses(x, a, Math.min(10, cdA + 1), cdD, d - 1, turn + 1)) {
+        if (everyDefenceLoses(x, a, Math.min(10, cdA + 1), cdD, d - 1, turn + 1, blasts)) {
           return true;
+        }
+      }
+      if (blasts && cdA >= 10) {
+        for (int c = 0; c < g.cols; c++) {
+          x.copyFrom(b);
+          if (x.blast(c)) {
+            return true;
+          }
+          if (x.topRowFull() || !hasPlayableThreat(x, a)) {
+            continue;
+          }
+          if (everyDefenceLoses(x, a, 1, cdD, d - 1, turn + 1, blasts)) {
+            return true;
+          }
         }
       }
       return false;
     }
 
-    static boolean everyDefenceLoses(Board p, int a, int cdA, int cdD, int d, int turn) {
+    static boolean everyDefenceLoses(Board p, int a, int cdA, int cdD, int d, int turn, boolean blasts) {
       if (turn >= 1000) {
         return false;
       }
@@ -195,7 +244,7 @@ class VcfTest {
         if (defWins || r.topRowFull()) {
           return false;
         }
-        if (!wins(r, a, cdA, special ? 1 : Math.min(10, cdD + 1), d, turn + 1)) {
+        if (!wins(r, a, cdA, special ? 1 : Math.min(10, cdD + 1), d, turn + 1, blasts)) {
           return false;
         }
       }

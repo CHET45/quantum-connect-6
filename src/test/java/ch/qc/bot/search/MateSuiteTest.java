@@ -162,6 +162,6 @@ class MateSuiteTest {
     int cdNext = special ? 1 : Math.min(10, cdMe + 1);
     // a longer forced win (the root threat search returns the first proof it finds) also counts
     return !a.topRowFull() && (opponentLosesAll(a, me, cdNext, cdOpp, plies - 1)
-        || VcfTest.Checker.everyDefenceLoses(a, me, cdNext, cdOpp, 5, 1));
+        || VcfTest.Checker.everyDefenceLoses(a, me, cdNext, cdOpp, 5, 1, false));
   }
 }

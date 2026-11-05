@@ -102,6 +102,9 @@ class BoardDifferentialTest {
         if (win) {
           break;
         }
+        if (!special && !anyBlastWon) {
+          assertEquals(b.anyBlastWins(), b.anyBlastWinsNear(col), ctx + " blast win test near a drop in column " + col);
+        }
       }
     }
     System.out.printf("differential: %d positions, %d blasts simulated, %d winning blasts, prefilter passed %d%n",
