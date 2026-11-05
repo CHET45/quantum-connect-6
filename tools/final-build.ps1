@@ -20,6 +20,8 @@ param(
   [int]$Pairs = 50,
   [int]$Nodes = 20000,
   [string]$Tag = "",
+  # tables for other k from wt-dyn\weights-k: "all" (universal jar), "none", or a list like "5" or "4,5"; k=6 is always in
+  [string]$Tables = "all",
   [switch]$NoMatch,
   [switch]$Deliver
 )
@@ -50,6 +52,19 @@ foreach ($key in $set.Keys) {
 }
 [IO.File]::WriteAllText($f, $src)
 cmd /c "git -C `"$W`" diff --stat -- src/main/java/ch/qc/bot/Announced.java 2>nul"
+
+# 1b. tables for other k (weights\eval-generic.qcw, k=6, is always embedded)
+Get-ChildItem "$W\weights\eval-generic-k*.qcw" -ErrorAction SilentlyContinue | Remove-Item -Force
+$avail = Get-ChildItem "$W\weights-k\eval-generic-k*.qcw" -ErrorAction SilentlyContinue
+$picked = @()
+foreach ($t in $avail) {
+  $tk = [int]($t.BaseName -replace '^eval-generic-k', '')
+  if ($Tables -eq "all" -or ($Tables -ne "none" -and ($Tables.Split(',') | ForEach-Object { [int]$_ }) -contains $tk)) {
+    Copy-Item $t.FullName "$W\weights\" -Force
+    $picked += "k$tk"
+  }
+}
+"tables: k6" + $(if ($picked.Count -gt 0) { ", " + ($picked -join ", ") } else { "" })
 
 # 2. build + all tests (UploadRulesTest, ConformanceTest, AnnouncedTest, ...)
 $env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=C:/Users/Chtean45m/.jtmp"

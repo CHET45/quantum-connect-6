@@ -29,6 +29,33 @@ Tables exist only for k = 6. Any other k plays with the hand evaluation (measure
 nodes, `docs/dynamic-rules.md`), and a blast other than 3x3 uses the slower generic blast test (a third to half of the
 nodes at 100 ms).
 
+## What the bot learns by itself during a game (RulesInference)
+
+The announced values are the start; each game the bot corrects them from what the engine does, only in the safe
+direction, and forgets it at the next game:
+
+* k only up: a line of L discs on the board while the game goes on proves k > L. A smaller k cannot be seen (the
+  game would be over), so if k may vary without an engine getter, announce the smallest plausible k.
+* cooldown: an own special the engine turned into a drop proves a longer cooldown; an opponent special at our
+  estimate c of its counter proves a cooldown of at most c (the estimate is never below the true counter).
+* blast size: after any special the moves since the previous own turn are replayed for every half size 0..3 each way;
+  the announced size stays while it agrees, else the nearest agreeing size is played.
+
+With the right values nothing fires and play is unchanged (RulesInferenceTest.rightRulesStayUntouched).
+
+## Tables per k
+
+`night/tools/ktrain.py` trains a generic table per k (self-play with the hand evaluation, CPU fit, second round with the
+first table). The tables to ship sit in `night/wt-dyn/weights-k/eval-generic-kK.qcw`; `final-build.ps1 -Tables all`
+(default) embeds them all next to the k = 6 table, and the bot picks the table of the k it plays by. Results per k:
+`night/logs/ktrain/ktrain.log`.
+
+## Ready-made jars
+
+`night/tools/final-matrix.ps1 -Deliver` builds one jar per assumed k (6, 4, 5, 7, 8; blast 3x3, cooldown 10, 100 ms)
+with all tables, and copies them with SHA256SUMS.txt to OneDrive `qc-bot\final`. If the announcement matches one of
+them (and the board/time are default), that jar can be uploaded as it is.
+
 ## One command
 
 From `C:\Users\Chtean45m\Documents\quantum-connect` in PowerShell:
