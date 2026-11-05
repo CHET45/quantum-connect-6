@@ -63,6 +63,9 @@ public final class QcBot implements Algorithm {
   private static final int FORFEITS_TO_MEASURE = 2;
   /** Budget of the fallback tactics. */
   static final long TACTICS_NANOS = 10_000_000L;
+  /** A far drop ({@link Timing#wideTurns}) only while the search score is within this, and this far from any disc. */
+  private static final int WIDE_QUIET = 150;
+  private static final int WIDE_ROOM = 20;
 
   private final TurnTracker tracker = new TurnTracker();
   private final MatchClock clock = new MatchClock();
@@ -88,9 +91,13 @@ public final class QcBot implements Algorithm {
   private Searcher searcher;
   /** The part of the board that geometry and searcher cover; set last, so a set crop means a usable model. */
   private volatile Crop crop;
-  /** Added to the column of what {@link #choose} returns to get the real column. */
+  /** Added to the column of what {@link #choose} returns to get the real column, when no crop was used. */
   private int moveOffset;
-  private int searchedOffset;
+  /** The crop that what {@link #choose} returns is a column of; null when none was used. */
+  private Crop moveCrop;
+  private Crop searchedCrop;
+  /** Far drops played this game ({@link Timing#wideTurns}). */
+  private int widePlayed;
   private int calls;
   private volatile Decision decision;
   private volatile long firstCallStart;
@@ -170,6 +177,7 @@ public final class QcBot implements Algorithm {
     tracker.beginTurn(s);
     clock.beginTurn(t0, tracker.turn(), tracker.plyIndex());
     if (tracker.turn() == 1) {
+      widePlayed = 0;
       lastScore = 0;
       stall = 0;
       forfeitsMeasured = 0;
@@ -177,7 +185,7 @@ public final class QcBot implements Algorithm {
       noteOpponentTurn(t0 - lastReturn);
     }
     int move = choose(s, t0);
-    int col = move == Tactics.NONE ? -1 : Tactics.column(move) + moveOffset;
+    int col = move == Tactics.NONE ? -1 : realColumn(Tactics.column(move));
     boolean special = move != Tactics.NONE && Tactics.isSpecial(move);
     if (col < 0 || col >= s.cols || field.isColumnFull(col)) {
       col = safeColumn(field);
@@ -187,13 +195,23 @@ public final class QcBot implements Algorithm {
     if (special && !inTime && lastResult != null) {
       // too late to ask for the blast: play the best drop, not a drop in the blast's column
       int drop = searcher.lastBestDrop();
-      if (drop != Tactics.NONE && !field.isColumnFull(Tactics.column(drop) + moveOffset)) {
-        col = Tactics.column(drop) + moveOffset;
+      int dropCol = drop == Tactics.NONE ? -1 : realColumn(Tactics.column(drop));
+      if (dropCol >= 0 && dropCol < s.cols && !field.isColumnFull(dropCol)) {
+        col = dropCol;
         special = false;
       }
     }
     decision = new Decision(callId, s.fingerprint, col, special, inTime);
     return col;
+  }
+
+  /** The real column of a column of what {@link #choose} returned; -1 if there is none. */
+  private int realColumn(int modelCol) {
+    Crop c = moveCrop;
+    if (c == null) {
+      return modelCol + moveOffset;
+    }
+    return modelCol >= 0 && modelCol < c.cols ? c.real(modelCol) : -1;
   }
 
   @Override
@@ -301,7 +319,7 @@ public final class QcBot implements Algorithm {
     Board b = searchedBoard;
     searchedBoard = null;
     lastPonder = null;
-    int modelCol = col - searchedOffset;
+    int modelCol = searchedCrop == null ? -1 : searchedCrop.model(col);
     if (timing.ponderNanos <= 0 || tracker.turn() <= timing.ponderFromTurn || b == null || modelCol < 0
         || modelCol >= b.g.cols || b.isFull(modelCol)
         || !clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
@@ -370,6 +388,7 @@ public final class QcBot implements Algorithm {
     lastResult = null;
     searchedBoard = null;
     moveOffset = 0;
+    moveCrop = null;
     if (s.rows < 1 || s.cols < 1) {
       return Tactics.NONE;
     }
@@ -381,7 +400,7 @@ public final class QcBot implements Algorithm {
     if (building || crop == null || !crop.isFor(s.rows, s.cols)) {
       return Tactics.NONE;
     }
-    Crop c = crop.refit(s.cells, timing.cropAbove);
+    Crop c = crop.refit(s.cells, timing.cropAbove, timing.cropGaps);
     if (c == null) {
       return Tactics.NONE;
     }
@@ -393,7 +412,7 @@ public final class QcBot implements Algorithm {
     if (!board.load(c.cut(s.cells))) {
       return Tactics.NONE;
     }
-    moveOffset = c.col0;
+    moveCrop = c;
     // on an empty board the colour is unknown, but then nothing depends on it
     int me = tracker.myColour() != 0 ? tracker.myColour() : tracker.iAmFirst() ? Board.FIRST : Board.SECOND;
     int cdMe = tracker.myCooldownCounter();
@@ -407,9 +426,17 @@ public final class QcBot implements Algorithm {
       lastResult = r;
       noteStall(searcher.lastMaxGapNanos());
       if (r.move() != Tactics.NONE) {
+        int far = wideDrop(s, r);
+        if (far >= 0) {
+          widePlayed++;
+          lastScore = r.score();
+          moveCrop = null;
+          moveOffset = far;
+          return 0;
+        }
         lastScore = r.score();
         searchedBoard = board;
-        searchedOffset = c.col0;
+        searchedCrop = c;
         searchedMe = me;
         searchedCdMe = cdMe;
         searchedCdOpp = cdOpp;
@@ -419,6 +446,35 @@ public final class QcBot implements Algorithm {
       }
     }
     return new Tactics(geometry).choose(board, me, cdMe, cdOpp, Clock.nanos() + Math.min(TACTICS_NANOS, limit.nanos() / 10));
+  }
+
+  /**
+   * A free column near the edge farthest from all discs, if this quiet early turn should drop there instead
+   * ({@link Timing#wideTurns}); -1 if not.
+   */
+  private int wideDrop(Snapshot s, Searcher.Result r) {
+    if (widePlayed >= timing.wideTurns || s.cols <= timing.cropAbove || tracker.turn() < 2
+        || Tactics.isSpecial(r.move()) || Math.abs(r.score()) >= WIDE_QUIET) {
+      return -1;
+    }
+    int lo = s.cols;
+    int hi = -1;
+    for (int c = 0; c < s.cols; c++) {
+      if (s.cells[c * s.rows] != 0) {
+        lo = Math.min(lo, c);
+        hi = c;
+      }
+    }
+    if (hi < 0) {
+      return -1;
+    }
+    boolean left = lo > s.cols - 1 - hi;
+    int room = left ? lo : s.cols - 1 - hi;
+    if (room < WIDE_ROOM) {
+      return -1;
+    }
+    int col = left ? 1 : s.cols - 2;
+    return s.cells[col * s.rows + s.rows - 1] == 0 ? col : -1;
   }
 
   /** The first-call stop on this turn: by own turn and call limit, less the stalls seen lately; a lost turn is one. */
@@ -440,6 +496,10 @@ public final class QcBot implements Algorithm {
     }
     if (!limit.known()) {
       stop = Math.min(stop, UNPROBED_STOP_NANOS);
+    }
+    long lostCap = timing.lostCap(tracker.ownForfeits());
+    if (lostCap != Long.MAX_VALUE) {
+      stop = Math.min(stop, Math.max(min, limit.scaled(lostCap, MIN_STOP_PERCENT)));
     }
     return Math.min(stop, clock.turnCap() / 5 * 3);
   }

@@ -185,7 +185,24 @@ public final class Searcher {
     /** Collect cut and node statistics into {@link Result#stats()} (bench only). */
     public boolean trace;
     public boolean audit;
-    public boolean forcedExt;
+    public boolean forcedExt = true;
+    /**
+     * The opponent's blast is ready and some blast wins now: the side to move must break it this ply. blastQs treats
+     * such a node like a single drop threat: a leaf gets one more ply and no drop is reduced or razored there.
+     * blastExt also extends such an inner node by one ply.
+     */
+    public boolean blastQs = true;
+    public boolean blastExt;
+    /**
+     * With blastQs, at depth 1 or less: the opponent's ready blast that removes one of our discs and leaves it two
+     * playable threats (we having none and no blast of our own) also makes the node forced, like a blast that wins.
+     */
+    public boolean blastDbl;
+    /**
+     * Threat search attacker may play a ready blast that breaks a block and leaves it a threat (Vcf.attackerBlasts):
+     * 0 off, 1 in the root threat searches only (our VCF and the opponent's VCF check), 2 in every threat search.
+     */
+    public int vcfBlast;
     public int lmrDepth = 3;
     public int lmrTact = 2;
     public int lmrRoot;
@@ -193,7 +210,7 @@ public final class Searcher {
     public int lmp;
     public int nullR;
     public int blastGenDepth = 3;
-    public boolean partial;
+    public boolean partial = true;
     public int nodeVcf;
     public int nodeVcfNodes = 200;
     /** The root threat searches get at most 1/rootVcfShare and 1/oppVcfShare of the budget of the call. */
@@ -206,6 +223,10 @@ public final class Searcher {
       trace = o.trace;
       audit = o.audit;
       forcedExt = o.forcedExt;
+      blastQs = o.blastQs;
+      blastExt = o.blastExt;
+      blastDbl = o.blastDbl;
+      vcfBlast = o.vcfBlast;
       lmrDepth = o.lmrDepth;
       lmrTact = o.lmrTact;
       lmrRoot = o.lmrRoot;
@@ -333,6 +354,10 @@ public final class Searcher {
     final Vcf leafVcf;
     /** Bench counters. */
     final long[] stats = new long[256];
+    /** Cache of Board.anyBlastWins by board hash: (hash & ~1) | result; 0 is empty. Kept across calls. */
+    final long[] abwCache = new long[1 << ABW_BITS];
+    /** anyBlastWins of the node at each ply (-1 unknown, 0 no, 1 yes), read by its children. */
+    final int[] abwAt = new int[MAX_PLY + 2];
 
     Ctx(Geometry g, Options options, Vcf.Table vcfTable, int token, long deadline, long maxNodes, int turnBase) {
       this.g = g;
@@ -535,6 +560,7 @@ public final class Searcher {
 
     long hardDeadline = startNanos + hardNanos;
     long budgetMs = Math.max(1, Math.min(Math.min(hardNanos / 1_000_000L, maxNodes / NODES_PER_MS), MAX_BUDGET_MS));
+    x.vcf.attackerBlasts = options.vcfBlast >= 1;
     if (options.rootVcf) {
       int m = x.vcf.attack(root, me, cdMe, cdOpp, ROOT_VCF_MOVES, turnIndex,
           Math.min(hardDeadline, Clock.nanos() + hardNanos / options.rootVcfShare), budgetMs * ROOT_VCF_NODES_PER_MS);
@@ -546,8 +572,11 @@ public final class Searcher {
       n = dropMovesLosingToVcf(x, root, me, cdMe, cdOpp, turnIndex, moves, scores, n,
           Math.min(hardDeadline, Clock.nanos() + hardNanos / options.oppVcfShare), budgetMs);
     }
+    x.vcf.attackerBlasts = options.vcfBlast >= 2;
+    x.leafVcf.attackerBlasts = options.vcfBlast >= 2;
 
     x.lastPoll = Clock.nanos();
+    x.abwAt[0] = -1;
     int best = moves[0];
     int bestScore = -INF;
     int completed = 0;
@@ -752,8 +781,13 @@ public final class Searcher {
     }
     boolean ready = cdStm >= COOLDOWN;
     boolean leafBlast = options.blastWinMinDepth <= 0;
-    if (ready && depth >= Math.max(1, options.blastWinMinDepth) && b.anyBlastWins()) {
-      return MATE - ply - 1;
+    // anyBlastWins does not depend on the side to move: computed at most once per node (-1 not yet, 0 no, 1 yes)
+    int abw = -1;
+    if (ready && depth >= Math.max(1, options.blastWinMinDepth)) {
+      abw = anyBlastWins(x, b, ply) ? 1 : 0;
+      if (abw == 1) {
+        return MATE - ply - 1;
+      }
     }
     if (oppThreats >= 2 && !ready) {
       return -(MATE - ply - 2);
@@ -767,8 +801,16 @@ public final class Searcher {
       return alpha;
     }
     boolean forced = oppThreats == 1;
+    // the opponent wins with a blast next ply unless this move breaks it (a ready side to move has already won above)
+    if (options.blastQs && cdOpp >= COOLDOWN && abw < 0) {
+      abw = anyBlastWins(x, b, ply) ? 1 : 0;
+    }
+    boolean oppBlast = options.blastQs && cdOpp >= COOLDOWN
+        && (abw == 1 || (options.blastDbl && depth <= 1 && !ready && oppThreats == 0
+            && blastLeavesDouble(x, b, stm, ply)));
+    x.abwAt[ply] = abw;
     if (depth <= 0 || ply >= MAX_PLY - 2) {
-      if (!forced || ply >= MAX_PLY - 2) {
+      if ((!forced && !oppBlast) || ply >= MAX_PLY - 2) {
         if (leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0) {
           int v = leafProof(x, b, stm, cdStm, cdOpp, ply);
           if (v != 0) {
@@ -780,17 +822,17 @@ public final class Searcher {
         }
         int v = eval.evaluate(b, stm, cdStm, cdOpp);
         // the scan can only raise the value, so a leaf already at beta needs none
-        return leafBlast && ready && v < beta && b.anyBlastWins() ? MATE - ply - 1 : v;
+        return leafBlast && ready && v < beta && (abw >= 0 ? abw == 1 : anyBlastWins(x, b, ply)) ? MATE - ply - 1 : v;
       } else {
-        if (leafBlast && ready && b.anyBlastWins()) {
+        if (leafBlast && ready && (abw >= 0 ? abw == 1 : anyBlastWins(x, b, ply))) {
           return MATE - ply - 1;
         }
         depth = 1;
       }
-    } else if (forced && options.forcedExt) {
+    } else if ((forced && options.forcedExt) || (oppBlast && options.blastExt)) {
       depth++;
     }
-    if (options.razor && !pv && !forced && depth <= 2) {
+    if (options.razor && !pv && !forced && !oppBlast && depth <= 2) {
       int ev = eval.evaluate(b, stm, cdStm, cdOpp);
       if (ev + RAZOR_MARGIN[depth] < alpha) {
         int v = leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0 ? leafProof(x, b, stm, cdStm, cdOpp, ply) : 0;
@@ -830,7 +872,7 @@ public final class Searcher {
         return v;
       }
     }
-    if (options.nullR > 0 && !pv && !forced && oppThreats == 0 && depth >= 3 && cdOpp < COOLDOWN
+    if (options.nullR > 0 && !pv && !forced && !oppBlast && oppThreats == 0 && depth >= 3 && cdOpp < COOLDOWN
         && Math.abs(beta) < MATE_BOUND) {
       int staticEval = eval.evaluate(b, stm, cdStm, cdOpp);
       x.nodes++;
@@ -940,7 +982,7 @@ public final class Searcher {
         x.stats[10]++;
         x.stats[9] += Tactics.isSpecial(m) ? 1 : 0;
       }
-      boolean quietLate = !pv && !forced && oppThreats == 0 && i > 0 && tactic[i] == 0 && !Tactics.isSpecial(m)
+      boolean quietLate = !pv && !forced && !oppBlast && oppThreats == 0 && i > 0 && tactic[i] == 0 && !Tactics.isSpecial(m)
           && best > -MATE_BOUND;
       if (quietLate && options.lmp > 0 && depth <= 2 && i >= options.lmp * depth) {
         if (options.trace) {
@@ -954,8 +996,8 @@ public final class Searcher {
         int feat = options.audit ? auditFeatures(b, c, cell, stm, prevCell, x) : 0;
         boolean win = b.make(c, stm);
         int lmr = options.lmrFrom;
-        int red = lmr > 0 && oppThreats == 0 && !win && i >= (pv ? 2 * lmr : lmr) && depth >= options.lmrDepth
-            && tactic[i] == 0 ? 2 : 0;
+        int red = lmr > 0 && oppThreats == 0 && !oppBlast && !win && i >= (pv ? 2 * lmr : lmr)
+            && depth >= options.lmrDepth && tactic[i] == 0 ? 2 : 0;
         if (win) {
           s = MATE - ply - 1;
         } else if (b.topRowFull()) {
@@ -1033,7 +1075,78 @@ public final class Searcher {
     return best;
   }
 
+  /**
+   * True if a blast of the opponent of stm, in a column whose cleared block holds a disc of stm, leaves the opponent at
+   * least two threats (playable, or one right above a playable one) while stm has none: stm, not ready, then loses. A search heuristic only (it widens the
+   * search, it never sets a score), so blasts that clear only the opponent's discs are skipped for speed.
+   */
+  private boolean blastLeavesDouble(Ctx x, Board b, int stm, int ply) {
+    int opp = 3 - stm;
+    Board t = null;
+    for (int c = 0; c < g.cols; c++) {
+      int h = b.height(c);
+      if (h >= g.rows) {
+        continue;
+      }
+      boolean ours = false;
+      for (int cc = Math.max(c - 1, 0); cc <= Math.min(c + 1, g.cols - 1) && !ours; cc++) {
+        int top = b.height(cc);
+        for (int y = Math.max(h - 1, 0); y <= Math.min(h + 1, top - 1); y++) {
+          if (b.cell(cc, y) == stm) {
+            ours = true;
+            break;
+          }
+        }
+      }
+      if (!ours) {
+        continue;
+      }
+      if (t == null) {
+        t = x.pool(ply);
+      }
+      t.copyFrom(b);
+      x.nodes++;
+      if (t.blast(c)) {
+        return true;
+      }
+      int theirs = 0;
+      boolean mine = false;
+      for (int cc = t.nextThreatColumn(0); cc >= 0 && !mine; cc = t.nextThreatColumn(cc + 1)) {
+        int cell = g.index(cc, t.height(cc));
+        mine = t.threats(stm, cell) > 0;
+        if (t.threats(opp, cell) > 0) {
+          // a threat right above a playable one is a second threat: blocking the first gives the opponent the second
+          theirs += t.height(cc) + 1 < g.rows && t.threats(opp, cell + 1) > 0 ? 2 : 1;
+        }
+      }
+      if (!mine && theirs >= 2) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Draw score for the side to move at a node of this ply (the searching colour moves at even plies). */
+  private static final int ABW_BITS = 15;
+
+  /**
+   * Board.anyBlastWins through the context's cache: the answer depends on the discs only, and iterative deepening
+   * and re-searches visit the same positions again.
+   */
+  private boolean anyBlastWins(Ctx x, Board b, int ply) {
+    long h = b.hash();
+    int i = (int) (h ^ (h >>> 29)) & ((1 << ABW_BITS) - 1);
+    long e = x.abwCache[i];
+    if (e != 0 && (e | 1L) == (h | 1L)) {
+      return (e & 1L) != 0;
+    }
+    // reached by a drop from a node where no blast won: only the columns near the drop can have changed
+    int prev = ply > 0 ? x.prevCell[ply - 1] : -1;
+    boolean w = prev >= 0 && x.abwAt[ply - 1] == 0 ? b.anyBlastWinsNear(prev / g.rows) : b.anyBlastWins();
+    x.abwCache[i] = (h & ~1L) | (w ? 1L : 0L);
+    return w;
+  }
+
   private int draw(int ply) {
     return (ply & 1) == 0 ? -options.contempt : options.contempt;
   }

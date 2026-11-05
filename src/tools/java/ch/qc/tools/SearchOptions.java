@@ -66,6 +66,7 @@ public final class SearchOptions {
       case "blastGenDepth" -> o.blastGenDepth = v;
       case "rootVcfShare" -> o.rootVcfShare = v;
       case "oppVcfShare" -> o.oppVcfShare = v;
+      case "vcfBlast" -> o.vcfBlast = v;
       default -> throw new IllegalArgumentException("unknown search option " + name);
     }
   }
@@ -75,6 +76,9 @@ public final class SearchOptions {
       case "nodeRule" -> o.nodeRule = on;
       case "audit" -> o.audit = on;
       case "forcedExt" -> o.forcedExt = on;
+      case "blastQs" -> o.blastQs = on;
+      case "blastExt" -> o.blastExt = on;
+      case "blastDbl" -> o.blastDbl = on;
       case "partial" -> o.partial = on;
       default -> throw new IllegalArgumentException("unknown search option " + name);
     }
