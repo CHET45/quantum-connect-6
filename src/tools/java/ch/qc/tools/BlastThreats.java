@@ -39,7 +39,107 @@ public final class BlastThreats {
   private BlastThreats() {}
 
   record Pos(String game, int back, boolean winnerToMove, Geometry geo, byte[] cells, int stm, int cdStm, int cdOpp,
-      int turn, Board board, int played) {}
+      int turn, Board board, int played, int threats) {}
+
+  /** Tokens of a server move string: {side 1 or 2, column, 1 if a blast}; null if a token is malformed. */
+  static List<int[]> tokens(String s) {
+    List<int[]> out = new ArrayList<>();
+    int i = 0;
+    while (i < s.length()) {
+      char side = s.charAt(i);
+      if ((side != 'F' && side != 'S') || i + 1 >= s.length()) {
+        return null;
+      }
+      int col;
+      if (s.charAt(i + 1) == '[') {
+        int end = s.indexOf(']', i + 2);
+        if (end < 0) {
+          return null;
+        }
+        col = Integer.parseInt(s.substring(i + 2, end));
+        i = end + 1;
+      } else {
+        col = Character.digit(s.charAt(i + 1), 36);
+        if (col < 0) {
+          return null;
+        }
+        i += 2;
+      }
+      boolean star = i < s.length() && s.charAt(i) == '*';
+      if (star) {
+        i++;
+      }
+      out.add(new int[] {side == 'F' ? 1 : 2, col, star ? 1 : 0});
+    }
+    return out;
+  }
+
+  /** Columns where the colour wins by dropping now. */
+  static int playableWins(Board b, Geometry g, int colour) {
+    int k = 0;
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
+      if (b.threats(colour, g.index(c, b.height(c))) > 0) {
+        k++;
+      }
+    }
+    return k;
+  }
+
+  private static final String DIRS = "HV/\\";
+
+  /**
+   * Shape of an unstoppable threat of the colour, made by a drop on cell moveCell: "fork" (two playable wins) or "stack"
+   * (a playable win with one above), the directions of the lines through the winning cells (H, V, / and \), and
+   * "+move" when the drop itself lies in every one of those lines.
+   */
+  static String shape(Board b, Geometry g, int colour, int moveCell) {
+    List<Integer> cellsToWin = new ArrayList<>();
+    boolean stack = false;
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
+      int h = b.height(c);
+      if (b.threats(colour, g.index(c, h)) > 0) {
+        cellsToWin.add(g.index(c, h));
+        if (h + 1 < g.rows && b.threats(colour, g.index(c, h + 1)) > 0) {
+          cellsToWin.add(g.index(c, h + 1));
+          stack = true;
+        }
+      }
+    }
+    StringBuilder dirs = new StringBuilder();
+    boolean allThroughMove = true;
+    for (int cell : cellsToWin) {
+      for (int j = g.cellStart[cell]; j < g.cellStart[cell + 1]; j++) {
+        int w = g.cellWin[j];
+        int mine = 0;
+        boolean hasMove = false;
+        for (int i = 0; i < g.k; i++) {
+          int wc = g.winCells[w * g.k + i];
+          if (wc != cell && b.cell(wc / g.rows, wc % g.rows) == colour) {
+            mine++;
+          }
+          hasMove |= wc == moveCell;
+        }
+        if (mine == g.k - 1) {
+          dirs.append(DIRS.charAt(g.winDir[w]));
+          allThroughMove &= hasMove;
+        }
+      }
+    }
+    char[] d = dirs.toString().toCharArray();
+    java.util.Arrays.sort(d);
+    return (stack ? "stack " : "fork ") + new String(d) + (allThroughMove && moveCell >= 0 ? " +move" : "");
+  }
+
+  /** A playable win of the colour with another of its wins right above it. */
+  static boolean stacked(Board b, Geometry g, int colour) {
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
+      int h = b.height(c);
+      if (h + 1 < g.rows && b.threats(colour, g.index(c, h)) > 0 && b.threats(colour, g.index(c, h + 1)) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   public static void main(String[] args) throws Exception {
     String weights = "hand";
@@ -53,6 +153,8 @@ public final class BlastThreats {
     int ttBits = 18;
     String rowsFile = null;
     int within = 1;
+    boolean multi = false;
+    String suiteFile = null;
     List<String> files = new ArrayList<>();
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
@@ -67,6 +169,8 @@ public final class BlastThreats {
         case "--tt" -> ttBits = Integer.parseInt(args[++i]);
         case "--rows" -> rowsFile = args[++i];
         case "--blast-within" -> within = Integer.parseInt(args[++i]);
+        case "--anchor" -> multi = args[++i].equals("multi");
+        case "--suite" -> suiteFile = args[++i];
         default -> files.add(args[i]);
       }
     }
@@ -75,30 +179,53 @@ public final class BlastThreats {
     for (String f : files) {
       for (String line : Files.readAllLines(Path.of(f), StandardCharsets.UTF_8)) {
         if (!line.isBlank()) {
-          ServerGames.Game g = ServerGames.game(line);
+          ServerGames.Game g;
+          try {
+            g = ServerGames.game(line);
+          } catch (RuntimeException e) {
+            continue; // a record without a winner or moves
+          }
           byId.putIfAbsent(g.key(), g);
         }
       }
     }
     List<Pos> positions = new ArrayList<>();
     int games = 0;
+    Map<String, Geometry> geos = new LinkedHashMap<>();
+    MultiStats st = new MultiStats();
     for (ServerGames.Game g : byId.values()) {
-      if (games >= maxGames || g.winner() == 0 || !winnerBlastNearEnd(g, within)) {
+      if (games >= maxGames || g.winner() == 0 || (!multi && !winnerBlastNearEnd(g, within))) {
         continue;
       }
-      ServerGames.Replay rp = ServerGames.replayAny(g, false, 0, 0);
-      if (rp.problem != null || (size != null && !size.equals(ServerGames.sizeName(rp.geo)))) {
-        continue;
+      Geometry geo;
+      if (multi) {
+        if (g.rows() <= 0 || g.cols() <= 0 || (size != null && !size.equals(g.rows() + "x" + g.cols()))) {
+          continue;
+        }
+        geo = geos.computeIfAbsent(g.rows() + "x" + g.cols(), k -> new Geometry(g.rows(), g.cols()));
+      } else {
+        ServerGames.Replay rp = ServerGames.replayAny(g, false, 0, 0);
+        if (rp.problem != null || (size != null && !size.equals(ServerGames.sizeName(rp.geo)))) {
+          continue;
+        }
+        geo = rp.geo;
       }
-      List<Pos> ps = positions(g, rp.geo, back);
+      List<Pos> ps = positions(g, geo, back, multi, st);
       if (ps.isEmpty()) {
         continue;
       }
       games++;
       positions.addAll(ps);
     }
-    System.out.printf(Locale.ROOT, "%d games ending in a winning blast, %d positions, %d specs at %d nodes, ref %d%n",
-        games, positions.size(), specs.length, nodes, ref);
+    System.out.printf(Locale.ROOT, "%d games ending in a %s, %d positions, %d specs at %d nodes, ref %d%n",
+        games, multi ? "win after an unstoppable threat" : "winning blast", positions.size(), specs.length, nodes, ref);
+    if (multi) {
+      st.print();
+    }
+    if (nodes <= 0) {
+      writeSuite(suiteFile, positions, null, null, 0);
+      return;
+    }
 
     Function<Geometry, Evaluator> ef = Evaluators.factory(weights);
     int cols = specs.length + 1;
@@ -239,6 +366,7 @@ public final class BlastThreats {
     if (rowsFile != null) {
       Files.writeString(Path.of(rowsFile), rows, StandardCharsets.UTF_8);
     }
+    writeSuite(suiteFile, positions, score, move, fRef > 0 ? specs.length : -1);
     int[] total = new int[2];
     for (int p = 0; p < positions.size(); p++) {
       total[positions.get(p).winnerToMove() ? 0 : 1]++;
@@ -305,44 +433,113 @@ public final class BlastThreats {
     System.out.print(rows);
   }
 
+  /** One JSON line per position; scores and moves of spec 0 and of the reference column when searched. */
+  static void writeSuite(String file, List<Pos> positions, int[][] score, int[][] move, int refCol)
+      throws java.io.IOException {
+    if (file == null) {
+      return;
+    }
+    StringBuilder sb = new StringBuilder();
+    for (int p = 0; p < positions.size(); p++) {
+      Pos pos = positions.get(p);
+      byte[] cells = pos.board().cells();
+      StringBuilder cs = new StringBuilder(cells.length);
+      for (byte c : cells) {
+        cs.append((char) ('0' + c));
+      }
+      String bot = score == null ? "null" : Integer.toString(score[p][0]);
+      String botMove = move == null ? "" : moveName(move[p][0]);
+      String ref = score == null || refCol < 0 ? "null" : Integer.toString(score[p][refCol]);
+      String refMove = move == null || refCol < 0 ? "" : moveName(move[p][refCol]);
+      sb.append("{\"game\":\"").append(pos.game()).append("\",\"rows\":").append(pos.geo().rows)
+          .append(",\"cols\":").append(pos.geo().cols).append(",\"back\":").append(pos.back())
+          .append(",\"winnerToMove\":").append(pos.winnerToMove()).append(",\"stm\":").append(pos.stm())
+          .append(",\"cdStm\":").append(pos.cdStm()).append(",\"cdOpp\":").append(pos.cdOpp())
+          .append(",\"turn\":").append(pos.turn()).append(",\"played\":\"").append(moveName(pos.played()))
+          .append("\",\"threats\":").append(pos.threats()).append(",\"bot\":").append(bot)
+          .append(",\"botMove\":\"").append(botMove).append("\",\"ref\":").append(ref)
+          .append(",\"refMove\":\"").append(refMove).append("\",\"cells\":\"").append(cs).append("\"}\n");
+    }
+    Files.writeString(Path.of(file), sb, StandardCharsets.UTF_8);
+  }
+
   private static String moveName(int m) {
     return Integer.toString(Tactics.column(m), 36) + (Tactics.isSpecial(m) ? "*" : "");
   }
 
   /** True if the winner made a blast in the last `within` plies of the game (1: the final move is a blast). */
   private static boolean winnerBlastNearEnd(ServerGames.Game g, int within) {
-    String s = g.moves();
-    List<int[]> plies = new ArrayList<>();
-    for (int i = 0; i < s.length();) {
-      boolean star = i + 2 < s.length() && s.charAt(i + 2) == '*';
-      plies.add(new int[] {s.charAt(i) == 'F' ? 1 : 2, star ? 1 : 0});
-      i += star ? 3 : 2;
+    List<int[]> plies = tokens(g.moves());
+    if (plies == null) {
+      return false;
     }
     for (int k = plies.size() - 1; k >= 0 && k >= plies.size() - within; k--) {
-      if (plies.get(k)[0] == g.winner() && plies.get(k)[1] == 1) {
+      if (plies.get(k)[0] == g.winner() && plies.get(k)[2] == 1) {
         return true;
       }
     }
     return false;
   }
 
-  /** Positions 1..back plies before the final (winning) blast, with the counters the bot would have. */
-  private static List<Pos> positions(ServerGames.Game g, Geometry geo, int back) {
+  /** Counts of the multi-threat anchors found. */
+  static final class MultiStats {
+    int decided;
+    int anchored;
+    final int[] byThreats = new int[8];
+    int stackedOnly;
+    final int[] toEnd = new int[5];
+    final Map<String, int[]> byWinner = new java.util.TreeMap<>();
+    final Map<String, int[]> bySize = new java.util.TreeMap<>();
+    final Map<String, int[]> byShape = new java.util.TreeMap<>();
+
+    void print() {
+      System.out.println("shapes of the unstoppable threat (count), top 20:");
+      byShape.entrySet().stream().sorted((x, y) -> y.getValue()[0] - x.getValue()[0]).limit(20)
+          .forEach(e -> System.out.printf(Locale.ROOT, "  %-24s %5d%n", e.getKey(), e.getValue()[0]));
+      System.out.printf(Locale.ROOT, "decided games replayed: %d; won after an unstoppable threat: %d (%.1f%%)%n",
+          decided, anchored, decided == 0 ? 0 : 100.0 * anchored / decided);
+      System.out.printf(Locale.ROOT, "playable wins made by the anchor move: 1 with a win above it %d, 2: %d, 3: %d,"
+          + " 4: %d, 5+: %d%n", stackedOnly, byThreats[2], byThreats[3], byThreats[4],
+          byThreats[5] + byThreats[6] + byThreats[7]);
+      System.out.printf(Locale.ROOT, "plies from the anchor move to the end: 1-2 %d, 3-4 %d, 5-8 %d, 9-16 %d, 17+ %d%n",
+          toEnd[0], toEnd[1], toEnd[2], toEnd[3], toEnd[4]);
+      System.out.println("by size (anchored / decided):");
+      bySize.forEach((k, v) -> System.out.printf(Locale.ROOT, "  %-8s %5d / %5d%n", k, v[0], v[1]));
+      System.out.println("winners by name (anchored wins / decided wins), top 30:");
+      byWinner.entrySet().stream().sorted((x, y) -> y.getValue()[1] - x.getValue()[1]).limit(30)
+          .forEach(e -> System.out.printf(Locale.ROOT, "  %-34s %4d / %4d%n", e.getKey(), e.getValue()[0],
+              e.getValue()[1]));
+    }
+  }
+
+  /**
+   * Positions 1..back plies before the anchor, with the counters the bot would have: the final (winning) blast, or with
+   * multi the winner's last move that created an unstoppable threat (back 1 = the position just before that move).
+   */
+  private static List<Pos> positions(ServerGames.Game g, Geometry geo, int back, boolean multi, MultiStats st) {
     List<Pos> all = new ArrayList<>();
+    List<int[]> toks = tokens(g.moves());
+    if (toks == null || toks.isEmpty()) {
+      return all;
+    }
     Board b = new Board(geo);
     int[] counter = new int[3];
     int expected = 1;
     int turn = 0;
-    String s = g.moves();
-    int i = 0;
     List<int[]> meta = new ArrayList<>();
     List<Board> boards = new ArrayList<>();
     int lastSide = 0;
-    while (i < s.length()) {
-      int side = s.charAt(i) == 'F' ? 1 : 2;
-      int col = Character.digit(s.charAt(i + 1), 36);
-      boolean star = i + 2 < s.length() && s.charAt(i + 2) == '*';
-      i += star ? 3 : 2;
+    int anchor = -1;
+    int anchorThreats = 0;
+    String anchorShape = "";
+    boolean wasUnstoppable = false;
+    for (int t = 0; t < toks.size(); t++) {
+      int side = toks.get(t)[0];
+      int col = toks.get(t)[1];
+      boolean star = toks.get(t)[2] == 1;
+      if (col < 0 || col >= geo.cols || b.isFull(col)) {
+        return all;
+      }
       if (side != expected) {
         counter[expected]++;
         turn++;
@@ -351,24 +548,64 @@ public final class BlastThreats {
       copy.copyFrom(b);
       boards.add(copy);
       meta.add(new int[] {side, counter[side], counter[3 - side], turn, star ? col | Tactics.SPECIAL : col});
+      boolean win;
       if (star) {
-        b.blast(col);
+        win = b.blast(col);
         counter[side] = 0;
       } else {
-        b.make(col, side);
+        win = b.make(col, side);
       }
       counter[side]++;
       turn++;
       expected = 3 - side;
       lastSide = side;
+      if (win) {
+        if (t != toks.size() - 1) {
+          return all;
+        }
+        break;
+      }
+      if (multi && side == g.winner()) {
+        int k = playableWins(b, geo, side);
+        boolean un = playableWins(b, geo, 3 - side) == 0 && (k >= 2 || (k == 1 && stacked(b, geo, side)));
+        if (un && !wasUnstoppable) {
+          anchor = t;
+          anchorThreats = k;
+          anchorShape = shape(b, geo, side, star ? -1 : geo.index(col, b.height(col) - 1));
+        }
+        wasUnstoppable = un;
+      }
     }
     if (lastSide != g.winner()) {
       return all;
     }
     int last = boards.size() - 1;
-    for (int k = 1; k <= back && last - k >= 0; k++) {
-      int[] m = meta.get(last - k);
-      all.add(new Pos(g.id(), k, m[0] == g.winner(), geo, null, m[0], m[1], m[2], m[3], boards.get(last - k), m[4]));
+    if (multi) {
+      st.decided++;
+      String wn = g.name()[g.winner() - 1];
+      String sz = geo.rows + "x" + geo.cols;
+      st.byWinner.computeIfAbsent(wn, k -> new int[2])[1]++;
+      st.bySize.computeIfAbsent(sz, k -> new int[2])[1]++;
+      if (anchor < 0) {
+        return all;
+      }
+      st.anchored++;
+      st.byWinner.get(wn)[0]++;
+      st.byShape.computeIfAbsent(anchorShape, k -> new int[1])[0]++;
+      st.bySize.get(sz)[0]++;
+      if (anchorThreats >= 2) {
+        st.byThreats[Math.min(7, anchorThreats)]++;
+      } else {
+        st.stackedOnly++;
+      }
+      int d = last - anchor;
+      st.toEnd[d <= 2 ? 0 : d <= 4 ? 1 : d <= 8 ? 2 : d <= 16 ? 3 : 4]++;
+    }
+    int top = multi ? anchor + 1 : last;
+    for (int k = 1; k <= back && top - k >= 0; k++) {
+      int[] m = meta.get(top - k);
+      all.add(new Pos(g.id(), k, m[0] == g.winner(), geo, null, m[0], m[1], m[2], m[3], boards.get(top - k), m[4],
+          multi ? anchorThreats : 0));
     }
     return all;
   }

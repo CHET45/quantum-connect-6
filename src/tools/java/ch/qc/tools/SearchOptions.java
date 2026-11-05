@@ -58,6 +58,7 @@ public final class SearchOptions {
       case "nodeVcf" -> o.nodeVcf = v;
       case "nodeVcfNodes" -> o.nodeVcfNodes = v;
       case "lmrDepth" -> o.lmrDepth = v;
+      case "setupExt" -> o.setupExt = v;
       case "lmrRoot" -> o.lmrRoot = v;
       case "lmrTact" -> o.lmrTact = v;
       case "lmrBlast" -> o.lmrBlast = v;

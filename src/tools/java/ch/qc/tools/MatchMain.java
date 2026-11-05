@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * --seed S                random-opening seed and pool offset (default 1)
  * --out FILE              one JSON line per game, written as pairs finish
  * --affinity HEXMASK      restrict this process to these logical CPUs (to provoke late thread starts)
+ * --drop-a P, --drop-b P  each own turn after the opening is lost with this chance, as on a slow server
  * </pre>
  */
 public final class MatchMain {
@@ -62,6 +63,8 @@ public final class MatchMain {
     double[] sprt = null;
     String openings = null;
     String affinity = null;
+    double dropA = 0;
+    double dropB = 0;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--a" -> a = args[++i];
@@ -78,6 +81,8 @@ public final class MatchMain {
         }
         case "--openings" -> openings = args[++i];
         case "--affinity" -> affinity = args[++i];
+        case "--drop-a" -> dropA = Double.parseDouble(args[++i]);
+        case "--drop-b" -> dropB = Double.parseDouble(args[++i]);
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
@@ -86,6 +91,7 @@ public final class MatchMain {
           + ").ProcessorAffinity=" + Long.parseLong(affinity, 16)).inheritIO().start().waitFor();
     }
     Match m = new Match(a, b, parseSizes(sizes), opening, seed);
+    m.useDrops(dropA, dropB);
     if (openings != null) {
       m.useOpenings(readOpenings(Path.of(openings)));
     }
@@ -104,6 +110,10 @@ public final class MatchMain {
     try {
       List<Result> results = m.run(pairs, threads, w);
       System.out.println(m.report(results));
+      if (Vampire.SPINS.get() > 0) {
+        System.out.printf(java.util.Locale.ROOT, "  vampire: %d spins, %.1f s burned, %.1f ms per spin%n",
+            Vampire.SPINS.get(), Vampire.SPUN_NANOS.get() / 1e9, Vampire.SPUN_NANOS.get() / 1e6 / Vampire.SPINS.get());
+      }
       System.out.printf(java.util.Locale.ROOT, "  wall time %.1f min on %d threads%n", (System.nanoTime() - t0) / 6e10,
           threads);
     } finally {
@@ -162,6 +172,8 @@ public final class MatchMain {
     private List<int[]> openingPool;
     private Sprt sprt = new Sprt(0, 10);
     private boolean stopAtVerdict;
+    private double dropA;
+    private double dropB;
 
     public Match(String classA, String classB, int[][] sizes, int openingPlies, long seed) {
       this.classA = classA;
@@ -183,6 +195,12 @@ public final class MatchMain {
     public void useSprt(double elo0, double elo1) {
       sprt = new Sprt(elo0, elo1);
       stopAtVerdict = true;
+    }
+
+    /** Each own turn of A (B) after the opening is lost with this chance. */
+    public void useDrops(double a, double b) {
+      dropA = a;
+      dropB = b;
     }
 
     public Sprt sprt() {
@@ -232,8 +250,12 @@ public final class MatchMain {
       boolean aFirst = game == 0;
       BotProbe pa = new BotProbe(instantiate(classA));
       BotProbe pb = new BotProbe(instantiate(classB));
-      Algorithm first = new ScriptedOpening(aFirst ? pa : pb, openings[0]);
-      Algorithm second = new ScriptedOpening(aFirst ? pb : pa, openings[1]);
+      long dropSeed = seed * 7_919L + pair * 31L;
+      // the same lost-turn draws for A in both games of a pair, and for B
+      Algorithm first = new ScriptedOpening(aFirst ? pa : pb, openings[0], aFirst ? dropA : dropB,
+          dropSeed + (aFirst ? 1 : 2));
+      Algorithm second = new ScriptedOpening(aFirst ? pb : pa, openings[1], aFirst ? dropB : dropA,
+          dropSeed + (aFirst ? 2 : 1));
       Experiment exp = new Experiment(first, second, false, false, rows, cols);
       boolean crashed = false;
       try {

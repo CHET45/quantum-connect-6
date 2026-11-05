@@ -21,6 +21,9 @@ public final class BotLoader {
   private BotLoader() {}
 
   public static Algorithm create(String spec) throws ReflectiveOperationException, IOException {
+    if (spec.startsWith("vampire:")) {
+      return new Vampire(create(spec.substring(8)));
+    }
     if (spec.startsWith("qcbot:")) {
       return new ch.qc.bot.QcBot(SearchOptions.parse(spec.substring(6)));
     }

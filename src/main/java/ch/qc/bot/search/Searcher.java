@@ -204,6 +204,11 @@ public final class Searcher {
      */
     public int vcfBlast;
     public int lmrDepth = 3;
+    /**
+     * A node whose last drop gave the opponent two windows with four of its discs and two empty cells (it threatens a
+     * double threat next) is searched one ply deeper, at most this many times on a path; 0 off.
+     */
+    public int setupExt;
     public int lmrTact = 2;
     public int lmrRoot;
     public int lmrBlast = 2;
@@ -228,6 +233,7 @@ public final class Searcher {
       blastDbl = o.blastDbl;
       vcfBlast = o.vcfBlast;
       lmrDepth = o.lmrDepth;
+      setupExt = o.setupExt;
       lmrTact = o.lmrTact;
       lmrRoot = o.lmrRoot;
       lmrBlast = o.lmrBlast;
@@ -322,6 +328,12 @@ public final class Searcher {
   private volatile long lastMaxGap;
   /** Best drop of the last finished search, NONE if it stopped before it had one. */
   private volatile int lastBestDrop = Tactics.NONE;
+  /** See {@link #setPassChance}; passP 0 is off. */
+  private double passP;
+  private int passMode;
+  private double passDouble;
+  /** Scale of the scores: 1/256 of a logit of the chance to win. */
+  private static final double LOGIT = 256.0;
 
   /** Mutable state of one search call. */
   private static final class Ctx {
@@ -348,6 +360,8 @@ public final class Searcher {
     final int[][] killers = new int[MAX_PLY][2];
     final int[][] history = new int[3][];
     final int[] prevCell = new int[MAX_PLY + 2];
+    /** Setup extensions ({@link Options#setupExt}) on the path to the node at each ply. */
+    final int[] extUsed = new int[MAX_PLY + 2];
     final int[][] tact = new int[MAX_PLY][];
     final Board[] pool = new Board[MAX_PLY];
     final Vcf vcf;
@@ -484,6 +498,18 @@ public final class Searcher {
     return lastMaxGap;
   }
 
+  /**
+   * The chance p that the opponent loses its next turn (a lost turn on a slow server), for the next searches. A root move
+   * after which a lost turn hands us the game (mode 1: we have a playable win; mode 2: also one more own move makes an
+   * unstoppable double threat, counted as doubleWin of a win) is scored by its chance to win (1 - p) * P(score) + p * w,
+   * in place of P(score), with P the logistic of the score. Other moves keep their score. p 0 turns this off.
+   */
+  public void setPassChance(double p, int mode, double doubleWin) {
+    passP = p > 0 && mode > 0 ? Math.min(p, 0.5) : 0;
+    passMode = mode;
+    passDouble = doubleWin;
+  }
+
   /** The move to play if a chosen blast cannot be requested safely any more: the best drop of the last search. */
   public int lastBestDrop() {
     return lastBestDrop;
@@ -574,9 +600,12 @@ public final class Searcher {
     }
     x.vcf.attackerBlasts = options.vcfBlast >= 2;
     x.leafVcf.attackerBlasts = options.vcfBlast >= 2;
+    double[] passW = passP > 0 ? passWins(x.pool(MAX_PLY - 1), root, me, moves, n, Clock.nanos() + hardNanos / 16) : null;
 
     x.lastPoll = Clock.nanos();
     x.abwAt[0] = -1;
+    x.extUsed[0] = 0;
+    x.extUsed[1] = 0;
     int best = moves[0];
     int bestScore = -INF;
     int completed = 0;
@@ -588,20 +617,26 @@ public final class Searcher {
       for (int i = 0; i < n && !x.stop; i++) {
         int m = moves[i];
         int margin = Tactics.isSpecial(m) ? options.blastMargin : 0;
+        double pw = passW == null ? -1 : passW[passKey(m)];
+        int bound = pw < 0 ? alpha : passInverse(alpha, pw);
+        int searchAlpha = bound <= -INF ? -INF : bound + margin;
         int score;
         if (options.lmrRoot > 0 && i >= options.lmrRoot && depth >= 3 && !Tactics.isSpecial(m)) {
-          score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth - 2, alpha + margin, false);
-          if (!x.stop && score > alpha + margin) {
-            score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, false);
+          score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth - 2, searchAlpha, false);
+          if (!x.stop && score > searchAlpha) {
+            score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, searchAlpha, false);
           }
         } else {
-          score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, alpha + margin, i == 0);
+          score = rootChild(x, root, me, opp, cdMe, cdOpp, m, depth, searchAlpha, i == 0);
         }
         if (x.stop) {
           break;
         }
         if (Math.abs(score) <= MATE_BOUND) {
           score -= margin;
+        }
+        if (pw >= 0) {
+          score = passForward(score, pw);
         }
         scores[i] = score;
         if (score > iterScore) {
@@ -640,6 +675,115 @@ public final class Searcher {
       }
     }
     return result(x, best, bestScore, completed, startNanos);
+  }
+
+  private int passKey(int m) {
+    return Tactics.column(m) + (Tactics.isSpecial(m) ? g.cols : 0);
+  }
+
+  /**
+   * For each root move, what a lost opponent turn right after it is worth to us (1 a win, passDouble a double threat
+   * we can make), or -1 if nothing special: see {@link #setPassChance}. The double-threat scan stops at the deadline.
+   */
+  private double[] passWins(Board b, Board root, int me, int[] moves, int n, long deadline) {
+    double[] w = new double[2 * g.cols];
+    java.util.Arrays.fill(w, -1);
+    int opp = 3 - me;
+    for (int i = 0; i < n; i++) {
+      int m = moves[i];
+      int c = Tactics.column(m);
+      b.copyFrom(root);
+      boolean won = Tactics.isSpecial(m) ? b.blast(c) : b.make(c, me);
+      if (won || b.topRowFull()) {
+        continue;
+      }
+      if (playableWins(b, me) > 0) {
+        w[passKey(m)] = 1.0;
+        continue;
+      }
+      if (passMode < 2 || Tactics.isSpecial(m) || playableWins(b, opp) > 0 || Clock.nanos() > deadline) {
+        continue;
+      }
+      for (int c2 = 0; c2 < g.cols; c2++) {
+        if (b.isFull(c2)) {
+          continue;
+        }
+        b.make(c2, me);
+        boolean unstoppable = !b.topRowFull() && playableWins(b, opp) == 0 && unstoppable(b, me);
+        b.unmake(c2);
+        if (unstoppable) {
+          w[passKey(m)] = passDouble;
+          break;
+        }
+      }
+    }
+    return w;
+  }
+
+  /** Columns where the colour wins by dropping now. */
+  private int playableWins(Board b, int colour) {
+    int k = 0;
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
+      if (b.threats(colour, g.index(c, b.height(c))) > 0) {
+        k++;
+      }
+    }
+    return k;
+  }
+
+  /** The colour, to move after the other side's one drop, wins: two playable wins, or one with another right above. */
+  private boolean unstoppable(Board b, int colour) {
+    int k = 0;
+    for (int c = b.nextThreatColumn(0); c >= 0; c = b.nextThreatColumn(c + 1)) {
+      int h = b.height(c);
+      if (b.threats(colour, g.index(c, h)) > 0) {
+        if (++k >= 2 || (h + 1 < g.rows && b.threats(colour, g.index(c, h + 1)) > 0)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Our score of a move whose lost opponent turn is worth w, from its plain search score. */
+  int passForward(int s, double w) {
+    if (s > MATE_BOUND) {
+      return s;
+    }
+    // the chance to win and the chance not to, each computed directly so neither loses precision near 0
+    double win = s < -MATE_BOUND ? 0 : 1 / (1 + Math.exp(-s / LOGIT));
+    double not = s < -MATE_BOUND ? 1 : 1 / (1 + Math.exp(s / LOGIT));
+    return toScore((1 - passP) * win + passP * w, (1 - passP) * not + passP * (1 - w));
+  }
+
+  /** The plain search score a move with lost-turn worth w must beat for its {@link #passForward} score to beat a. */
+  int passInverse(int a, double w) {
+    if (a >= MATE_BOUND) {
+      return a;
+    }
+    double win = a <= -MATE_BOUND ? 0 : 1 / (1 + Math.exp(-a / LOGIT));
+    double not = a <= -MATE_BOUND ? 1 : 1 / (1 + Math.exp(a / LOGIT));
+    double needWin = (win - passP * w) / (1 - passP);
+    double needNot = (not - passP * (1 - w)) / (1 - passP);
+    if (needWin <= 0) {
+      return -INF;
+    }
+    if (needNot <= 0) {
+      return MATE_BOUND;
+    }
+    double s = Math.floor(LOGIT * (Math.log(needWin) - Math.log(needNot))) - 2;
+    return (int) Math.max(-MATE_BOUND, Math.min(MATE_BOUND, s));
+  }
+
+  private static int toScore(double win, double not) {
+    if (win <= 0) {
+      return -(MATE_BOUND - 1);
+    }
+    if (not <= 0) {
+      return MATE_BOUND - 1;
+    }
+    double s = LOGIT * (Math.log(win) - Math.log(not));
+    return (int) Math.max(-(MATE_BOUND - 1), Math.min(MATE_BOUND - 1, Math.round(s)));
   }
 
   private static int firstDrop(int[] moves, int n) {
@@ -809,6 +953,7 @@ public final class Searcher {
         && (abw == 1 || (options.blastDbl && depth <= 1 && !ready && oppThreats == 0
             && blastLeavesDouble(x, b, stm, ply)));
     x.abwAt[ply] = abw;
+    x.extUsed[ply + 1] = x.extUsed[ply];
     if (depth <= 0 || ply >= MAX_PLY - 2) {
       if ((!forced && !oppBlast) || ply >= MAX_PLY - 2) {
         if (leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0) {
@@ -831,6 +976,11 @@ public final class Searcher {
       }
     } else if ((forced && options.forcedExt) || (oppBlast && options.blastExt)) {
       depth++;
+    } else if (options.setupExt > 0 && x.extUsed[ply] < options.setupExt && oppThreats == 0 && ply > 0
+        && doubleFour(b, x.prevCell[ply - 1], opp)) {
+      // the opponent's last drop made two fours: next it threatens a double threat, so look one ply further here
+      depth++;
+      x.extUsed[ply + 1]++;
     }
     if (options.razor && !pv && !forced && !oppBlast && depth <= 2) {
       int ev = eval.evaluate(b, stm, cdStm, cdOpp);
@@ -1282,6 +1432,21 @@ public final class Searcher {
    * A drop that must not be reduced: it makes a new threat of the mover, takes a window with four opponent discs, or
    * opens the cell above when that is a threat of the mover.
    */
+  /** The colour's drop on this cell left it at least two windows with four of its discs and none of the other's. */
+  private boolean doubleFour(Board b, int cell, int colour) {
+    if (cell < 0) {
+      return false;
+    }
+    int[] mine = live[colour];
+    int k = 0;
+    for (int j = g.cellStart[cell]; j < g.cellStart[cell + 1]; j++) {
+      if (mine[b.windowCode(g.cellWin[j])] == 16 && ++k >= 2) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private boolean isTactical(Board b, int c, int stm, int prevCell) {
     int cell = g.index(c, b.height(c));
     int level = options.lmrTact;

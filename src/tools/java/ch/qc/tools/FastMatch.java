@@ -31,6 +31,9 @@ import java.util.concurrent.Executors;
  * --pairs N --sprt E0,E1 --threads N --seed S --out FILE   as in MatchMain
  * --forfeitA P            A loses each own turn with probability P (what a lost turn costs)
  * --forfeitTurns N        only A's own turns below N can be lost (default all)
+ * --forfeitB P            B loses each own turn with probability P (all turns)
+ * --passA M@LOST@TURNS@DOUBLE  A scores root moves by the chance of a lost B turn (Searcher#setPassChance), from B's
+ *                          lost turns in the game plus the prior LOST over TURNS; DOUBLE in percent
  * --ponderA N              after each move A searches the position after it for N nodes (the bot's second call)
  * --verifyA M              on turns with A's blast ready, those N nodes instead compare the drop and the blast in the
  *                          chosen column: M = 1 may only cancel a blast, M = 2 may also start one
@@ -90,6 +93,30 @@ public final class FastMatch {
     };
   }
 
+  /** A search configuration that scores root moves by the chance of a lost opponent turn, seen[1] of seen[0] so far. */
+  static FastGame.Engine passing(Geometry g, Searcher.Options options, Evaluator eval, long nodes, int[] pass,
+      int[] seen) {
+    Searcher s = new Searcher(g, eval, new TranspositionTable(18), options, new Vcf.Table(16));
+    return (Board b, int me, int cdMe, int cdOpp, int turn) -> {
+      double p = (double) (seen[1] + pass[1]) / Math.max(1, seen[0] + pass[2]);
+      s.setPassChance(p, pass[0], pass[3] / 100.0);
+      return s.run(b, me, cdMe, cdOpp, turn, ch.qc.bot.Clock.nanos(), hardNanos, nodes).move();
+    };
+  }
+
+  /** The engine, losing each own turn with probability p; counts its turns in seen[0] and lost ones in seen[1]. */
+  static FastGame.Engine counted(FastGame.Engine e, double p, java.util.SplittableRandom rnd, int[] seen) {
+    return (Board b, int me, int cdMe, int cdOpp, int turn) -> {
+      int m = e.move(b, me, cdMe, cdOpp, turn);
+      seen[0]++;
+      if (p > 0 && rnd.nextDouble() < p) {
+        seen[1]++;
+        return ch.qc.bot.search.Tactics.NONE;
+      }
+      return m;
+    };
+  }
+
   /** The engine, but each own turn below the limit is lost with probability p (move NONE: an invalid column). */
   static FastGame.Engine forfeiting(FastGame.Engine e, double p, int turns, java.util.SplittableRandom rnd) {
     if (p <= 0) {
@@ -119,6 +146,8 @@ public final class FastMatch {
     int forfeitTurns = Integer.MAX_VALUE;
     long ponderA = 0;
     int verifyA = 0;
+    double forfeitB = 0;
+    int[] passA = null;
     for (int i = 0; i < args.length; i++) {
       switch (args[i]) {
         case "--a" -> a = args[++i];
@@ -143,6 +172,12 @@ public final class FastMatch {
         case "--forfeitTurns" -> forfeitTurns = Integer.parseInt(args[++i]);
         case "--ponderA" -> ponderA = Long.parseLong(args[++i]);
         case "--verifyA" -> verifyA = Integer.parseInt(args[++i]);
+        case "--forfeitB" -> forfeitB = Double.parseDouble(args[++i]);
+        case "--passA" -> {
+          String[] v = args[++i].split("@");
+          passA = new int[] {Integer.parseInt(v[0]), Integer.parseInt(v[1]), Integer.parseInt(v[2]),
+              Integer.parseInt(v[3])};
+        }
         default -> throw new IllegalArgumentException("unknown argument " + args[i]);
       }
     }
@@ -172,6 +207,8 @@ public final class FastMatch {
       final int ft = forfeitTurns;
       final long pa = ponderA;
       final int va = verifyA;
+      final double fb2 = forfeitB;
+      final int[] ps = passA;
       for (int p = 0; p < pairs; p++) {
         int pair = p;
         done.submit(() -> {
@@ -180,10 +217,13 @@ public final class FastMatch {
           MatchMain.Result[] r = new MatchMain.Result[2];
           for (int game = 0; game < 2; game++) {
             boolean aFirst = game == 0;
+            int[] seenB = new int[2];
             FastGame.Engine ea = pa > 0 ? pondering(g, oa, fa.apply(g), n, pa, va)
-                : forfeiting(engine(g, oa, fa.apply(g), n), fp, ft,
-                    new java.util.SplittableRandom(sd * 1_000_003L + 2L * pair + game));
-            FastGame.Engine eb = engine(g, ob, fb.apply(g), n);
+                : forfeiting(ps != null ? passing(g, oa, fa.apply(g), n, ps, seenB) : engine(g, oa, fa.apply(g), n),
+                    fp, ft, new java.util.SplittableRandom(sd * 1_000_003L + 2L * pair + game));
+            // B's lost turns use the same draws in both games of a pair
+            FastGame.Engine eb = counted(engine(g, ob, fb.apply(g), n), fb2,
+                new java.util.SplittableRandom(sd * 7_919L + 31L * pair), seenB);
             FastGame.Outcome o = FastGame.play(g, line, aFirst ? ea : eb, aFirst ? eb : ea, null);
             int aColour = aFirst ? 1 : 2;
             int score2 = o.winner() == 0 ? 1 : o.winner() == aColour ? 2 : 0;

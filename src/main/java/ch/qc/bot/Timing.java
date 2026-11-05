@@ -40,6 +40,17 @@ public final class Timing {
    */
   private static final int WIDE_TURNS = 0;
 
+  /**
+   * One-line switch: a root move after which a lost turn of the opponent hands us the game gets that chance added to its
+   * score (Searcher#setPassChance). 0 off, 1 a move that leaves us a playable win, 2 also a move after which one more own
+   * move would make an unstoppable double threat. The chance of a lost turn is the opponent's lost turns in this game
+   * plus PASS_PRIOR_LOST, over its turns plus PASS_PRIOR_TURNS. A double threat counts as PASS_DOUBLE percent of a win.
+   */
+  private static final int PASS_MODE = 0;
+  private static final int PASS_PRIOR_LOST = 2;
+  private static final int PASS_PRIOR_TURNS = 50;
+  private static final int PASS_DOUBLE = 85;
+
   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {60 * MS, 80 * MS}, 80 * MS,
           CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS, CROP_ABOVE)
@@ -83,18 +94,24 @@ public final class Timing {
   final long lostCapTwoNanos;
   /** See {@link #WIDE_TURNS}. */
   final int wideTurns;
+  /** See {@link #PASS_MODE}. */
+  final int passMode;
+  final int passPriorLost;
+  final int passPriorTurns;
+  final int passDouble;
 
   Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
       int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
       long safeFinishNanos, int cropAbove) {
     this(untilTurn, stopNanos, ponderNanos, warmupNanos, stallLimitNanos, stallDecayPercent, stallWeightPercent,
         ponderFromTurn, probeUpward, blastStopNanos, safeFinishNanos, cropAbove, CROP_GAPS, LOST_CAP_ONE, LOST_CAP_TWO,
-        WIDE_TURNS);
+        WIDE_TURNS, PASS_MODE, PASS_PRIOR_LOST, PASS_PRIOR_TURNS, PASS_DOUBLE);
   }
 
   Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
       int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
-      long safeFinishNanos, int cropAbove, int cropGaps, long lostCapOneNanos, long lostCapTwoNanos, int wideTurns) {
+      long safeFinishNanos, int cropAbove, int cropGaps, long lostCapOneNanos, long lostCapTwoNanos, int wideTurns,
+      int passMode, int passPriorLost, int passPriorTurns, int passDouble) {
     this.untilTurn = untilTurn;
     this.stopNanos = stopNanos;
     this.ponderNanos = ponderNanos;
@@ -111,6 +128,18 @@ public final class Timing {
     this.lostCapOneNanos = lostCapOneNanos;
     this.lostCapTwoNanos = lostCapTwoNanos;
     this.wideTurns = wideTurns;
+    this.passMode = passMode;
+    this.passPriorLost = passPriorLost;
+    this.passPriorTurns = passPriorTurns;
+    this.passDouble = passDouble;
+  }
+
+  /** Chance that the opponent loses its next turn, from its lost turns so far in this game; 0 when the switch is off. */
+  double passChance(int oppLost, int oppTurns) {
+    if (passMode <= 0 || oppTurns + passPriorTurns <= 0) {
+      return 0;
+    }
+    return Math.min(0.5, (double) (oppLost + passPriorLost) / (oppTurns + passPriorTurns));
   }
 
   /** The cap on the first-call stop after this many own lost turns in the game; Long.MAX_VALUE for none. */
@@ -134,7 +163,7 @@ public final class Timing {
    * turn, the last for all others. p: second-call search. w: warm-up. g=LIMIT@DECAY@WEIGHT: the stall sensor. pf=N: no
    * second-call search on own turns below N. up=1: {@link #probeUpward}. b=STOP@FINISH: blast limits. crop=N:
    * {@link #cropAbove}. gap=0|1|2: {@link #cropGaps}. lc=ONE@TWO: {@link #LOST_CAP_ONE} in ms. wide=N:
-   * {@link #WIDE_TURNS}. Anything not named
+   * {@link #WIDE_TURNS}. pt=MODE@LOST@TURNS@DOUBLE: {@link #PASS_MODE} and its prior. Anything not named
    * keeps the value of {@link #DEFAULT}.
    */
   public static Timing parse(String spec) {
@@ -155,6 +184,10 @@ public final class Timing {
     long lostOne = d.lostCapOneNanos;
     long lostTwo = d.lostCapTwoNanos;
     int wide = d.wideTurns;
+    int passMode = d.passMode;
+    int passLost = d.passPriorLost;
+    int passTurns = d.passPriorTurns;
+    int passDouble = d.passDouble;
     for (String part : spec.split(",")) {
       int eq = part.indexOf('=');
       if (eq < 0) {
@@ -191,6 +224,16 @@ public final class Timing {
         int at = value.indexOf('@');
         lostOne = MS * Long.parseLong(at < 0 ? value : value.substring(0, at));
         lostTwo = at < 0 ? lostOne : MS * Long.parseLong(value.substring(at + 1));
+      } else if (key.equals("pt")) {
+        String[] v = value.split("@");
+        passMode = Integer.parseInt(v[0]);
+        if (v.length > 2) {
+          passLost = Integer.parseInt(v[1]);
+          passTurns = Integer.parseInt(v[2]);
+        }
+        if (v.length > 3) {
+          passDouble = Integer.parseInt(v[3]);
+        }
       } else if (key.equals("pf")) {
         ponderFrom = Integer.parseInt(value);
       } else if (key.equals("g")) {
@@ -201,6 +244,6 @@ public final class Timing {
       }
     }
     return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish, cropAbove,
-        cropGaps, lostOne, lostTwo, wide);
+        cropGaps, lostOne, lostTwo, wide, passMode, passLost, passTurns, passDouble);
   }
 }

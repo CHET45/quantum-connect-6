@@ -98,6 +98,9 @@ public final class QcBot implements Algorithm {
   private Crop searchedCrop;
   /** Far drops played this game ({@link Timing#wideTurns}). */
   private int widePlayed;
+  /** Opponent turns seen this game and the ones it lost ({@link Timing#passChance}). */
+  private int oppTurns;
+  private int oppLost;
   private int calls;
   private volatile Decision decision;
   private volatile long firstCallStart;
@@ -177,12 +180,20 @@ public final class QcBot implements Algorithm {
     tracker.beginTurn(s);
     clock.beginTurn(t0, tracker.turn(), tracker.plyIndex());
     if (tracker.turn() == 1) {
+      oppTurns = 0;
+      oppLost = 0;
       widePlayed = 0;
       lastScore = 0;
       stall = 0;
       forfeitsMeasured = 0;
-    } else if (lastReturn > 0) {
-      noteOpponentTurn(t0 - lastReturn);
+    } else {
+      oppTurns++;
+      if (!tracker.opponentMoved()) {
+        oppLost++;
+      }
+      if (lastReturn > 0) {
+        noteOpponentTurn(t0 - lastReturn);
+      }
     }
     int move = choose(s, t0);
     int col = move == Tactics.NONE ? -1 : realColumn(Tactics.column(move));
@@ -330,6 +341,7 @@ public final class QcBot implements Algorithm {
     }
     searcher.setStallLimit(0L);
     searcher.setBlastStop(0L);
+    searcher.setPassChance(0, 0, 0);
     lastPonder = searcher.run(b, 3 - searchedMe, searchedCdOpp, Math.min(searchedCdMe + 1, TurnTracker.COOLDOWN),
         searchedPly + 1, t0, Math.min(limit.scaled(timing.ponderNanos, 40), clock.turnCap() / 5 * 2));
     if (searcher.lastMaxGapNanos() > stall) {
@@ -379,6 +391,11 @@ public final class QcBot implements Algorithm {
     return lastResult;
   }
 
+  /** The opponent's lost turns and turns seen this game (harness only). */
+  public int[] opponentLostTurns() {
+    return new int[] {oppLost, oppTurns};
+  }
+
   /** Search statistics of the latest second-call search, null if there was none on this turn (harness only). */
   public Searcher.Result lastPonder() {
     return lastPonder;
@@ -422,6 +439,7 @@ public final class QcBot implements Algorithm {
       long hard = clock.budget(t0, tracker.plyIndex(), stopNow(), lastScore, empty, limit.nanos());
       searcher.setStallLimit(limit.scaled(timing.stallLimitNanos, 50));
       searcher.setBlastStop(Math.max(limit.nanos() / 20, limit.scaled(timing.blastStopNanos, 30) - stall));
+      searcher.setPassChance(timing.passChance(oppLost, oppTurns), timing.passMode, timing.passDouble / 100.0);
       Searcher.Result r = searcher.run(board, me, cdMe, cdOpp, tracker.plyIndex(), t0, hard);
       lastResult = r;
       noteStall(searcher.lastMaxGapNanos());
