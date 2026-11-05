@@ -1,0 +1,147 @@
+package ch.qc.tools;
+
+import ch.qc.bot.eval.Evaluator;
+import ch.qc.bot.rules.Board;
+import ch.qc.bot.rules.Geometry;
+import ch.qc.bot.search.Searcher;
+import ch.qc.bot.search.TranspositionTable;
+import ch.qc.bot.search.Vcf;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/**
+ * Fixed-node in-process matches (design 5.2): two search configurations play colour-swapped pairs from the opening
+ * pool through {@link FastGame}, with a node budget per move instead of a clock, so results are reproducible and
+ * every core can be used. Output lines have the {@link MatchMain} format, so {@link ReportMain} reads them.
+ *
+ * <pre>
+ * --a SPEC --b SPEC       search options as for qcbot: specs ("" for the defaults, "+razor,-rootVcf", "noVcf"),
+ *                         optionally followed by @WEIGHTS (a .qcw file, or @hand), e.g. "@data/models/gen001/eval.qcw"
+ * --nodes N               node budget per move (default 20000)
+ * --openings FILE         opening pool (default suites/openings-ROWSxCOLS.txt)
+ * --rows R --cols C       board size (default 8x12)
+ * --pairs N --sprt E0,E1 --threads N --seed S --out FILE   as in MatchMain
+ * </pre>
+ */
+public final class FastMatch {
+  private FastMatch() {}
+
+  /** A search configuration as a FastGame engine with its own tables, one per game and side. */
+  public static FastGame.Engine engine(Geometry g, Searcher.Options options, Evaluator eval, long nodes) {
+    Searcher s = new Searcher(g, eval, new TranspositionTable(18), options, new Vcf.Table(16));
+    return (Board b, int me, int cdMe, int cdOpp, int turn) ->
+        s.run(b, me, cdMe, cdOpp, turn, ch.qc.bot.Clock.nanos(), Long.MAX_VALUE / 4, nodes).move();
+  }
+
+  public static void main(String[] args) throws Exception {
+    String a = "";
+    String b = "";
+    long nodes = 20_000;
+    String openings = null;
+    int rows = 8;
+    int cols = 12;
+    int pairs = 200;
+    double[] bounds = null;
+    int threads = Math.max(1, Runtime.getRuntime().availableProcessors() - 1);
+    long seed = 1;
+    String out = null;
+    for (int i = 0; i < args.length; i++) {
+      switch (args[i]) {
+        case "--a" -> a = args[++i];
+        case "--b" -> b = args[++i];
+        case "--nodes" -> nodes = Long.parseLong(args[++i]);
+        case "--openings" -> openings = args[++i];
+        case "--rows" -> rows = Integer.parseInt(args[++i]);
+        case "--cols" -> cols = Integer.parseInt(args[++i]);
+        case "--pairs" -> pairs = Integer.parseInt(args[++i]);
+        case "--sprt" -> {
+          String[] e = args[++i].split(",");
+          bounds = new double[] {Double.parseDouble(e[0]), Double.parseDouble(e[1])};
+        }
+        case "--threads" -> threads = Integer.parseInt(args[++i]);
+        case "--seed" -> seed = Long.parseLong(args[++i]);
+        case "--out" -> out = args[++i];
+        default -> throw new IllegalArgumentException("unknown argument " + args[i]);
+      }
+    }
+    String[] sa = (a + "@hand").split("@", 3);
+    String[] sb = (b + "@hand").split("@", 3);
+    Searcher.Options oa = SearchOptions.parse(sa[0]);
+    Searcher.Options ob = SearchOptions.parse(sb[0]);
+    java.util.function.Function<Geometry, Evaluator> fa = Evaluators.factory(sa[1]);
+    java.util.function.Function<Geometry, Evaluator> fb = Evaluators.factory(sb[1]);
+    if (openings == null) {
+      openings = "suites/openings-" + rows + "x" + cols + ".txt";
+    }
+    List<int[]> pool = MatchMain.readOpenings(Path.of(openings));
+    Geometry g = new Geometry(rows, cols);
+    Sprt sprt = bounds == null ? new Sprt(0, 10) : new Sprt(bounds[0], bounds[1]);
+    PrintWriter w = out == null ? null : new PrintWriter(Files.newBufferedWriter(Path.of(out), StandardCharsets.UTF_8));
+    int[] reasons = new int[4];
+    double firstScore = 0;
+    int games = 0;
+    long t0 = System.nanoTime();
+    ExecutorService ex = Executors.newFixedThreadPool(threads);
+    try {
+      CompletionService<MatchMain.Result[]> done = new ExecutorCompletionService<>(ex);
+      final long n = nodes;
+      final long sd = seed;
+      for (int p = 0; p < pairs; p++) {
+        int pair = p;
+        done.submit(() -> {
+          int id = (int) ((pair + sd) % pool.size());
+          int[] line = pool.get(id);
+          MatchMain.Result[] r = new MatchMain.Result[2];
+          for (int game = 0; game < 2; game++) {
+            boolean aFirst = game == 0;
+            FastGame.Engine ea = engine(g, oa, fa.apply(g), n);
+            FastGame.Engine eb = engine(g, ob, fb.apply(g), n);
+            FastGame.Outcome o = FastGame.play(g, line, aFirst ? ea : eb, aFirst ? eb : ea, null);
+            int aColour = aFirst ? 1 : 2;
+            int score2 = o.winner() == 0 ? 1 : o.winner() == aColour ? 2 : 0;
+            r[game] = new MatchMain.Result(pair, game, id, g.rows, g.cols, aFirst, score2, o.reason(), o.plies(),
+                0, 0, 0, 0, 0, 0);
+          }
+          return r;
+        });
+      }
+      for (int p = 0; p < pairs; p++) {
+        MatchMain.Result[] r = done.take().get();
+        sprt.add(r[0].scoreA2() + r[1].scoreA2());
+        for (MatchMain.Result x : r) {
+          games++;
+          reasons[switch (x.reason()) {
+            case "six" -> 0;
+            case "blast" -> 1;
+            case "full" -> 2;
+            default -> 3;
+          }]++;
+          firstScore += x.aFirst() ? x.scoreA2() / 2.0 : 1 - x.scoreA2() / 2.0;
+          if (w != null) {
+            w.println(x.json());
+          }
+        }
+        if (bounds != null && sprt.verdict() != Sprt.Verdict.CONTINUE) {
+          break;
+        }
+      }
+    } finally {
+      ex.shutdownNow();
+      if (w != null) {
+        w.close();
+      }
+    }
+    System.out.printf(java.util.Locale.ROOT,
+        "fixed %d nodes: [%s] vs [%s]: %d games, %s%n  decided by six %d, blast %d; draws full %d, cap %d;"
+            + " draw share %.1f%%, first player scores %.1f%%; %.1f min on %d threads%n",
+        nodes, a, b, games, sprt.summary(), reasons[0], reasons[1], reasons[2], reasons[3],
+        100.0 * (reasons[2] + reasons[3]) / games, 100 * firstScore / games, (System.nanoTime() - t0) / 6e10, threads);
+  }
+}
