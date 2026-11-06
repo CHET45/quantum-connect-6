@@ -1,7 +1,7 @@
 """Night 2026-11-05/06: generic eval tables for other line lengths k (the bot has tables only for k = 6).
 
 Per k: spec JSONs (FeatureSpecDump --k), self-play with the hand evaluation (SelfPlayMain --k, gen0), one GPU fit
-(fit_generic on the CPU: no GPU work tonight after the driver error of 14:38), then a fixed-node gate of the new table against
+(fit_generic through qctrain.budget: GPU under the shared lock, CPU fallback), then a fixed-node gate of the new table against
 the hand evaluation (FastMatch --k). The CPU lane runs self-play for the next k while the GPU lane fits the previous one.
 Every stage is skipped when its output exists, so the script can be restarted. Optional second round (--gen1): self-play
 with the gen0 table and a refit on both generations.
@@ -86,8 +86,9 @@ def fit(k, gens, name):
     model = "%s/models/%s" % (ROOTK, name)
     if os.path.exists(model + "/eval.qcw"):
         return model
-    # CPU only: a GPU fit logged an NVIDIA driver error at 14:38 today, and a CPU epoch is about as fast here
-    cmd = [PY, "-m", "qctrain.fit_generic"]
+    # GPU through qctrain.budget (shared lock: one fit at a time; CPU when the watchdog's stop flag exists or another
+    # program computes on the GPU). Aleksandrs closed ChatGPT/Opera for it at 00:50; gpu-watch.ps1 runs alongside.
+    cmd = [PY, "-m", "qctrain.budget", LOCK, PY, "-m", "qctrain.fit_generic"]
     for size in sizes(k):
         dirs = ["%s/k%d/gen%d/%s" % (ROOTK, k, g, size) for g in gens]
         dirs = [d for d in dirs if os.path.exists(d + "/manifest.json")]
@@ -97,7 +98,7 @@ def fit(k, gens, name):
     cmd += ["--k-std", "1.8", "--balance", "--temp", "--wd-base", "1", "--wd-delta", "10", "--lr", "1e-3",
             "--lr-end", "1e-5", "--epochs", "12", "--patience", "4", "--out", model]
     t0 = time.time()
-    env = dict(os.environ, QC_FIT_DEVICE="cpu", OMP_NUM_THREADS="10", CUDA_VISIBLE_DEVICES="")
+    env = {k: v for k, v in os.environ.items() if k not in ("QC_FIT_DEVICE", "CUDA_VISIBLE_DEVICES")}
     rc = run(cmd, "%s/fit-%s.log" % (LOGS, name), cwd=TRAIN, env=env)
     log("fit %s rc %d, %.1f min" % (name, rc, (time.time() - t0) / 60))
     if rc != 0 or not os.path.exists(model + "/eval.qcw"):
@@ -135,9 +136,26 @@ def main():
     ap.add_argument("--positions", type=int, default=300000)
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--gen1", action="store_true")
+    ap.add_argument("--gen2", action="store_true", help="third round only: self-play with the gen1 table, fit gens 1+2")
+    ap.add_argument("--round", type=int, default=0, help="round N only (N >= 2): self-play with gen N-1, fit gens N-1+N")
     a = ap.parse_args()
     ks = [int(x) for x in a.ks.split(",")]
     os.makedirs(LOGS, exist_ok=True)
+    if a.gen2 or a.round >= 2:
+        n = a.round if a.round >= 2 else 2
+        for k in ks:
+            model1 = "%s/models/k%d-g%d" % (ROOTK, k, n - 1)
+            if not os.path.exists(model1 + "/eval.qcw"):
+                continue
+            try:
+                selfplay(k, n, a.positions, a.threads, model1 + "/eval.qcw")
+                model = fit(k, [n - 1, n], "k%d-g%d" % (k, n))
+                gate(k, model, "k%d-g%d" % (k, n))
+                gate(k, model, "k%d-g%d-vs-g%d" % (k, n, n - 1), against="@" + model1 + "/eval.qcw")
+            except Exception as e:  # noqa: BLE001
+                log("gen%d k%d: %s" % (n, k, e))
+        log("done gen%d" % n)
+        return 0
     ready = {k: threading.Event() for k in ks}
     failed = []
 

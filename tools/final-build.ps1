@@ -69,7 +69,7 @@ foreach ($t in $avail) {
 # 2. build + all tests (UploadRulesTest, ConformanceTest, AnnouncedTest, ...)
 $env:JAVA_TOOL_OPTIONS = "-Djdk.net.unixdomain.tmpdir=C:/Users/Chtean45m/.jtmp"
 Push-Location $W
-cmd /c ".\gradlew.bat jar toolsClasses test -q > `"$OUT\$Tag-gradle.log`" 2>&1"
+cmd /c ".\gradlew.bat --no-daemon jar toolsClasses test -q > `"$OUT\$Tag-gradle.log`" 2>&1"
 $rc = $LASTEXITCODE
 Pop-Location
 $tests = 0; $fail = 0; $skip = 0; $skipped = @()
