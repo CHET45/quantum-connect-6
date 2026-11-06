@@ -44,10 +44,13 @@ bin/
 .idea
 
 ### Quantum Connect bot ###
-data/
-results/
+/data/
+/results/
 ladder/
 
 ### Python ###
 __pycache__/
 *.pyc
+
+### engine jar from the organisers' starter kit: not ours to publish ###
+libs/*.jar

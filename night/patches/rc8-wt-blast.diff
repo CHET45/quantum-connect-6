@@ -1,0 +1,1261 @@
+diff --git a/src/main/java/ch/qc/bot/Crop.java b/src/main/java/ch/qc/bot/Crop.java
+index 7c2a9e5..cf2db45 100644
+--- a/src/main/java/ch/qc/bot/Crop.java
++++ b/src/main/java/ch/qc/bot/Crop.java
+@@ -5,6 +5,12 @@ package ch.qc.bot;
+  * out of reach of any line for many plies, and a search over all of them spends its time there. So a dimension beyond
+  * {@link Timing#cropAbove} is modelled only around the discs, as if it were a smaller board. Up to that size the crop is
+  * the whole board and nothing changes. The model always starts at the real floor; only its columns are offset.
++ *
++ * <p>With gaps ({@link Timing#cropGaps}) the model holds only the columns within {@link #GAP_REACH} of some disc: an empty
++ * stretch wider than {@link #GAP_FILL} between two groups of discs is left out, so discs spread over the whole width (an
++ * opponent dropping far away) no longer widen the model by the empty columns between them. No window of the winning
++ * length holds discs on both sides of such a stretch, so the lines through discs are exact; only lines built entirely
++ * from new discs across the cut differ from the real board.
+  */
+ final class Crop {
+   /** Free columns (and rows above the highest disc) that must remain: every window through a disc then lies inside. */
+@@ -17,6 +23,16 @@ final class Crop {
+   private static final int MOVE_FOR_DISCS = 4;
+   /** Above this many cells or {@link QcBot#MAX_SEARCH_COLS} columns there is no model at all. */
+   static final int MAX_CELLS = 65536;
++  /** With gaps: columns kept on each side of a disc when the model is rebuilt (KEEP plus room to grow). */
++  static final int GAP_REACH = KEEP + 2;
++  /** With gaps: empty stretches up to this wide between kept columns are kept too, so a cut always hides more. */
++  static final int GAP_FILL = 4;
++  /**
++   * With gaps level 2: a group of discs (columns at most WIN-1 apart) where neither side has this many discs is left out
++   * while a larger group exists. From this many discs a line of six still needs three more of that side's drops.
++   */
++  static final int GROUP_MIN = 3;
++  private static final int GROUP_SPAN = 5;
+ 
+   final int realRows;
+   final int realCols;
+@@ -24,6 +40,8 @@ final class Crop {
+   final int col0;
+   final int cols;
+   final int rows;
++  /** Real column of each model column, ascending; null when the model columns are contiguous from col0. */
++  private final int[] map;
+ 
+   private Crop(int realRows, int realCols, int col0, int cols, int rows) {
+     this.realRows = realRows;
+@@ -31,6 +49,36 @@ final class Crop {
+     this.col0 = col0;
+     this.cols = cols;
+     this.rows = rows;
++    this.map = null;
++  }
++
++  private Crop(int realRows, int realCols, int[] map, int rows) {
++    this.realRows = realRows;
++    this.realCols = realCols;
++    this.col0 = map[0];
++    this.cols = map.length;
++    this.rows = rows;
++    this.map = map;
++  }
++
++  /** Real column of model column m. */
++  int real(int m) {
++    return map == null ? col0 + m : map[m];
++  }
++
++  /** Model column of a real column, -1 if the model leaves it out. */
++  int model(int realCol) {
++    if (map == null) {
++      int m = realCol - col0;
++      return m >= 0 && m < cols ? m : -1;
++    }
++    int m = java.util.Arrays.binarySearch(map, realCol);
++    return m >= 0 ? m : -1;
++  }
++
++  /** True if some empty stretch of real columns is left out between model columns. */
++  boolean hasGaps() {
++    return map != null && map[map.length - 1] - map[0] + 1 != map.length;
+   }
+ 
+   /** The crop before any disc is known, around the centre column the bot opens in; null if it cannot be modelled. */
+@@ -59,6 +107,18 @@ final class Crop {
+    * to use now; null if the position cannot be modelled.
+    */
+   Crop refit(byte[] cells, int above) {
++    return refit(cells, above, 0);
++  }
++
++  /** As {@link #refit(byte[], int)}; gaps 1 or 2 ({@link Timing#cropGaps}) leave out columns of a cropped dimension. */
++  Crop refit(byte[] cells, int above, boolean gaps) {
++    return refit(cells, above, gaps ? 1 : 0);
++  }
++
++  Crop refit(byte[] cells, int above, int gaps) {
++    if (gaps > 0 && realCols > above) {
++      return refitGaps(cells, above, gaps >= 2);
++    }
+     boolean cropCols = realCols > above;
+     boolean cropRows = realRows > above;
+     if (!cropCols && !cropRows) {
+@@ -108,6 +168,160 @@ final class Crop {
+     return checked(realRows, realCols, newCol0, newCols, newRows);
+   }
+ 
++  private Crop refitGaps(byte[] cells, int above, boolean dropSmall) {
++    boolean cropRows = realRows > above;
++    boolean[] occupied = new boolean[realCols];
++    int top = 0;
++    int discs = 0;
++    for (int c = 0; c < realCols; c++) {
++      int at = c * realRows;
++      int h = 0;
++      while (h < realRows && cells[at + h] != 0) {
++        h++;
++      }
++      occupied[c] = h > 0;
++      discs += h > 0 ? 1 : 0;
++      top = Math.max(top, h);
++    }
++    if (discs == 0) {
++      return this;
++    }
++    if (dropSmall) {
++      dropSmallGroups(cells, occupied);
++    }
++    int newRows = cropRows ? fitRows(top) : realRows;
++    int[] want = gapMap(occupied, realCols);
++    if (want.length > MAX_COLS) {
++      // too spread even with gaps: the densest stretch, as without them
++      return refit(cells, above, 0);
++    }
++    boolean keep = covers(occupied) && 2 * want.length > cols;
++    if (keep && newRows == rows) {
++      return this;
++    }
++    if (keep) {
++      return map == null ? checked(realRows, realCols, col0, cols, newRows) : checkedMap(map, newRows);
++    }
++    if (isContiguous(want)) {
++      return checked(realRows, realCols, want[0], want.length, newRows);
++    }
++    return checkedMap(want, newRows);
++  }
++
++  /** Clears the columns of groups where neither side has GROUP_MIN discs, if some group has; tops stay as they are. */
++  private void dropSmallGroups(byte[] cells, boolean[] occupied) {
++    int n = occupied.length;
++    int[] start = new int[n];
++    int[] end = new int[n];
++    boolean[] big = new boolean[n];
++    int groups = 0;
++    boolean anyBig = false;
++    int c = 0;
++    while (c < n) {
++      if (!occupied[c]) {
++        c++;
++        continue;
++      }
++      int lo = c;
++      int hi = c;
++      int last = c;
++      int first = 0;
++      int second = 0;
++      for (int x = c; x < n && x - last <= GROUP_SPAN; x++) {
++        if (occupied[x]) {
++          last = x;
++          hi = x;
++          for (int y = 0; y < realRows; y++) {
++            byte v = cells[x * realRows + y];
++            if (v == 0) {
++              break;
++            }
++            if (v == 1) {
++              first++;
++            } else {
++              second++;
++            }
++          }
++        }
++      }
++      start[groups] = lo;
++      end[groups] = hi;
++      big[groups] = Math.max(first, second) >= GROUP_MIN;
++      anyBig |= big[groups];
++      groups++;
++      c = hi + 1;
++    }
++    if (!anyBig) {
++      return;
++    }
++    for (int g = 0; g < groups; g++) {
++      if (!big[g]) {
++        for (int x = start[g]; x <= end[g]; x++) {
++          occupied[x] = false;
++        }
++      }
++    }
++  }
++
++  private Crop checkedMap(int[] m, int newRows) {
++    boolean fits = m.length <= QcBot.MAX_SEARCH_COLS && (long) newRows * m.length <= MAX_CELLS;
++    return fits ? new Crop(realRows, realCols, m, newRows) : null;
++  }
++
++  private static boolean isContiguous(int[] m) {
++    return m[m.length - 1] - m[0] + 1 == m.length;
++  }
++
++  /** True if every real column within KEEP of a disc is in this model, next to its real neighbours. */
++  private boolean covers(boolean[] occupied) {
++    for (int c = 0; c < realCols; c++) {
++      if (!occupied[c]) {
++        continue;
++      }
++      int lo = Math.max(0, c - KEEP);
++      int hi = Math.min(realCols - 1, c + KEEP);
++      int m = model(lo);
++      if (m < 0 || m + (hi - lo) >= cols || real(m + (hi - lo)) != hi) {
++        return false;
++      }
++    }
++    return true;
++  }
++
++  /** The columns within GAP_REACH of a disc, with empty stretches up to GAP_FILL wide between them filled in. */
++  static int[] gapMap(boolean[] occupied, int realCols) {
++    boolean[] keep = new boolean[realCols];
++    for (int c = 0; c < realCols; c++) {
++      if (occupied[c]) {
++        for (int x = Math.max(0, c - GAP_REACH); x <= Math.min(realCols - 1, c + GAP_REACH); x++) {
++          keep[x] = true;
++        }
++      }
++    }
++    int last = -1;
++    int n = 0;
++    for (int c = 0; c < realCols; c++) {
++      if (keep[c]) {
++        if (last >= 0 && c - last - 1 <= GAP_FILL) {
++          for (int x = last + 1; x < c; x++) {
++            keep[x] = true;
++            n++;
++          }
++        }
++        last = c;
++        n++;
++      }
++    }
++    int[] m = new int[n];
++    int i = 0;
++    for (int c = 0; c < realCols; c++) {
++      if (keep[c]) {
++        m[i++] = c;
++      }
++    }
++    return m;
++  }
++
+   private int fitRows(int top) {
+     if (top + KEEP <= rows && 2 * (top + GROW) > rows) {
+       return rows;
+@@ -151,7 +365,7 @@ final class Crop {
+     }
+     byte[] out = new byte[rows * cols];
+     for (int m = 0; m < cols; m++) {
+-      int from = (col0 + m) * realRows;
++      int from = real(m) * realRows;
+       int to = m * rows;
+       for (int y = 0; y < rows; y++) {
+         out[to + y] = real[from + y];
+diff --git a/src/main/java/ch/qc/bot/QcBot.java b/src/main/java/ch/qc/bot/QcBot.java
+index 73ef964..32acd2f 100644
+--- a/src/main/java/ch/qc/bot/QcBot.java
++++ b/src/main/java/ch/qc/bot/QcBot.java
+@@ -63,6 +63,9 @@ public final class QcBot implements Algorithm {
+   private static final int FORFEITS_TO_MEASURE = 2;
+   /** Budget of the fallback tactics. */
+   static final long TACTICS_NANOS = 10_000_000L;
++  /** A far drop ({@link Timing#wideTurns}) only while the search score is within this, and this far from any disc. */
++  private static final int WIDE_QUIET = 150;
++  private static final int WIDE_ROOM = 20;
+ 
+   private final TurnTracker tracker = new TurnTracker();
+   private final MatchClock clock = new MatchClock();
+@@ -88,9 +91,13 @@ public final class QcBot implements Algorithm {
+   private Searcher searcher;
+   /** The part of the board that geometry and searcher cover; set last, so a set crop means a usable model. */
+   private volatile Crop crop;
+-  /** Added to the column of what {@link #choose} returns to get the real column. */
++  /** Added to the column of what {@link #choose} returns to get the real column, when no crop was used. */
+   private int moveOffset;
+-  private int searchedOffset;
++  /** The crop that what {@link #choose} returns is a column of; null when none was used. */
++  private Crop moveCrop;
++  private Crop searchedCrop;
++  /** Far drops played this game ({@link Timing#wideTurns}). */
++  private int widePlayed;
+   private int calls;
+   private volatile Decision decision;
+   private volatile long firstCallStart;
+@@ -170,6 +177,7 @@ public final class QcBot implements Algorithm {
+     tracker.beginTurn(s);
+     clock.beginTurn(t0, tracker.turn(), tracker.plyIndex());
+     if (tracker.turn() == 1) {
++      widePlayed = 0;
+       lastScore = 0;
+       stall = 0;
+       forfeitsMeasured = 0;
+@@ -177,7 +185,7 @@ public final class QcBot implements Algorithm {
+       noteOpponentTurn(t0 - lastReturn);
+     }
+     int move = choose(s, t0);
+-    int col = move == Tactics.NONE ? -1 : Tactics.column(move) + moveOffset;
++    int col = move == Tactics.NONE ? -1 : realColumn(Tactics.column(move));
+     boolean special = move != Tactics.NONE && Tactics.isSpecial(move);
+     if (col < 0 || col >= s.cols || field.isColumnFull(col)) {
+       col = safeColumn(field);
+@@ -187,8 +195,9 @@ public final class QcBot implements Algorithm {
+     if (special && !inTime && lastResult != null) {
+       // too late to ask for the blast: play the best drop, not a drop in the blast's column
+       int drop = searcher.lastBestDrop();
+-      if (drop != Tactics.NONE && !field.isColumnFull(Tactics.column(drop) + moveOffset)) {
+-        col = Tactics.column(drop) + moveOffset;
++      int dropCol = drop == Tactics.NONE ? -1 : realColumn(Tactics.column(drop));
++      if (dropCol >= 0 && dropCol < s.cols && !field.isColumnFull(dropCol)) {
++        col = dropCol;
+         special = false;
+       }
+     }
+@@ -196,6 +205,15 @@ public final class QcBot implements Algorithm {
+     return col;
+   }
+ 
++  /** The real column of a column of what {@link #choose} returned; -1 if there is none. */
++  private int realColumn(int modelCol) {
++    Crop c = moveCrop;
++    if (c == null) {
++      return modelCol + moveOffset;
++    }
++    return modelCol >= 0 && modelCol < c.cols ? c.real(modelCol) : -1;
++  }
++
+   @Override
+   public boolean useSpecialMove(QuantumField field) {
+     boolean special = secondCall(field);
+@@ -301,7 +319,7 @@ public final class QcBot implements Algorithm {
+     Board b = searchedBoard;
+     searchedBoard = null;
+     lastPonder = null;
+-    int modelCol = col - searchedOffset;
++    int modelCol = searchedCrop == null ? -1 : searchedCrop.model(col);
+     if (timing.ponderNanos <= 0 || tracker.turn() <= timing.ponderFromTurn || b == null || modelCol < 0
+         || modelCol >= b.g.cols || b.isFull(modelCol)
+         || !clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
+@@ -370,6 +388,7 @@ public final class QcBot implements Algorithm {
+     lastResult = null;
+     searchedBoard = null;
+     moveOffset = 0;
++    moveCrop = null;
+     if (s.rows < 1 || s.cols < 1) {
+       return Tactics.NONE;
+     }
+@@ -381,7 +400,7 @@ public final class QcBot implements Algorithm {
+     if (building || crop == null || !crop.isFor(s.rows, s.cols)) {
+       return Tactics.NONE;
+     }
+-    Crop c = crop.refit(s.cells, timing.cropAbove);
++    Crop c = crop.refit(s.cells, timing.cropAbove, timing.cropGaps);
+     if (c == null) {
+       return Tactics.NONE;
+     }
+@@ -393,7 +412,7 @@ public final class QcBot implements Algorithm {
+     if (!board.load(c.cut(s.cells))) {
+       return Tactics.NONE;
+     }
+-    moveOffset = c.col0;
++    moveCrop = c;
+     // on an empty board the colour is unknown, but then nothing depends on it
+     int me = tracker.myColour() != 0 ? tracker.myColour() : tracker.iAmFirst() ? Board.FIRST : Board.SECOND;
+     int cdMe = tracker.myCooldownCounter();
+@@ -407,9 +426,17 @@ public final class QcBot implements Algorithm {
+       lastResult = r;
+       noteStall(searcher.lastMaxGapNanos());
+       if (r.move() != Tactics.NONE) {
++        int far = wideDrop(s, r);
++        if (far >= 0) {
++          widePlayed++;
++          lastScore = r.score();
++          moveCrop = null;
++          moveOffset = far;
++          return 0;
++        }
+         lastScore = r.score();
+         searchedBoard = board;
+-        searchedOffset = c.col0;
++        searchedCrop = c;
+         searchedMe = me;
+         searchedCdMe = cdMe;
+         searchedCdOpp = cdOpp;
+@@ -421,6 +448,35 @@ public final class QcBot implements Algorithm {
+     return new Tactics(geometry).choose(board, me, cdMe, cdOpp, Clock.nanos() + Math.min(TACTICS_NANOS, limit.nanos() / 10));
+   }
+ 
++  /**
++   * A free column near the edge farthest from all discs, if this quiet early turn should drop there instead
++   * ({@link Timing#wideTurns}); -1 if not.
++   */
++  private int wideDrop(Snapshot s, Searcher.Result r) {
++    if (widePlayed >= timing.wideTurns || s.cols <= timing.cropAbove || tracker.turn() < 2
++        || Tactics.isSpecial(r.move()) || Math.abs(r.score()) >= WIDE_QUIET) {
++      return -1;
++    }
++    int lo = s.cols;
++    int hi = -1;
++    for (int c = 0; c < s.cols; c++) {
++      if (s.cells[c * s.rows] != 0) {
++        lo = Math.min(lo, c);
++        hi = c;
++      }
++    }
++    if (hi < 0) {
++      return -1;
++    }
++    boolean left = lo > s.cols - 1 - hi;
++    int room = left ? lo : s.cols - 1 - hi;
++    if (room < WIDE_ROOM) {
++      return -1;
++    }
++    int col = left ? 1 : s.cols - 2;
++    return s.cells[col * s.rows + s.rows - 1] == 0 ? col : -1;
++  }
++
+   /** The first-call stop on this turn: by own turn and call limit, less the stalls seen lately; a lost turn is one. */
+   private long stopNow() {
+     int turn = tracker.turn() - 1;
+@@ -441,6 +497,10 @@ public final class QcBot implements Algorithm {
+     if (!limit.known()) {
+       stop = Math.min(stop, UNPROBED_STOP_NANOS);
+     }
++    long lostCap = timing.lostCap(tracker.ownForfeits());
++    if (lostCap != Long.MAX_VALUE) {
++      stop = Math.min(stop, Math.max(min, limit.scaled(lostCap, MIN_STOP_PERCENT)));
++    }
+     return Math.min(stop, clock.turnCap() / 5 * 3);
+   }
+ 
+diff --git a/src/main/java/ch/qc/bot/Timing.java b/src/main/java/ch/qc/bot/Timing.java
+index de6bdd0..1ccbfa0 100644
+--- a/src/main/java/ch/qc/bot/Timing.java
++++ b/src/main/java/ch/qc/bot/Timing.java
+@@ -19,6 +19,27 @@ public final class Timing {
+   /** A board dimension above this is modelled only around the discs ({@link Crop}). */
+   private static final int CROP_ABOVE = 40;
+ 
++  /**
++   * One-line switch for a cropped dimension ({@link Crop}): 0 contiguous, 1 leaves out empty stretches between groups of
++   * discs, 2 also leaves out far groups too small to make a line soon.
++   */
++  private static final int CROP_GAPS = 2;
++
++  /**
++   * One-line switch: the first-call stop after one and after two own lost turns in the game (0 for no cap). A lost turn on
++   * a slow server comes from time the bot cannot see (its thread starts late or is frozen), so the remembered stall fades
++   * too fast to keep the next one away.
++   */
++  private static final long LOST_CAP_ONE = 0L;
++  private static final long LOST_CAP_TWO = 0L;
++
++  /**
++   * One-line switch: on a board wider than {@link #CROP_ABOVE}, this many quiet own turns early in the game drop a disc
++   * far from all others, near an edge. A bot that models one stretch from the leftmost to the rightmost disc then has to
++   * search a much wider board; this bot's own gap crop leaves such single discs out. 0 for none.
++   */
++  private static final int WIDE_TURNS = 0;
++
+   public static final Timing DEFAULT = CONSTRUCTOR_WARMUP_NANOS > 0
+       ? new Timing(new int[] {10, Integer.MAX_VALUE}, new long[] {60 * MS, 80 * MS}, 80 * MS,
+           CONSTRUCTOR_WARMUP_NANOS, 96 * MS, 85, 100, 10, false, 55 * MS, 60 * MS, CROP_ABOVE)
+@@ -55,10 +76,25 @@ public final class Timing {
+   final long safeFinishNanos;
+   /** See {@link Crop}. */
+   final int cropAbove;
++  /** See {@link #CROP_GAPS} and {@link Crop#refit}. */
++  final int cropGaps;
++  /** See {@link #LOST_CAP_ONE}. */
++  final long lostCapOneNanos;
++  final long lostCapTwoNanos;
++  /** See {@link #WIDE_TURNS}. */
++  final int wideTurns;
+ 
+   Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
+       int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
+       long safeFinishNanos, int cropAbove) {
++    this(untilTurn, stopNanos, ponderNanos, warmupNanos, stallLimitNanos, stallDecayPercent, stallWeightPercent,
++        ponderFromTurn, probeUpward, blastStopNanos, safeFinishNanos, cropAbove, CROP_GAPS, LOST_CAP_ONE, LOST_CAP_TWO,
++        WIDE_TURNS);
++  }
++
++  Timing(int[] untilTurn, long[] stopNanos, long ponderNanos, long warmupNanos, long stallLimitNanos,
++      int stallDecayPercent, int stallWeightPercent, int ponderFromTurn, boolean probeUpward, long blastStopNanos,
++      long safeFinishNanos, int cropAbove, int cropGaps, long lostCapOneNanos, long lostCapTwoNanos, int wideTurns) {
+     this.untilTurn = untilTurn;
+     this.stopNanos = stopNanos;
+     this.ponderNanos = ponderNanos;
+@@ -71,6 +107,16 @@ public final class Timing {
+     this.blastStopNanos = blastStopNanos;
+     this.safeFinishNanos = safeFinishNanos;
+     this.cropAbove = cropAbove;
++    this.cropGaps = cropGaps;
++    this.lostCapOneNanos = lostCapOneNanos;
++    this.lostCapTwoNanos = lostCapTwoNanos;
++    this.wideTurns = wideTurns;
++  }
++
++  /** The cap on the first-call stop after this many own lost turns in the game; Long.MAX_VALUE for none. */
++  long lostCap(int ownLost) {
++    long cap = ownLost >= 2 && lostCapTwoNanos > 0 ? lostCapTwoNanos : ownLost >= 1 ? lostCapOneNanos : 0L;
++    return cap > 0 ? cap : Long.MAX_VALUE;
+   }
+ 
+   /** Stop of the first call on this own turn (0-based). */
+@@ -87,7 +133,8 @@ public final class Timing {
+    * Harness only: "s=55@10/65@30/80,p=85,w=1000,g=96@85@100,up=1,b=70@75". s: first-call stop in ms, each until an own
+    * turn, the last for all others. p: second-call search. w: warm-up. g=LIMIT@DECAY@WEIGHT: the stall sensor. pf=N: no
+    * second-call search on own turns below N. up=1: {@link #probeUpward}. b=STOP@FINISH: blast limits. crop=N:
+-   * {@link #cropAbove}. Anything not named
++   * {@link #cropAbove}. gap=0|1|2: {@link #cropGaps}. lc=ONE@TWO: {@link #LOST_CAP_ONE} in ms. wide=N:
++   * {@link #WIDE_TURNS}. Anything not named
+    * keeps the value of {@link #DEFAULT}.
+    */
+   public static Timing parse(String spec) {
+@@ -104,6 +151,10 @@ public final class Timing {
+     long blastStop = d.blastStopNanos;
+     long safeFinish = d.safeFinishNanos;
+     int cropAbove = d.cropAbove;
++    int cropGaps = d.cropGaps;
++    long lostOne = d.lostCapOneNanos;
++    long lostTwo = d.lostCapTwoNanos;
++    int wide = d.wideTurns;
+     for (String part : spec.split(",")) {
+       int eq = part.indexOf('=');
+       if (eq < 0) {
+@@ -132,6 +183,14 @@ public final class Timing {
+         safeFinish = MS * Long.parseLong(value.substring(at + 1));
+       } else if (key.equals("crop")) {
+         cropAbove = Integer.parseInt(value);
++      } else if (key.equals("gap")) {
++        cropGaps = Integer.parseInt(value);
++      } else if (key.equals("wide")) {
++        wide = Integer.parseInt(value);
++      } else if (key.equals("lc")) {
++        int at = value.indexOf('@');
++        lostOne = MS * Long.parseLong(at < 0 ? value : value.substring(0, at));
++        lostTwo = at < 0 ? lostOne : MS * Long.parseLong(value.substring(at + 1));
+       } else if (key.equals("pf")) {
+         ponderFrom = Integer.parseInt(value);
+       } else if (key.equals("g")) {
+@@ -141,6 +200,7 @@ public final class Timing {
+         weight = Integer.parseInt(g[2]);
+       }
+     }
+-    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish, cropAbove);
++    return new Timing(until, stop, ponder, warm, stall, decay, weight, ponderFrom, up, blastStop, safeFinish, cropAbove,
++        cropGaps, lostOne, lostTwo, wide);
+   }
+ }
+diff --git a/src/main/java/ch/qc/bot/rules/Board.java b/src/main/java/ch/qc/bot/rules/Board.java
+index 05ad487..6f2ca62 100644
+--- a/src/main/java/ch/qc/bot/rules/Board.java
++++ b/src/main/java/ch/qc/bot/rules/Board.java
+@@ -381,6 +381,20 @@ public final class Board {
+         || (col + 1 < cols && height[col + 1] >= h + 3 && fallingLine(col + 1, 1, h));
+   }
+ 
++  /**
++   * {@link #anyBlastWins} for a position reached by a drop in column c from one where no blast won: a blast's test in
++   * a column reads only the columns within K of it, so only those near c can have changed.
++   */
++  public boolean anyBlastWinsNear(int c) {
++    int hi = Math.min(cols - 1, c + k);
++    for (int col = Math.max(0, c - k); col <= hi; col++) {
++      if (blastWins(col)) {
++        return true;
++      }
++    }
++    return false;
++  }
++
+   /** True if a blast in some column would win (see {@link #blastWins}). */
+   public boolean anyBlastWins() {
+     int last = cols - 1;
+diff --git a/src/main/java/ch/qc/bot/search/Searcher.java b/src/main/java/ch/qc/bot/search/Searcher.java
+index 2f1029e..b621deb 100644
+--- a/src/main/java/ch/qc/bot/search/Searcher.java
++++ b/src/main/java/ch/qc/bot/search/Searcher.java
+@@ -185,7 +185,24 @@ public final class Searcher {
+     /** Collect cut and node statistics into {@link Result#stats()} (bench only). */
+     public boolean trace;
+     public boolean audit;
+-    public boolean forcedExt;
++    public boolean forcedExt = true;
++    /**
++     * The opponent's blast is ready and some blast wins now: the side to move must break it this ply. blastQs treats
++     * such a node like a single drop threat: a leaf gets one more ply and no drop is reduced or razored there.
++     * blastExt also extends such an inner node by one ply.
++     */
++    public boolean blastQs = true;
++    public boolean blastExt;
++    /**
++     * With blastQs, at depth 1 or less: the opponent's ready blast that removes one of our discs and leaves it two
++     * playable threats (we having none and no blast of our own) also makes the node forced, like a blast that wins.
++     */
++    public boolean blastDbl;
++    /**
++     * Threat search attacker may play a ready blast that breaks a block and leaves it a threat (Vcf.attackerBlasts):
++     * 0 off, 1 in the root threat searches only (our VCF and the opponent's VCF check), 2 in every threat search.
++     */
++    public int vcfBlast;
+     public int lmrDepth = 3;
+     public int lmrTact = 2;
+     public int lmrRoot;
+@@ -193,7 +210,7 @@ public final class Searcher {
+     public int lmp;
+     public int nullR;
+     public int blastGenDepth = 3;
+-    public boolean partial;
++    public boolean partial = true;
+     public int nodeVcf;
+     public int nodeVcfNodes = 200;
+     /** The root threat searches get at most 1/rootVcfShare and 1/oppVcfShare of the budget of the call. */
+@@ -206,6 +223,10 @@ public final class Searcher {
+       trace = o.trace;
+       audit = o.audit;
+       forcedExt = o.forcedExt;
++      blastQs = o.blastQs;
++      blastExt = o.blastExt;
++      blastDbl = o.blastDbl;
++      vcfBlast = o.vcfBlast;
+       lmrDepth = o.lmrDepth;
+       lmrTact = o.lmrTact;
+       lmrRoot = o.lmrRoot;
+@@ -333,6 +354,10 @@ public final class Searcher {
+     final Vcf leafVcf;
+     /** Bench counters. */
+     final long[] stats = new long[256];
++    /** Cache of Board.anyBlastWins by board hash: (hash & ~1) | result; 0 is empty. Kept across calls. */
++    final long[] abwCache = new long[1 << ABW_BITS];
++    /** anyBlastWins of the node at each ply (-1 unknown, 0 no, 1 yes), read by its children. */
++    final int[] abwAt = new int[MAX_PLY + 2];
+ 
+     Ctx(Geometry g, Options options, Vcf.Table vcfTable, int token, long deadline, long maxNodes, int turnBase) {
+       this.g = g;
+@@ -535,6 +560,7 @@ public final class Searcher {
+ 
+     long hardDeadline = startNanos + hardNanos;
+     long budgetMs = Math.max(1, Math.min(Math.min(hardNanos / 1_000_000L, maxNodes / NODES_PER_MS), MAX_BUDGET_MS));
++    x.vcf.attackerBlasts = options.vcfBlast >= 1;
+     if (options.rootVcf) {
+       int m = x.vcf.attack(root, me, cdMe, cdOpp, ROOT_VCF_MOVES, turnIndex,
+           Math.min(hardDeadline, Clock.nanos() + hardNanos / options.rootVcfShare), budgetMs * ROOT_VCF_NODES_PER_MS);
+@@ -546,8 +572,11 @@ public final class Searcher {
+       n = dropMovesLosingToVcf(x, root, me, cdMe, cdOpp, turnIndex, moves, scores, n,
+           Math.min(hardDeadline, Clock.nanos() + hardNanos / options.oppVcfShare), budgetMs);
+     }
++    x.vcf.attackerBlasts = options.vcfBlast >= 2;
++    x.leafVcf.attackerBlasts = options.vcfBlast >= 2;
+ 
+     x.lastPoll = Clock.nanos();
++    x.abwAt[0] = -1;
+     int best = moves[0];
+     int bestScore = -INF;
+     int completed = 0;
+@@ -752,8 +781,13 @@ public final class Searcher {
+     }
+     boolean ready = cdStm >= COOLDOWN;
+     boolean leafBlast = options.blastWinMinDepth <= 0;
+-    if (ready && depth >= Math.max(1, options.blastWinMinDepth) && b.anyBlastWins()) {
+-      return MATE - ply - 1;
++    // anyBlastWins does not depend on the side to move: computed at most once per node (-1 not yet, 0 no, 1 yes)
++    int abw = -1;
++    if (ready && depth >= Math.max(1, options.blastWinMinDepth)) {
++      abw = anyBlastWins(x, b, ply) ? 1 : 0;
++      if (abw == 1) {
++        return MATE - ply - 1;
++      }
+     }
+     if (oppThreats >= 2 && !ready) {
+       return -(MATE - ply - 2);
+@@ -767,8 +801,16 @@ public final class Searcher {
+       return alpha;
+     }
+     boolean forced = oppThreats == 1;
++    // the opponent wins with a blast next ply unless this move breaks it (a ready side to move has already won above)
++    if (options.blastQs && cdOpp >= COOLDOWN && abw < 0) {
++      abw = anyBlastWins(x, b, ply) ? 1 : 0;
++    }
++    boolean oppBlast = options.blastQs && cdOpp >= COOLDOWN
++        && (abw == 1 || (options.blastDbl && depth <= 1 && !ready && oppThreats == 0
++            && blastLeavesDouble(x, b, stm, ply)));
++    x.abwAt[ply] = abw;
+     if (depth <= 0 || ply >= MAX_PLY - 2) {
+-      if (!forced || ply >= MAX_PLY - 2) {
++      if ((!forced && !oppBlast) || ply >= MAX_PLY - 2) {
+         if (leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0) {
+           int v = leafProof(x, b, stm, cdStm, cdOpp, ply);
+           if (v != 0) {
+@@ -780,17 +822,17 @@ public final class Searcher {
+         }
+         int v = eval.evaluate(b, stm, cdStm, cdOpp);
+         // the scan can only raise the value, so a leaf already at beta needs none
+-        return leafBlast && ready && v < beta && b.anyBlastWins() ? MATE - ply - 1 : v;
++        return leafBlast && ready && v < beta && (abw >= 0 ? abw == 1 : anyBlastWins(x, b, ply)) ? MATE - ply - 1 : v;
+       } else {
+-        if (leafBlast && ready && b.anyBlastWins()) {
++        if (leafBlast && ready && (abw >= 0 ? abw == 1 : anyBlastWins(x, b, ply))) {
+           return MATE - ply - 1;
+         }
+         depth = 1;
+       }
+-    } else if (forced && options.forcedExt) {
++    } else if ((forced && options.forcedExt) || (oppBlast && options.blastExt)) {
+       depth++;
+     }
+-    if (options.razor && !pv && !forced && depth <= 2) {
++    if (options.razor && !pv && !forced && !oppBlast && depth <= 2) {
+       int ev = eval.evaluate(b, stm, cdStm, cdOpp);
+       if (ev + RAZOR_MARGIN[depth] < alpha) {
+         int v = leafVcf && cdOpp < COOLDOWN && b.live3(stm) > 0 ? leafProof(x, b, stm, cdStm, cdOpp, ply) : 0;
+@@ -830,7 +872,7 @@ public final class Searcher {
+         return v;
+       }
+     }
+-    if (options.nullR > 0 && !pv && !forced && oppThreats == 0 && depth >= 3 && cdOpp < COOLDOWN
++    if (options.nullR > 0 && !pv && !forced && !oppBlast && oppThreats == 0 && depth >= 3 && cdOpp < COOLDOWN
+         && Math.abs(beta) < MATE_BOUND) {
+       int staticEval = eval.evaluate(b, stm, cdStm, cdOpp);
+       x.nodes++;
+@@ -940,7 +982,7 @@ public final class Searcher {
+         x.stats[10]++;
+         x.stats[9] += Tactics.isSpecial(m) ? 1 : 0;
+       }
+-      boolean quietLate = !pv && !forced && oppThreats == 0 && i > 0 && tactic[i] == 0 && !Tactics.isSpecial(m)
++      boolean quietLate = !pv && !forced && !oppBlast && oppThreats == 0 && i > 0 && tactic[i] == 0 && !Tactics.isSpecial(m)
+           && best > -MATE_BOUND;
+       if (quietLate && options.lmp > 0 && depth <= 2 && i >= options.lmp * depth) {
+         if (options.trace) {
+@@ -954,8 +996,8 @@ public final class Searcher {
+         int feat = options.audit ? auditFeatures(b, c, cell, stm, prevCell, x) : 0;
+         boolean win = b.make(c, stm);
+         int lmr = options.lmrFrom;
+-        int red = lmr > 0 && oppThreats == 0 && !win && i >= (pv ? 2 * lmr : lmr) && depth >= options.lmrDepth
+-            && tactic[i] == 0 ? 2 : 0;
++        int red = lmr > 0 && oppThreats == 0 && !oppBlast && !win && i >= (pv ? 2 * lmr : lmr)
++            && depth >= options.lmrDepth && tactic[i] == 0 ? 2 : 0;
+         if (win) {
+           s = MATE - ply - 1;
+         } else if (b.topRowFull()) {
+@@ -1033,7 +1075,78 @@ public final class Searcher {
+     return best;
+   }
+ 
++  /**
++   * True if a blast of the opponent of stm, in a column whose cleared block holds a disc of stm, leaves the opponent at
++   * least two threats (playable, or one right above a playable one) while stm has none: stm, not ready, then loses. A search heuristic only (it widens the
++   * search, it never sets a score), so blasts that clear only the opponent's discs are skipped for speed.
++   */
++  private boolean blastLeavesDouble(Ctx x, Board b, int stm, int ply) {
++    int opp = 3 - stm;
++    Board t = null;
++    for (int c = 0; c < g.cols; c++) {
++      int h = b.height(c);
++      if (h >= g.rows) {
++        continue;
++      }
++      boolean ours = false;
++      for (int cc = Math.max(c - 1, 0); cc <= Math.min(c + 1, g.cols - 1) && !ours; cc++) {
++        int top = b.height(cc);
++        for (int y = Math.max(h - 1, 0); y <= Math.min(h + 1, top - 1); y++) {
++          if (b.cell(cc, y) == stm) {
++            ours = true;
++            break;
++          }
++        }
++      }
++      if (!ours) {
++        continue;
++      }
++      if (t == null) {
++        t = x.pool(ply);
++      }
++      t.copyFrom(b);
++      x.nodes++;
++      if (t.blast(c)) {
++        return true;
++      }
++      int theirs = 0;
++      boolean mine = false;
++      for (int cc = t.nextThreatColumn(0); cc >= 0 && !mine; cc = t.nextThreatColumn(cc + 1)) {
++        int cell = g.index(cc, t.height(cc));
++        mine = t.threats(stm, cell) > 0;
++        if (t.threats(opp, cell) > 0) {
++          // a threat right above a playable one is a second threat: blocking the first gives the opponent the second
++          theirs += t.height(cc) + 1 < g.rows && t.threats(opp, cell + 1) > 0 ? 2 : 1;
++        }
++      }
++      if (!mine && theirs >= 2) {
++        return true;
++      }
++    }
++    return false;
++  }
++
+   /** Draw score for the side to move at a node of this ply (the searching colour moves at even plies). */
++  private static final int ABW_BITS = 15;
++
++  /**
++   * Board.anyBlastWins through the context's cache: the answer depends on the discs only, and iterative deepening
++   * and re-searches visit the same positions again.
++   */
++  private boolean anyBlastWins(Ctx x, Board b, int ply) {
++    long h = b.hash();
++    int i = (int) (h ^ (h >>> 29)) & ((1 << ABW_BITS) - 1);
++    long e = x.abwCache[i];
++    if (e != 0 && (e | 1L) == (h | 1L)) {
++      return (e & 1L) != 0;
++    }
++    // reached by a drop from a node where no blast won: only the columns near the drop can have changed
++    int prev = ply > 0 ? x.prevCell[ply - 1] : -1;
++    boolean w = prev >= 0 && x.abwAt[ply - 1] == 0 ? b.anyBlastWinsNear(prev / g.rows) : b.anyBlastWins();
++    x.abwCache[i] = (h & ~1L) | (w ? 1L : 0L);
++    return w;
++  }
++
+   private int draw(int ply) {
+     return (ply & 1) == 0 ? -options.contempt : options.contempt;
+   }
+diff --git a/src/main/java/ch/qc/bot/search/Vcf.java b/src/main/java/ch/qc/bot/search/Vcf.java
+index f07920d..53df75f 100644
+--- a/src/main/java/ch/qc/bot/search/Vcf.java
++++ b/src/main/java/ch/qc/bot/search/Vcf.java
+@@ -47,6 +47,13 @@ public final class Vcf {
+   }
+ 
+   private static final long TENTATIVE_KEY = 0x7E47A71BE5EEDL;
++  private static final long BLAST_KEY = 0x3B1A57A77ACCL;
++
++  /**
++   * The attacker may also play a ready blast that does not win at once but leaves it a playable threat and the
++   * defender none (a blast that breaks a block). Its results use separate table keys.
++   */
++  public boolean attackerBlasts;
+ 
+   private final Geometry g;
+   private final Table table;
+@@ -142,6 +149,9 @@ public final class Vcf {
+     if (!exact) {
+       key ^= TENTATIVE_KEY;
+     }
++    if (attackerBlasts) {
++      key ^= BLAST_KEY;
++    }
+     if (MAX_TURNS - turnBase < 4 * MAX_VPLY) {
+       key ^= (long) (MAX_TURNS - turnBase - vply) * 0x9E3779B97F4A7C15L;
+     }
+@@ -183,6 +193,30 @@ public final class Vcf {
+         return false;
+       }
+     }
++    if (attackerBlasts && cdA >= COOLDOWN) {
++      // on a copy, like the defender's blasts; a blast that wins at once was found above
++      Board r = pool(vply);
++      for (int i = 0; i < g.cols; i++) {
++        int c = centre(i);
++        if (b.isFull(c)) {
++          continue;
++        }
++        r.copyFrom(b);
++        if (r.blast(c)) {
++          continue;
++        }
++        if (forcingDropWins(r, a, def, 1, cdD, defReady, d, vply)) {
++          if (vply == 0) {
++            winMove = c | Tactics.SPECIAL;
++          }
++          store(key, idx, WIN, d, c | Tactics.SPECIAL);
++          return true;
++        }
++        if (aborted) {
++          return false;
++        }
++      }
++    }
+     if (!aborted) {
+       store(key, idx, FAIL, d, Tactics.NONE);
+     }
+diff --git a/src/test/java/ch/qc/bot/CropTest.java b/src/test/java/ch/qc/bot/CropTest.java
+index 0cab4d4..7623688 100644
+--- a/src/test/java/ch/qc/bot/CropTest.java
++++ b/src/test/java/ch/qc/bot/CropTest.java
+@@ -115,8 +115,9 @@ class CropTest {
+   void theBotSearchesOnVeryLargeBoards() {
+     int[][] sizes = {{100, 100}, {50, 50}, {65, 65}, {200, 200}, {300, 12}, {12, 300}, {500, 500}};
+     for (int[] size : sizes) {
+-      QcBot bot = new QcBot("w=0");
+-      Algorithm other = new QcBot("w=0");
++      // wide=0: this checks the search near the discs, not the far opening drops
++      QcBot bot = new QcBot("w=0,wide=0");
++      Algorithm other = new QcBot("w=0,wide=0");
+       QuantumField field = FieldFactory.create(size[0], size[1], bot, other);
+       int searched = 0;
+       boolean botToMove = true;
+@@ -135,4 +136,209 @@ class CropTest {
+       assertTrue(searched >= 5, size[0] + "x" + size[1] + " searched only " + searched + " turns");
+     }
+   }
++
++  private static boolean[] occupied(int cols, int... discs) {
++    boolean[] o = new boolean[cols];
++    for (int c : discs) {
++      o[c] = true;
++    }
++    return o;
++  }
++
++  @Test
++  void gapsKeepOnlyTheColumnsNearDiscs() {
++    int[] m = Crop.gapMap(occupied(100, 3, 60), 100);
++    int reach = Crop.GAP_REACH;
++    assertEquals(3 + reach + 1 + 2 * reach + 1, m.length);
++    assertEquals(0, m[0]);
++    assertEquals(3 + reach, m[3 + reach]);
++    assertEquals(60 - reach, m[3 + reach + 1]);
++    assertEquals(60 + reach, m[m.length - 1]);
++    // a narrow empty stretch is kept, so a cut always hides more than GAP_FILL columns
++    int[] near = Crop.gapMap(occupied(100, 40, 40 + 2 * reach + Crop.GAP_FILL + 1), 100);
++    assertEquals(near[near.length - 1] - near[0] + 1, near.length);
++    int[] apart = Crop.gapMap(occupied(100, 40, 40 + 2 * reach + Crop.GAP_FILL + 2), 100);
++    assertEquals(apart[apart.length - 1] - apart[0] + 1, apart.length + Crop.GAP_FILL + 1);
++  }
++
++  @Test
++  void aGapCropCutsTheRealColumnsAndMapsBothWays() {
++    int rows = 15;
++    int cols = 100;
++    byte[] cells = new byte[rows * cols];
++    cells[2 * rows] = 1;
++    cells[49 * rows] = 2;
++    cells[49 * rows + 1] = 1;
++    cells[95 * rows] = 2;
++    Crop c = Crop.start(rows, cols, ABOVE).refit(cells, ABOVE, true);
++    assertTrue(c.hasGaps());
++    assertTrue(c.cols < 3 * (2 * Crop.GAP_REACH + 1));
++    byte[] cut = c.cut(cells);
++    for (int m = 0; m < c.cols; m++) {
++      int r = c.real(m);
++      assertEquals(m, c.model(r));
++      for (int y = 0; y < rows; y++) {
++        assertEquals(cells[r * rows + y], cut[m * rows + y], "model column " + m + " row " + y);
++      }
++    }
++    assertEquals(-1, c.model(25));
++    assertEquals(-1, c.model(72));
++    assertSame(c, c.refit(cells, ABOVE, true));
++    // a disc next to a group stays inside the crop: no rebuild
++    cells[(49 + Crop.GAP_REACH - Crop.KEEP) * rows] = 1;
++    assertSame(c, c.refit(cells, ABOVE, true));
++    // a disc in a left-out stretch makes a new crop that holds it
++    cells[25 * rows] = 2;
++    Crop d = c.refit(cells, ABOVE, true);
++    assertTrue(d.model(25) >= 0);
++  }
++
++  @Test
++  void withoutGapsTheCropIsTheContiguousOne() {
++    byte[] cells = board(15, 100, new int[] {1}, 3);
++    cells[95 * 15] = 1;
++    Crop c = Crop.start(15, 100, ABOVE);
++    Crop plain = c.refit(cells, ABOVE);
++    assertSame(plain.getClass(), c.refit(cells, ABOVE, false).getClass());
++    Crop again = c.refit(cells, ABOVE, false);
++    assertEquals(plain.col0, again.col0);
++    assertEquals(plain.cols, again.cols);
++    assertTrue(!again.hasGaps());
++  }
++
++  /** An opponent that drops far from everything: with gaps the bot still only plays legal columns and searches. */
++  @Test
++  void withGapsTheBotPlaysAWideGameLegally() {
++    int rows = 15;
++    int cols = 100;
++    QcBot bot = new QcBot("w=0,gap=1");
++    int[] far = {0, 97, 25, 70, 3, 88, 12, 60, 40, 99, 33, 80};
++    Algorithm other = new Algorithm() {
++      int i;
++
++      @Override
++      public int accelerateQuark(QuantumField f) {
++        for (int k = 0; k < cols; k++) {
++          int c = far[i++ % far.length];
++          if (!f.isColumnFull(c)) {
++            return c;
++          }
++        }
++        return 0;
++      }
++
++      @Override
++      public boolean useSpecialMove(QuantumField f) {
++        return false;
++      }
++    };
++    QuantumField field = FieldFactory.create(rows, cols, bot, other);
++    int searched = 0;
++    int botTurns = 0;
++    boolean botToMove = true;
++    for (int ply = 0; ply < 80 && FieldFactory.status(field) == ExperimentStatus.INCOMPLETE; ply++) {
++      Algorithm mover = botToMove ? bot : other;
++      int col = mover.accelerateQuark(field);
++      assertTrue(col >= 0 && col < cols && !field.isColumnFull(col), "ply " + ply + " column " + col);
++      if (botToMove) {
++        botTurns++;
++        searched += bot.lastResult() != null ? 1 : 0;
++      }
++      FieldFactory.play(field, col, mover.useSpecialMove(field));
++      botToMove = !botToMove;
++    }
++    // the opponent never blocks, so the game is short; every turn after the first few must have searched
++    assertTrue(botTurns >= 6 && searched >= botTurns - 3, "searched " + searched + " of " + botTurns + " turns");
++  }
++
++  @Test
++  void levelTwoLeavesOutSmallFarGroupsUntilOneGrows() {
++    int rows = 15;
++    int cols = 100;
++    byte[] cells = new byte[rows * cols];
++    cells[49 * rows] = 1;
++    cells[49 * rows + 1] = 1;
++    cells[49 * rows + 2] = 1;
++    cells[50 * rows] = 2;
++    cells[5 * rows] = 2;
++    cells[90 * rows] = 1;
++    cells[91 * rows] = 2;
++    Crop start = Crop.start(rows, cols, ABOVE);
++    Crop one = start.refit(cells, ABOVE, 1);
++    assertTrue(one.model(5) >= 0 && one.model(90) >= 0);
++    Crop two = start.refit(cells, ABOVE, 2);
++    assertEquals(-1, two.model(5));
++    assertEquals(-1, two.model(90));
++    assertTrue(two.model(49 - Crop.KEEP) >= 0 && two.model(50 + Crop.KEEP) >= 0);
++    // the far group reaches three discs of one side: now it is modelled
++    cells[92 * rows] = 2;
++    cells[93 * rows] = 2;
++    Crop grown = two.refit(cells, ABOVE, 2);
++    assertTrue(grown.model(90) >= 0 && grown.model(93) >= 0);
++    // with no large group at all nothing is left out
++    byte[] early = new byte[rows * cols];
++    early[49 * rows] = 1;
++    early[20 * rows] = 2;
++    Crop e = start.refit(early, ABOVE, 2);
++    assertTrue(e.model(20) >= 0 && e.model(49) >= 0);
++  }
++
++  @Test
++  void levelTwoPlaysAWideGameLegally() {
++    int rows = 15;
++    int cols = 100;
++    QcBot bot = new QcBot("w=0,gap=2");
++    int[] far = {0, 97, 25, 70, 3, 88, 12, 60, 40, 99, 33, 80};
++    Algorithm other = new Algorithm() {
++      int i;
++
++      @Override
++      public int accelerateQuark(QuantumField f) {
++        for (int k = 0; k < cols; k++) {
++          int c = far[i++ % far.length];
++          if (!f.isColumnFull(c)) {
++            return c;
++          }
++        }
++        return 0;
++      }
++
++      @Override
++      public boolean useSpecialMove(QuantumField f) {
++        return false;
++      }
++    };
++    QuantumField field = FieldFactory.create(rows, cols, bot, other);
++    boolean botToMove = true;
++    for (int ply = 0; ply < 80 && FieldFactory.status(field) == ExperimentStatus.INCOMPLETE; ply++) {
++      Algorithm mover = botToMove ? bot : other;
++      int col = mover.accelerateQuark(field);
++      assertTrue(col >= 0 && col < cols && !field.isColumnFull(col), "ply " + ply + " column " + col);
++      FieldFactory.play(field, col, mover.useSpecialMove(field));
++      botToMove = !botToMove;
++    }
++  }
++
++  /** wide=2: two early quiet turns drop near an edge, far from the play; the rest of the game is searched as usual. */
++  @Test
++  void wideDropsFarOnlyEarlyAndLegally() {
++    int rows = 15;
++    int cols = 100;
++    QcBot bot = new QcBot("w=0,gap=2,wide=2");
++    Algorithm other = new QcBot("w=0");
++    QuantumField field = FieldFactory.create(rows, cols, bot, other);
++    int far = 0;
++    boolean botToMove = true;
++    for (int ply = 0; ply < 60 && FieldFactory.status(field) == ExperimentStatus.INCOMPLETE; ply++) {
++      Algorithm mover = botToMove ? bot : other;
++      int col = mover.accelerateQuark(field);
++      assertTrue(col >= 0 && col < cols && !field.isColumnFull(col), "ply " + ply + " column " + col);
++      if (botToMove && (col == 1 || col == cols - 2)) {
++        far++;
++      }
++      FieldFactory.play(field, col, mover.useSpecialMove(field));
++      botToMove = !botToMove;
++    }
++    assertTrue(far >= 1 && far <= 2, "far drops " + far);
++  }
+ }
+diff --git a/src/test/java/ch/qc/bot/rules/BoardDifferentialTest.java b/src/test/java/ch/qc/bot/rules/BoardDifferentialTest.java
+index 39c8619..d2a5277 100644
+--- a/src/test/java/ch/qc/bot/rules/BoardDifferentialTest.java
++++ b/src/test/java/ch/qc/bot/rules/BoardDifferentialTest.java
+@@ -102,6 +102,9 @@ class BoardDifferentialTest {
+         if (win) {
+           break;
+         }
++        if (!special && !anyBlastWon) {
++          assertEquals(b.anyBlastWins(), b.anyBlastWinsNear(col), ctx + " blast win test near a drop in column " + col);
++        }
+       }
+     }
+     System.out.printf("differential: %d positions, %d blasts simulated, %d winning blasts, prefilter passed %d%n",
+diff --git a/src/test/java/ch/qc/bot/search/MateSuiteTest.java b/src/test/java/ch/qc/bot/search/MateSuiteTest.java
+index 958f689..e49fd0e 100644
+--- a/src/test/java/ch/qc/bot/search/MateSuiteTest.java
++++ b/src/test/java/ch/qc/bot/search/MateSuiteTest.java
+@@ -162,6 +162,6 @@ class MateSuiteTest {
+     int cdNext = special ? 1 : Math.min(10, cdMe + 1);
+     // a longer forced win (the root threat search returns the first proof it finds) also counts
+     return !a.topRowFull() && (opponentLosesAll(a, me, cdNext, cdOpp, plies - 1)
+-        || VcfTest.Checker.everyDefenceLoses(a, me, cdNext, cdOpp, 5, 1));
++        || VcfTest.Checker.everyDefenceLoses(a, me, cdNext, cdOpp, 5, 1, false));
+   }
+ }
+diff --git a/src/test/java/ch/qc/bot/search/VcfTest.java b/src/test/java/ch/qc/bot/search/VcfTest.java
+index b7b9e48..262b867 100644
+--- a/src/test/java/ch/qc/bot/search/VcfTest.java
++++ b/src/test/java/ch/qc/bot/search/VcfTest.java
+@@ -106,6 +106,36 @@ class VcfTest {
+     assertTrue(deep > 20, "too few deep proofs to be meaningful");
+   }
+ 
++  /** Same as above with attacker blasts that break a block (Vcf.attackerBlasts); the checker allows them too. */
++  @Test
++  void longProofsWithAttackerBlastsSurviveEveryDefence() {
++    Vcf.Table table = new Vcf.Table(18);
++    int claims = 0;
++    int viaBlast = 0;
++    int n = POSITIONS / 2;
++    for (Pos p : positions(n, 74)) {
++      Vcf v = new Vcf(p.b.g, table, true);
++      v.attackerBlasts = true;
++      int move = v.attack(p.b, p.stm, p.cdStm, p.cdOpp, 5, p.turn, Long.MAX_VALUE, 200_000);
++      if (move == Tactics.NONE) {
++        continue;
++      }
++      claims++;
++      int moves = 0;
++      while (moves <= 5 && !Checker.wins(p.b, p.stm, p.cdStm, p.cdOpp, moves, p.turn, true)) {
++        moves++;
++      }
++      assertTrue(moves <= 5, "false proof at " + describe(p));
++      Vcf plain = new Vcf(p.b.g, new Vcf.Table(16), true);
++      if (plain.attack(p.b, p.stm, p.cdStm, p.cdOpp, 5, p.turn, Long.MAX_VALUE, 200_000) == Tactics.NONE
++          && !plain.lastAborted()) {
++        viaBlast++;
++      }
++    }
++    System.out.printf("T7 blasts: %d positions, %d VCF proofs, %d only with an attacker blast%n", n, claims, viaBlast);
++    assertTrue(viaBlast > 5, "too few blast proofs to be meaningful");
++  }
++
+   @Test
+   void resultsDoNotDependOnTheTable() {
+     Vcf.Table shared = new Vcf.Table(16);
+@@ -143,6 +173,11 @@ class VcfTest {
+    */
+   static final class Checker {
+     static boolean wins(Board b, int a, int cdA, int cdD, int d, int turn) {
++      return wins(b, a, cdA, cdD, d, turn, false);
++    }
++
++    /** With blasts: the attacker may also blast (when ready) if that leaves it a playable threat. */
++    static boolean wins(Board b, int a, int cdA, int cdD, int d, int turn, boolean blasts) {
+       if (turn >= 1000) {
+         return false;
+       }
+@@ -165,14 +200,28 @@ class VcfTest {
+         if (x.topRowFull() || !hasPlayableThreat(x, a)) {
+           continue;
+         }
+-        if (everyDefenceLoses(x, a, Math.min(10, cdA + 1), cdD, d - 1, turn + 1)) {
++        if (everyDefenceLoses(x, a, Math.min(10, cdA + 1), cdD, d - 1, turn + 1, blasts)) {
+           return true;
+         }
+       }
++      if (blasts && cdA >= 10) {
++        for (int c = 0; c < g.cols; c++) {
++          x.copyFrom(b);
++          if (x.blast(c)) {
++            return true;
++          }
++          if (x.topRowFull() || !hasPlayableThreat(x, a)) {
++            continue;
++          }
++          if (everyDefenceLoses(x, a, 1, cdD, d - 1, turn + 1, blasts)) {
++            return true;
++          }
++        }
++      }
+       return false;
+     }
+ 
+-    static boolean everyDefenceLoses(Board p, int a, int cdA, int cdD, int d, int turn) {
++    static boolean everyDefenceLoses(Board p, int a, int cdA, int cdD, int d, int turn, boolean blasts) {
+       if (turn >= 1000) {
+         return false;
+       }
+@@ -195,7 +244,7 @@ class VcfTest {
+         if (defWins || r.topRowFull()) {
+           return false;
+         }
+-        if (!wins(r, a, cdA, special ? 1 : Math.min(10, cdD + 1), d, turn + 1)) {
++        if (!wins(r, a, cdA, special ? 1 : Math.min(10, cdD + 1), d, turn + 1, blasts)) {
+           return false;
+         }
+       }
+diff --git a/src/tools/java/ch/qc/tools/SearchOptions.java b/src/tools/java/ch/qc/tools/SearchOptions.java
+index d277262..062901e 100644
+--- a/src/tools/java/ch/qc/tools/SearchOptions.java
++++ b/src/tools/java/ch/qc/tools/SearchOptions.java
+@@ -66,6 +66,7 @@ public final class SearchOptions {
+       case "blastGenDepth" -> o.blastGenDepth = v;
+       case "rootVcfShare" -> o.rootVcfShare = v;
+       case "oppVcfShare" -> o.oppVcfShare = v;
++      case "vcfBlast" -> o.vcfBlast = v;
+       default -> throw new IllegalArgumentException("unknown search option " + name);
+     }
+   }
+@@ -75,6 +76,9 @@ public final class SearchOptions {
+       case "nodeRule" -> o.nodeRule = on;
+       case "audit" -> o.audit = on;
+       case "forcedExt" -> o.forcedExt = on;
++      case "blastQs" -> o.blastQs = on;
++      case "blastExt" -> o.blastExt = on;
++      case "blastDbl" -> o.blastDbl = on;
+       case "partial" -> o.partial = on;
+       default -> throw new IllegalArgumentException("unknown search option " + name);
+     }

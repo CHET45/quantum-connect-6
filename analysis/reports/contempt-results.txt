@@ -1,0 +1,52 @@
+=== contempt=64@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw vs contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw
+fixed 20000 nodes: [contempt=64@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw] vs [contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw]: 400 games, pairs 200 [LL 0, LD 3, DD/WL 195, WD 2, WW 0], score 49.9%, Elo -0.9 [-4.7, +2.9], LLR -15.56 (-2.94, 2.94) for [0, 10]: H0
+  decided by six 193, blast 14; draws full 193, cap 0; draw share 48.3%, first player scores 50.9%; 10.8 min on 4 threads
+=== contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw vs contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen001/eval.qcw
+fixed 20000 nodes: [contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw] vs [contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen001/eval.qcw]: 400 games, pairs 200 [LL 7, LD 23, DD/WL 64, WD 77, WW 29], score 62.3%, Elo +86.9 [+61.9, +112.8], LLR 5.42 (-2.94, 2.94) for [0, 10]: H1
+  decided by six 193, blast 17; draws full 190, cap 0; draw share 47.5%, first player scores 50.8%; 10.3 min on 4 threads
+=== contempt=64@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw vs contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen001/eval.qcw
+fixed 20000 nodes: [contempt=64@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw] vs [contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen001/eval.qcw]: 400 games, pairs 200 [LL 9, LD 22, DD/WL 64, WD 76, WW 29], score 61.8%, Elo +83.2 [+57.7, +109.6], LLR 4.93 (-2.94, 2.94) for [0, 10]: H1
+  decided by six 199, blast 17; draws full 184, cap 0; draw share 46.0%, first player scores 50.5%; 10.3 min on 4 threads
+=== contempt=128@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw vs contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen001/eval.qcw
+C:\Users\Chtean45m\Documents\quantum-connect\qc-bot-safe\src\main\java\ch\qc\bot\MatchClock.java:40: error: method budget(long,int,long,int) is already defined in class MatchClock
+  static long budget(long elapsed, int plies, long base, int lastScore) {
+              ^
+1 error
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':compileJava' (registered by plugin class 'org.gradle.api.plugins.JavaBasePlugin').
+> Compilation failed; see the compiler output below.
+  C:\Users\Chtean45m\Documents\quantum-connect\qc-bot-safe\src\main\java\ch\qc\bot\MatchClock.java:40: error: method budget(long,int,long,int) is already defined in class MatchClock
+    static long budget(long elapsed, int plies, long base, int lastScore) {
+                ^
+  1 error
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+
+BUILD FAILED in 4s
+=== contempt=128@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw vs contempt=0@C:/Users/Chtean45m/Documents/quantum-connect/qc-bot/data/models/gen002/eval.qcw
+C:\Users\Chtean45m\Documents\quantum-connect\qc-bot-safe\src\main\java\ch\qc\bot\MatchClock.java:40: error: method budget(long,int,long,int) is already defined in class MatchClock
+  static long budget(long elapsed, int plies, long base, int lastScore) {
+              ^
+1 error
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':compileJava' (registered by plugin class 'org.gradle.api.plugins.JavaBasePlugin').
+> Compilation failed; see the compiler output below.
+  C:\Users\Chtean45m\Documents\quantum-connect\qc-bot-safe\src\main\java\ch\qc\bot\MatchClock.java:40: error: method budget(long,int,long,int) is already defined in class MatchClock
+    static long budget(long elapsed, int plies, long base, int lastScore) {
+                ^
+  1 error
+
+* Try:
+> Check your code and dependencies to fix the compilation error(s)
+> Run with --scan to get full insights from a Build Scan (powered by Develocity).
+
+BUILD FAILED in 2s
+=== done

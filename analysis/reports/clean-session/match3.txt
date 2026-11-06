@@ -1,0 +1,12 @@
+15x11 [wd=1,ebf=0,ms=80,ponder=80] vs [wd=1,ebf=0,ms=80]: pairs 40 W 40 D 11 L 29 score 56.9% (+-10.1) elo +48, 5.2 min
+  games decided by a blast: 34 of 80
+  side A: calls 6807, nodes/call 33275, depth 7.35, ms/call 75.4, knps 441, calls>60ms 6282
+  side B: calls 6806, nodes/call 33911, depth 7.10, ms/call 75.5, knps 449, calls>60ms 6290
+8x12 [wd=1,ebf=0,ms=80,ponder=80] vs [wd=1,ebf=0,ms=80]: pairs 40 W 20 D 45 L 15 score 53.1% (+-7.2) elo +22, 3.2 min
+  games decided by a blast: 4 of 80
+  side A: calls 4288, nodes/call 42215, depth 10.17, ms/call 72.7, knps 581, calls>60ms 3812
+  side B: calls 4288, nodes/call 42825, depth 9.79, ms/call 72.7, knps 589, calls>60ms 3817
+15x22 [wd=1,ebf=0,ms=80,ponder=80] vs [wd=1,ebf=0,ms=80]: pairs 30 W 33 D 0 L 27 score 55.0% (+-12.6) elo +35, 4.6 min
+  games decided by a blast: 41 of 60
+  side A: calls 5114, nodes/call 27999, depth 4.89, ms/call 78.0, knps 359, calls>60ms 4875
+  side B: calls 5111, nodes/call 27864, depth 4.73, ms/call 78.2, knps 356, calls>60ms 4883

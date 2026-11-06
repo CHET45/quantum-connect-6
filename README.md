@@ -1,143 +1,105 @@
-# QcBot
+# Quantum Connect bot (team "No beaches?")
 
-A Quantum Connect bot built from the design in [`docs/pattern-bot-design.md`](docs/pattern-bot-design.md)
-(milestones M0-M7). The uploadable class is `ch.qc.bot.QcBot`; everything below `src/tools` and `src/test` is
-harness code and is not packaged into the jar.
+Everything we built for the Quantum Connect bot tournament (November 2026): the bot, its search and learned
+evaluation, the training pipeline, the test and match harness, the server-log analysis and the research behind it.
+Full git history, dead ends included.
 
-| Path | What it is |
-| ---- | ---------- |
-| `src/main/java/ch/qc/bot/QcBot.java` | The bot: per-call snapshot, turn tracking, guarded two-call protocol |
-| `src/main/java/ch/qc/bot/TurnTracker.java` | Own turn index and both special-move cooldown counters |
-| `src/main/java/ch/qc/bot/rules/` | `Geometry` (windows), `Tables` (window codes), `Board` (moves, blasts, threat cells, hash) |
-| `src/test/java/` | Conformance against the official engine, differential test against a naive rule copy, tracker and robustness tests |
-| `src/tools/java/ch/qc/tools/` | `MatchMain` (colour-swapped match runner), `PackagingProbe`, `BotProbe` (latency and legality checks) |
+Quantum Connect is a gravity game on a board of any size: drop quarks into columns, six in a row wins, and every
+10 own turns a player may fire a 3x3 blast that destroys discs and compacts the columns. If a blast leaves any line
+of six on the board, the player who fired it wins, whoever owns the line. Each call gets about 100 ms.
 
-Commands (the Gradle wrapper downloads JDK 25 if needed):
+The organisers' engine jar (`libs/core-2.0-SNAPSHOT.jar` from the starter kit) is not included and was removed from
+the whole history. Put your copy into `libs/` to build and run the tests.
 
-```
-./gradlew test                                   # all tests at their default size
-./gradlew test -Pqc.diff.positions=10000000 -Pqc.robust.calls=100000 -Pqc.conf.games=5000
-./gradlew match -Pargs="--b ch.qc.starter.SpecialMoveBot --pairs 200"
-./gradlew build probe                            # jar, then load it through an isolated class loader
-./gradlew run                                    # emulator window: QcBot vs SpecialMoveBot
-./gradlew match -Pargs="--b jar:ladder/m3.jar --openings suites/openings-8x12.txt --sprt 0,10 --pairs 2000"
-./gradlew fastmatch -Pargs="--a +razor --nodes 20000 --sprt 0,10"   # fixed-node, reproducible, all cores
-./gradlew report -Pargs="--sprt 0,10 results/m3-vs-m2.jsonl"        # verdict of a stored log
-./gradlew latency -Pargs="--calls 20000" -Pjvm="-XX:+UseSerialGC"   # latency through the engine timer
-./gradlew regression                             # tests + non-regression SPRT against the newest ladder jar
-```
+## Where we got
 
-Training the evaluation (design section 4; Python needs torch and numpy, see `training/requirements.txt`):
+| Version | Server name | What changed | Evidence |
+|---|---|---|---|
+| m0-m5 (tags) | Cristi Schuszter | rules core, PVS + TT, root VCF, learned pattern tables | `docs/milestones.md` |
+| 3.0 / 3.1 (tags `v3.0`, `v3.1`) | Savi beater 3.x | upload-safe code (no System, exceptions, threads), match clock, size-independent tables | `upload-safe` branch |
+| rc5 (tag `rc5`) | King beater, Data Collector | Crop for giant boards, generic tables g6f, warm-up | 83-1-0 in export 10; 187-10 in export 16 |
+| rc7 | The Emperor | blast-threat search, partial iterations | 65-18 on 15x100 (export 17); source in `night/patches/` |
+| rc8 (tag `rc8`) | Cod Published CHET45 | gap crop for very wide boards | 56-17 on 15x100 (export 19) |
+| rc9 (tag `rc9`) | - | keep a blast that is the only defence | `rc8-bomb` branch |
+| final (tags `final`, `final-safer`) | final round | rc8 + rules announced on the day (k, blast size, cooldown, limits), rules inference in play, per-k tables (k4, k5, k6, k7) | `night/final/`, `docs/final-day.md` |
 
-```
-./gradlew featurespec                                                       # spec JSON for Python
-./gradlew selfplay -Pargs="--out data/gen000 --positions 4000000 --nodes 20000"
-cd training && python -m qctrain.fit --data ../data/gen000 --out ../data/models/gen1 --lam 0.9 --k 256 --epochs 40 --lr 1e-3 --lr-end 1e-5 --wd-base 1e-2 --wd-delta 1e-1
-python -m qctrain.parity --model ../data/models/gen1 --data ../data/gen000  # then: ./gradlew test -Pqc.parity=data/models/gen1
-./gradlew fastmatch -Pargs="--a @data/models/gen1/eval.qcw --b @hand --sprt 0,10"
-cp data/models/gen1/eval.qcw weights/eval.qcw && ./gradlew build probe     # embeds the weights into the jar
-```
+Numbers are game records from the organisers' server exports; our reports on them are in `analysis/reports/`.
 
-Bot specs for `--a/--b`: a class name, `qcbot:+opt,-opt` (current QcBot with search switches, see
-`Searcher.Options`), or `jar:PATH` (a frozen build; `ladder/mN.jar` are built from the git tags). Results and the
-history of each milestone are in [`docs/milestones.md`](docs/milestones.md).
+## How the bot works
 
----
+- **Rules core** (`src/main/java/ch/qc/bot/rules/`): window-coded board, make/unmake, exact blast simulation,
+  threat cells, Zobrist hash. Checked against the official engine on thousands of scripted games and against a
+  naive rule copy on 10 M random positions.
+- **Search** (`src/main/java/ch/qc/bot/search/`): iterative-deepening PVS with a transposition table, gravity-aware
+  VCF threat search at the root, blast-threat detection, late-move reductions, partial last iteration.
+- **Evaluation** (`src/main/java/ch/qc/bot/eval/`): hand pattern tables plus learned tables over 6-cell windows,
+  size-independent ("generic") so one table serves every board size; one table per win length k.
+- **Time** (`Timing`, `MatchClock`, `CallLimit`): hard stops below the call limit, a shared match clock, measured
+  call limit, constructor warm-up.
+- **Giant boards** (`Crop`): boards wider than 40 columns are searched only around the discs.
+- **Upload rules**: the server bans System, io/nio/net, reflection, threads and exceptions; `UploadRulesTest`
+  enforces this on the bot classes.
 
-# Quantum Connect starter project
+## Training the tables
 
-This is a ready-to-use project to write, test and package your own Quantum Connect bot. It already
-contains the game engine (`libs/core-*.jar`), so you do not need anything else.
+Self-play at a fixed node budget (`./gradlew selfplay`), fit in Python/torch (`training/qctrain/`), gate by
+SPRT (`./gradlew fastmatch`), embed into the jar (`./gradlew embedWeights jar`). Lessons that cost us most:
 
-## Pre-requisites
+- with little data a target mix of lambda 0.5 makes the tables memorise game outcomes; lambda 0.9 with K = 256 on
+  the raw search value works;
+- judge a table by matches and by rank correlation with the search value on held-out games, not by validation loss;
+- fresh fits beat warm-started ones whenever the gap was significant.
 
-- Java 25 (the Gradle toolchain downloads it for you if it is missing and your Gradle is allowed to)
-- Nothing else: use the included `./gradlew` (`gradlew.bat` on Windows)
+Details: `docs/pattern-bot-design.md` (design), `docs/milestones.md` (M0-M6 results), `night/results/eval.md`.
 
-## What is in the project
+## Repository map
 
 | Path | What it is |
-| ---- | ---------- |
-| `src/main/java/ch/qc/starter/RandomBot.java` | A bot that plays a random free column. Start from here. |
-| `src/main/java/ch/qc/starter/SpecialMoveBot.java` | A bot that also uses the special move now and then. |
-| `src/main/java/EmulatorRunner.java` | Plays two bots against each other on your machine. |
-| `libs/core-*.jar` | The game engine (`Algorithm`, `QuantumField`, `Experiment`, ...). |
-| `build.gradle` | Build file. This is where you tell the game which class is your bot. |
+|---|---|
+| `src/main` | the bot (upload jar contents), `ch.qc.bot.QcBot` |
+| `src/test` | conformance, differential, robustness, upload-rules and search tests |
+| `src/tools` | match runner, fixed-node matches, SPRT, self-play, opening generator, server-game replay |
+| `training/` | Python training code and feature specs |
+| `weights/`, `weights-k/` | the shipped learned tables |
+| `suites/` | opening suites per board size |
+| `docs/` | design, milestones, dynamic rules, final-day procedure, developer guide (old README with all commands) |
+| `night/` | plans, status logs, gate and build scripts from the last two days, patches for rc7/rc8 |
+| `analysis/` | server-export reports and scripts (raw exports not included), loss reviews, Savi reproduction attempt |
+| `research/` | research report, notes on related games and engines, source digests and source lists |
 
-## Writing your bot
+## Branches
 
-A bot is a class that implements `ch.cern.quantumconnect.core.Algorithm`:
+| Branch | What it holds |
+|---|---|
+| `main` | final-safer code plus the docs, analysis and research folders |
+| `rc9-dynrules` | final code with announced-rules switches and per-k tables |
+| `final-safer` | fallback final: no warm-up, no second-call search, stops at most 70 ms |
+| `rc8-bomb`, `rc9-draw`, `rc9-g8s`, `pass-trap` | rc9 candidates: blast defence, draw handling, server-position tables, pondering |
+| `night-main`, `rc5-blast-threat`, `rc5-nano` | rc4/rc5 line, blast-threat search (rc6/rc7 base), nanoTime clock |
+| `night-eval`, `night-search`, `night-speed`, `night-time`, `night-huge`, `night-book` | parallel work streams of the night before the server opened |
+| `upload-safe` | the first upload-safe builds (2.x, 3.0, 3.1) |
+| `master` | milestones M0-M6 |
+| `the-dark-prince` | an older, weaker snapshot (3.0-level code, a deliberately weak table) published here first |
 
-```java
-public class MyBot implements Algorithm {
+Commits titled "WIP: uncommitted state ..." hold edits that were never committed in a working copy when the
+tournament ended.
 
-  // Required: return the column (0-based) in which to drop your quark
-  @Override
-  public int accelerateQuark(QuantumField quantumField) {
-    return 0;
-  }
+## Build
 
-  // Optional: return true to use your special move (destroys surrounding discs).
-  // The game only allows it once every few moves.
-  @Override
-  public boolean useSpecialMove(QuantumField quantumField) {
-    return false;
-  }
-}
+```
+# put core-2.0-SNAPSHOT.jar from the starter kit into libs/ first
+./gradlew test
+./gradlew jar          # build/libs/*.jar, Bot-Class ch.qc.bot.QcBot
+./gradlew run          # emulator window
 ```
 
-Useful methods of `QuantumField`: `getNumberOfColumns()` and `isColumnFull(int column)`; browse the
-rest of the class in your IDE (the jar contains the sources' signatures).
+JDK 25 is fetched by the Gradle toolchain. More commands: `docs/developer-guide.md`.
 
-Rules to keep in mind:
+## How it was made
 
-- Your bot needs a public constructor without arguments.
-- Always return a column that is not full, otherwise you lose the game.
-- You only have a limited time per move; a bot that is too slow loses the move.
-- Only use the Java standard library and the classes that are in `libs/`.
+The team worked with AI coding agents (Claude, and Codex for one release). Most commits were written by agents
+working in parallel git worktrees, with matches and SPRT gates deciding what shipped.
 
-## Testing your bot locally
+## License
 
-1. Create your class, for example `src/main/java/ch/qc/starter/MyBot.java`.
-2. Open `src/main/java/EmulatorRunner.java` and put your bot in the experiment:
-
-   ```java
-   var exp = new Experiment(new MyBot(), new RandomBot());
-   exp.runExperiment();
-   ```
-
-   Any `Algorithm` can be your opponent: the `RandomBot` and `SpecialMoveBot` of this project, a
-   second version of your own bot, or the bots of `ch.cern.quantumconnect.bots` in the core jar.
-3. Run it:
-
-   ```
-   ./gradlew run
-   ```
-
-   A window opens and shows the match. Run it several times: results vary because of the random
-   bots. A good bot should beat `RandomBot` almost every time.
-
-## Packaging and uploading
-
-1. In `build.gradle`, set the fully qualified class name of your bot:
-
-   ```
-   'Bot-Class': 'ch.qc.starter.MyBot',
-   ```
-
-2. Build the jar:
-
-   ```
-   ./gradlew build
-   ```
-
-3. Upload `build/libs/quantumconnect-starter-1.0-SNAPSHOT.jar` on the "Bots" page of the game.
-
-If the upload is rejected, check that `Bot-Class` points to a class that exists, implements
-`Algorithm`, and has a public no-argument constructor.
-
-## Updating this project
-
-New versions of the game engine are published with a new copy of this starter project. To update an
-existing bot, download the starter project again and copy your own sources (`src/main/java/...`) and
-your `Bot-Class` line into it, instead of replacing `libs/` by hand.
+MIT, see `LICENSE`. The starter-kit files (`EmulatorRunner`, `ch.qc.starter`) come from the organisers.

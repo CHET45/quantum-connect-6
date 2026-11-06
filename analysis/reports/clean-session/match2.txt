@@ -1,0 +1,12 @@
+15x11 [ms=90,ebf=0] vs [base]: pairs 40 W 50 D 4 L 26 score 65.0% (+-10.2) elo +108, 2.6 min
+  side A: calls 6614, nodes/call 29710, depth 6.51, ms/call 85.6, knps 347, calls>60ms 6129
+  side B: calls 6602, nodes/call 9912, depth 5.69, ms/call 29.8, knps 333, calls>60ms 4
+15x11 [ebf=0] vs [base]: pairs 40 W 37 D 8 L 35 score 51.2% (+-10.4) elo +9, 1.9 min
+  side A: calls 7360, nodes/call 17509, depth 6.27, ms/call 43.9, knps 399, calls>60ms 17
+  side B: calls 7359, nodes/call 11173, depth 6.03, ms/call 29.6, knps 377, calls>60ms 8
+15x22 [ms=90,ebf=0] vs [base]: pairs 30 W 38 D 0 L 22 score 63.3% (+-12.2) elo +95, 2.8 min
+  side A: calls 6445, nodes/call 25476, depth 4.62, ms/call 89.8, knps 284, calls>60ms 6201
+  side B: calls 6437, nodes/call 7852, depth 4.05, ms/call 31.3, knps 251, calls>60ms 10
+8x12 [ms=90,ebf=0] vs [base]: pairs 40 W 27 D 34 L 19 score 55.0% (+-8.2) elo +35, 1.7 min
+  side A: calls 4359, nodes/call 34797, depth 8.94, ms/call 81.4, knps 427, calls>60ms 3862
+  side B: calls 4354, nodes/call 10745, depth 7.70, ms/call 27.0, knps 398, calls>60ms 0

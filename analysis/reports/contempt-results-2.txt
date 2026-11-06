@@ -1,0 +1,6 @@
+=== contempt=128 gen002 vs gen001
+fixed 20000 nodes: [contempt=128@gen002/eval.qcw] vs [contempt=0@gen001/eval.qcw]: 400 games, pairs 200 [LL 9, LD 22, DD/WL 64, WD 76, WW 29], score 61.8%, Elo +83.2 [+57.7, +109.6], LLR 4.93 (-2.94, 2.94) for [0, 10]: H1
+  decided by six 199, blast 17; draws full 184, cap 0; draw share 46.0%, first player scores 50.5%; 10.4 min on 4 threads
+=== contempt=256 gen002 vs gen001
+fixed 20000 nodes: [contempt=256@gen002/eval.qcw] vs [contempt=0@gen001/eval.qcw]: 400 games, pairs 200 [LL 8, LD 26, DD/WL 64, WD 73, WW 29], score 61.1%, Elo +78.6 [+53.2, +104.9], LLR 4.62 (-2.94, 2.94) for [0, 10]: H1
+  decided by six 206, blast 17; draws full 177, cap 0; draw share 44.3%, first player scores 50.1%; 10.2 min on 4 threads
