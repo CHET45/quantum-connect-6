@@ -23,5 +23,5 @@ final class Announced {
   /** Wall-clock time after which a running game is a draw, in seconds (both bots together). */
   static final long MATCH_SECONDS = 30;
   /** Real search in the constructor until this many ms have passed; 0 for none (if the constructor is timed). */
-  static final long WARMUP_MS = 1000;
+  static final long WARMUP_MS = 0;
 }
