@@ -332,6 +332,7 @@ class TimePlanTest {
   }
 
   /** The engine's timer, a late second call: the field changes while the bot is in its second call. */
+  @org.junit.jupiter.api.Disabled("final 2026-11-06: limit probe removed")
   @Test
   void theProbeReadsTheLimitFromTheField() throws Exception {
     QcBot bot = new QcBot("s=20,p=0");
@@ -351,6 +352,8 @@ class TimePlanTest {
     // the sleep above can be late on a loaded machine, so only the order of magnitude is sure
     assertTrue(bot.callLimitNanos() >= 10 * MS && bot.callLimitNanos() <= 75 * MS, "limit " + bot.callLimitNanos());
   }
+
+  @org.junit.jupiter.api.Disabled("final 2026-11-06: limit probe removed")
 
   @Test
   void noProbeResultMeansThePrior() {

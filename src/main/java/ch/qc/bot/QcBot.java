@@ -333,13 +333,12 @@ public final class QcBot implements Algorithm {
       tracker.noteSpecialRequested();
       return true;
     }
+    // final 2026-11-06: no limit probe. It spun in this call copying the field until the engine gave up, which made
+    // hundreds of MB of garbage per game; the limit is announced, so the announced value stands.
     if (!limit.known()) {
-      probe(field, d, t0, PROBE_END_NANOS);
-    } else if (probeUpward && limit.upwardOpen() && clock.ponderAllowed(t0, searchedPly, lastScore, searchedEmpty)) {
-      probe(field, d, t0, PROBE_UP_NANOS);
-    } else {
-      ponder(col, t0);
+      limit.assumePrior();
     }
+    ponder(col, t0);
     return false;
   }
 
