@@ -31,7 +31,7 @@ public final class TranspositionTable {
    * (java.lang.Runtime), so the size is fixed.
    */
   public static TranspositionTable forBot() {
-    return new TranspositionTable(18);
+    return new TranspositionTable(16);
   }
 
   public void newSearch() {

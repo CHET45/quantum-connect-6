@@ -148,7 +148,7 @@ public final class QcBot implements Algorithm {
     this.timing = timing;
     tt = TranspositionTable.forBot();
     Weights.preload();
-    vcfTable = new Vcf.Table(16);
+    vcfTable = new Vcf.Table(14);
     probeUpward = timing.probeUpward;
     if (timing.warmupNanos > 0 && !warmedUp) {
       warmedUp = true;
