@@ -174,10 +174,14 @@ class RulesInferenceTest {
   /** Told 20, it sees the opponent blast at 10 and learns at most 10, never less. */
   @Test
   void opponentSpecialsLowerTheCooldownToTheEngines() throws Exception {
-    EagerBot bot = new EagerBot(20);
-    new Experiment(new SpecialMoveBot(), bot, false, false, 15, 30).runExperiment();
+    // a game can end before the opponent's first special (its 11th turn): play until one shows
+    EagerBot bot = null;
+    for (int game = 0; game < 20 && (bot == null || bot.tracker.cooldownAtMost() < 0); game++) {
+      bot = new EagerBot(20);
+      new Experiment(new SpecialMoveBot(), bot, false, false, 15, 30).runExperiment();
+    }
+    assertTrue(bot.tracker.cooldownAtMost() > 0, "the opponent never blasted in 20 games");
     assertTrue(bot.tracker.cooldownAtMost() >= 10, "learnt " + bot.tracker.cooldownAtMost());
-    assertTrue(bot.tracker.cooldownAtMost() > 0, "the opponent never blasted");
     assertTrue(bot.tracker.cooldown() >= 10, "plays by " + bot.tracker.cooldown());
   }
 }
