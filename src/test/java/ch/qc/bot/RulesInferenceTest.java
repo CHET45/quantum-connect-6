@@ -119,6 +119,7 @@ class RulesInferenceTest {
   /** With the right rules nothing is learnt: the rules object stays the engine's. */
   @Test
   void rightRulesStayUntouched() throws Exception {
+    CoreEngine.assumeCoreRules();
     QcBot bot = new QcBot("s=5,p=0");
     ch.qc.tools.BotProbe probe = new ch.qc.tools.BotProbe(bot);
     new Experiment(probe, new SpecialMoveBot(), false, false, 8, 12).runExperiment();

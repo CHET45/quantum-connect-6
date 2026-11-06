@@ -322,6 +322,7 @@ class CropTest {
   /** wide=2: two early quiet turns drop near an edge, far from the play; the rest of the game is searched as usual. */
   @Test
   void wideDropsFarOnlyEarlyAndLegally() {
+    CoreEngine.assumeCoreRules();
     int rows = 15;
     int cols = 100;
     QcBot bot = new QcBot("w=0,gap=2,wide=2");
